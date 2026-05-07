@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const VERSION = "0.0.1a";
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -9,7 +11,7 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption(ReplBackend, "repl_backend", repl_backend);
-    build_options.addOption([]const u8, "version", "0.0.1a");
+    build_options.addOption([]const u8, "version", VERSION);
 
     const vm_mod = b.addModule("vm", .{
         .root_source_file = b.path("src/vm/root.zig"),
@@ -99,5 +101,49 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&b.addExecutable(.{ .name = "revo-check", .root_module = exe_root }).step);
     for (check_modules) |mod| {
         check_step.dependOn(&b.addTest(.{ .root_module = mod, .filters = test_filters }).step);
+    }
+    // 
+    // releases
+    // 
+    const release_targets: []const []const u8 = &.{
+        "x86_64-linux-musl",
+        // "aarch64-linux-musl",
+        // "x86_64-macos",
+        "aarch64-macos",
+        // "x86_64-windows",
+    };
+
+    const release_step = b.step("release", "build release binaries for all targets");
+
+    for (release_targets) |target_str| {
+        const release_target = b.resolveTargetQuery(
+            std.Target.Query.parse(.{ .arch_os_abi = target_str }) catch |err| {
+                std.debug.panic("invalid target '{s}': {}", .{ target_str, err });
+            },
+        );
+
+        const release_mod = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = release_target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        });
+
+        release_mod.addCSourceFile(.{
+            .file = b.path("vendor/bestline.c"),
+            .flags = &.{},
+        });
+        release_mod.addIncludePath(b.path("vendor"));
+        release_mod.addOptions("build_options", build_options);
+        for (imports) |imp| release_mod.addImport(imp[0], imp[1]);
+
+        const bin_name = b.fmt("revo-{s}-{s}", .{ VERSION, target_str });
+        const release_exe = b.addExecutable(.{
+            .name = bin_name,
+            .root_module = release_mod,
+        });
+
+        const install = b.addInstallArtifact(release_exe, .{});
+        release_step.dependOn(&install.step);
     }
 }
