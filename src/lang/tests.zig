@@ -1193,7 +1193,7 @@ test "runtime renderer includes source path" {
         .err => |failure| {
             var buf = std.Io.Writer.Allocating.init(alloc);
             defer buf.deinit();
-            try failure.renderAt(&buf.writer, failure.source_name orelse "<source>", source);
+            try failure.renderAt(alloc, &buf.writer, failure.source_name orelse "<source>", source);
             try std.testing.expect(std.mem.indexOf(u8, buf.written(), "examples/fail.rv:1:1") != null);
         },
     }
@@ -1224,7 +1224,7 @@ test "runtime renderer includes stack trace call chain" {
         .err => |failure| {
             var buf = std.Io.Writer.Allocating.init(alloc);
             defer buf.deinit();
-            try failure.render(&buf.writer, source);
+            try failure.render(alloc, &buf.writer, source);
 
             try std.testing.expect(std.mem.indexOf(u8, buf.written(), "stack trace:") != null);
             try std.testing.expect(std.mem.indexOf(u8, buf.written(), "0: c at <source>:1:") != null);

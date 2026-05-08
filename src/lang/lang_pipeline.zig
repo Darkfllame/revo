@@ -115,9 +115,10 @@ pub fn lower(vm: *VM, expanded: Expanded, opts: LowerOptions) !LowerResult {
     };
 }
 
-pub fn renderError(writer: *std.Io.Writer, source: Source, err: Error) !void {
+pub fn renderError(allocator: std.mem.Allocator, writer: *std.Io.Writer, source: Source, err: Error) !void {
     return switch (err) {
         .parse => |failure| revo.renderFailureAt(
+            allocator,
             writer,
             source.name orelse "<source>",
             source.text,
@@ -125,6 +126,7 @@ pub fn renderError(writer: *std.Io.Writer, source: Source, err: Error) !void {
             failure.message,
         ),
         .lower => |failure| revo.renderFailureAt(
+            allocator,
             writer,
             source.name orelse "<source>",
             source.text,

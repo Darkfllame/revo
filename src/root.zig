@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+pub const pretty = @import("./pretty.zig");
 
 pub const Runtime = struct {
     alloc: std.mem.Allocator,
@@ -41,7 +42,7 @@ pub const Runtime = struct {
             .err => |err| {
                 var buf = std.Io.Writer.Allocating.init(self.alloc);
                 defer buf.deinit();
-                try lang.renderError(&buf.writer, .{ .name = name, .text = source }, err);
+                try lang.renderError(self.alloc, &buf.writer, .{ .name = name, .text = source }, err);
                 std.debug.print("{s}", .{buf.written()});
                 return error.CompilationError;
             },
@@ -207,13 +208,14 @@ pub inline fn isNil(data: Data) bool {
 }
 
 pub fn renderFailureAt(
+    alloc: std.mem.Allocator,
     writer: *std.Io.Writer,
     source_name: []const u8,
     source: []const u8,
     span: ?lang.Span,
     message: []const u8,
 ) !void {
-    try writer.print("error: {s}\n", .{message});
+    try pretty.printError(alloc, writer, "{s}", .{message});
 
     const location = span orelse return;
 

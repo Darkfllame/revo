@@ -99,12 +99,12 @@ pub const EvalFailure = struct {
     trace_len: usize = 0,
     trace: [max_trace_frames]TraceFrame = [_]TraceFrame{TraceFrame.empty()} ** max_trace_frames,
 
-    pub fn render(self: EvalFailure, writer: *std.Io.Writer, source: []const u8) !void {
-        return self.renderAt(writer, self.source_name orelse "<source>", self.source orelse source);
+    pub fn render(self: EvalFailure, alloc: std.mem.Allocator, writer: *std.Io.Writer, source: []const u8) !void {
+        return self.renderAt(alloc, writer, self.source_name orelse "<source>", self.source orelse source);
     }
 
-    pub fn renderAt(self: EvalFailure, writer: *std.Io.Writer, source_name: []const u8, source: []const u8) !void {
-        try revo.renderFailureAt(writer, source_name, source, self.span, self.message);
+    pub fn renderAt(self: EvalFailure, alloc: std.mem.Allocator, writer: *std.Io.Writer, source_name: []const u8, source: []const u8) !void {
+        try revo.renderFailureAt(alloc, writer, source_name, source, self.span, self.message);
         if (self.trace_len == 0) return;
 
         try writer.writeAll("\nstack trace:\n");
@@ -141,7 +141,7 @@ test "eval error messages and failure rendering include source name" {
 
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try failure.render(&buf.writer, "ignored");
+    try failure.render(std.testing.allocator, &buf.writer, "ignored");
     try std.testing.expect(std.mem.indexOf(u8, buf.written(), "error: boom") != null);
 }
 
@@ -172,7 +172,7 @@ test "failure rendering includes stack trace frames" {
 
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try failure.render(&buf.writer, "unused");
+    try failure.render(std.testing.allocator, &buf.writer, "unused");
 
     try std.testing.expect(std.mem.indexOf(u8, buf.written(), "stack trace:") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.written(), "0: inner at file.rv:2:4") != null);

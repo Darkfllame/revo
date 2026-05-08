@@ -17,7 +17,7 @@ pub fn run(vm: *vm_mod.VM) !void {
             if (vm.currentDebugSource()) |source| {
                 var buf = std.Io.Writer.Allocating.init(vm.runtime.alloc);
                 defer buf.deinit();
-                try failure.render(&buf.writer, source);
+                try failure.render(vm.runtime.alloc, &buf.writer, source);
                 std.debug.print("{s}", .{buf.written()});
             } else {
                 std.debug.print("error: {s}\n", .{failure.message});
