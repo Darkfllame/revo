@@ -2075,3 +2075,114 @@ test "fn name(params) multiple named functions" {
         \\ mul(add(2, 3), 4)
     , 20);
 }
+
+test "closure captured in loop" {
+    try t.top_number(
+        \\ const fs = {}
+        \\ for i in 0..3 do
+        \\     fs[i] = fn() i
+        \\ end
+        \\ fs[0]() + fs[1]() + fs[2]()
+    , 3);
+}
+
+test "closure captures mutable outer variable" {
+    try t.top_number(
+        \\ let counter = {n = 0}
+        \\ const inc = fn() do counter.n = counter.n + 1 counter.n end
+        \\ const dec = fn() do counter.n = counter.n - 1 counter.n end
+        \\ inc() + inc() + dec()
+    , 2);
+    // how did it even become 4????
+}
+
+test "closure in nested scope sees updated binding" {
+    try t.top_number(
+        \\ let x = 0
+        \\ const fs = {}
+        \\ for i in 0..5 do
+        \\   if i > 0 x = x + i
+        \\   fs[i] = fn() x
+        \\ end
+        \\ x + fs[2]() + fs[5]()
+    , 17);
+}
+
+test "match nested tuple pat" {
+    try t.top_number(
+        \\ const data = (:ok, (:inner, 42))
+        \\ match data
+        \\ | (:ok, (:inner, v)) v
+        \\ | _ 0
+    , 42);
+}
+
+test "match nested tuple w guard" {
+    try t.top_number(
+        \\ const data = (:ok, (:inner, 10))
+        \\ match data
+        \\ | (:ok, (:inner, v)) when v < 5 1
+        \\ | (:ok, (:inner, v)) when v > 5 2
+        \\ | _ 0
+    , 2);
+}
+
+test "match tuple head pattern" {
+    // maybe some day
+    if (true) return error.SkipZigTest;
+    try t.top_type(
+        \\ const data = (1, 2, 3, 4)
+        \\ match data
+        \\ | (first :: rest) rest
+        \\ | _ (0,)
+    , .tuple);
+}
+
+test "channel receives from multiple producers preserve ordering" {
+    try t.top_number(
+        \\ const ch = chan(0)
+        \\ const work = fn(id, v) do send(ch, v) id end
+        \\ const a = spawn work(1, 100)
+        \\ const b = spawn work(2, 200)
+        \\ const v1 = recv(ch)
+        \\ const v2 = recv(ch)
+        \\ join(a) + join(b) + v1 + v2
+    , 303);
+}
+
+test "buffered channel fill then drain" {
+    try t.top_number(
+        \\ const ch = chan(3)
+        \\ send(ch, 1)
+        \\ send(ch, 2)
+        \\ send(ch, 3)
+        \\ recv(ch) + recv(ch) + recv(ch)
+    , 6);
+}
+
+test "channel select w/ multiple waiters" {
+    try t.top_number(
+        \\ const ch1 = chan(0)
+        \\ const ch2 = chan(0)
+        \\ spawn fn() send(ch1, 10)
+        \\ spawn fn() send(ch2, 20)
+        \\ recv(ch1) + recv(ch2)
+    , 30);
+}
+
+test "macro inner binding invisible outside" {
+    try t.expectRuntimeError(
+        \\ const mac! = macro `(%x:expr)` `let hidden = 99 :%x`
+        \\ mac!(42)
+        \\ hidden
+    , .UndefinedVariable);
+}
+
+test "numeric and string keys are distinct" {
+    try t.top_number(
+        \\ const t = {}
+        \\ t[1] = 100
+        \\ t["1"] = 200
+        \\ t[1] + t["1"]
+    , 300);
+}

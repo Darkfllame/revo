@@ -1079,6 +1079,25 @@ test "proc macro can build if_expr from explicit args" {
     , 42);
 }
 
+test "proc macro print! expands fmt call" {
+    try testing.top_atom(
+        \\ proc print!(iter) do
+        \\   let fmt = iter:next_of(:string)
+        \\   let args = {}
+        \\   let i = 0
+        \\   args[i] = (:string, fmt)
+        \\   i += 1
+        \\   while iter:peek() != :nil do
+        \\     args[i] = iter:next()
+        \\     i += 1
+        \\   end
+        \\   {(:call, (:ident, "print"), {(:call, (:ident, "fmt"), args, :false)}, :false)}
+        \\ end
+        \\ print!("hello, %v!", "world")
+        \\ :ok
+    , "ok");
+}
+
 test "proc cmul from examples works" {
     try testing.top_number(
         \\ proc cmul!(iter) do

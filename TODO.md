@@ -13,17 +13,19 @@ these should be done before the language is considered complete:
   - normal tests
   ```ruby
   test "test name" do
-    assert!(:true)
+      assert!(:true)
   end
   ```
   - doctests (like elixir)
   ```ruby
   ## @doc 
+  > double(n: positive number) -> n * 2
+  >> double(2)
+     (:ok, 4)
+  >> double("hi")
+     (:err, "arg 0 is not a positive number")
+
   returns @n multiplied by 2 for all positive numbers
-  t> double(2)
-  (:ok, 4)
-  t> double("hi")
-  (:err, "arg 0 is not a positive number")
   ##
   fn double(n: number) match n
   | x when x > 0 and number?(x) ok(x*2)
@@ -41,9 +43,14 @@ these should be done before the language is considered complete:
     ```
 
 - [ ] **macro enhancements**
-  - pattern matching for macros
-  - importable macros with `use` statement
+    - [x] proc macros
+  - [ ] pattern matching for macros
+  - [ ] importable macros with `use` statement
     - are currently always global
+
+- [ ] established doc system
+    - [ ] doc comment system
+
 
 ## perf
 
@@ -51,9 +58,9 @@ these should be done before the language is considered complete:
 - [ ] **kqueue** (bsd and osx)
 - [ ] **uring** (linux)
 - [ ] struct Runtime as a type
-    add default presets. that means, the entirety of the lookup could be marked as inline and, eventually, just folded into an enum lookup and handled by the type system. this could also mean builds with full abscense of Runtime at runtime (and maybe as a field in vm), if comptimed the right way
+add default presets. that means, the entirety of the lookup could be marked as inline and, eventually, just folded into an enum lookup and handled by the type system. this could also mean builds with full abscense of Runtime at runtime (and maybe as a field in vm), if comptimed the right way
 - [ ] struct Runtime figure out the who-owns-what with the vm and runtime relation. maybe entrypoint owns one runtime that is then always shared,
-    but the runtime owns the string interner and other state theoretically shareable between vm instances?
+but the runtime owns the string interner and other state theoretically shareable between vm instances?
 - [ ] move more state into the global scope
 - [ ] lua does something equivalent to moving module_cache, debug_infos, bootstrap_globals from vm to runtime here. super cool and fast 
     - [ ] node has a scheduler there too but i dont really get it
@@ -82,9 +89,9 @@ these should be done before the language is considered complete:
 
 - [ ] **zerocost**
   - `mean` keyword (or `btw`, `meanwhile`, `also`) - pure non-functional, executes side-effects and returns nothing
-    `1 + mean(12) "hi"  # prints "hi", then returns 1 + 12`
+  `1 + mean(12) "hi"  # prints "hi", then returns 1 + 12`
   - `inspect` - print value with line number, return unchanged
-     `1 + inspect(2) == 3`
+  `1 + inspect(2) == 3`
 
 ## nice-to-have
 
@@ -108,7 +115,7 @@ these should be done before the language is considered complete:
 ## cool but optional
 
 - [ ] **lisp** - parses tree nodes directly how the compiler sees them, looks just like the parser's
-    print functionality. not really a lisp in a tradition sense but looks fun to implement
+print functionality. not really a lisp in a tradition sense but looks fun to implement
 - [ ] rewrite docgen.py in revo (long way to go)
 - [ ] **reconstruct syntax from ast**
 

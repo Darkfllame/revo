@@ -414,7 +414,8 @@ sleep(100)
 
 # stdlib modules
 
-a few modules are available as globals without importing:
+revo ships a small set of helpful globals without imports: essentials like `print`, `read`, `cwd`,
+and `@eval`, plus a few module-style namespaces
 
 `fs` - file and directory access:
 ```ruby
@@ -429,6 +430,22 @@ dir:close()
 let stat = fs.open("./README.md"):unwrap():stat():unwrap()
 stat.size  # file size in bytes
 stat.kind  # :file or :dir
+```
+
+`json` - encode and decode json:
+```ruby
+json.encode(("a", "b", "c")):unwrap()  # ["a","b","c"]
+json.decode("{\"a\":1}"):unwrap().a    # 1
+```
+
+`time` - wall-clock and monotonic time:
+```ruby
+time.now()         # current time in ms
+time.now_ns()      # current time in ns
+# monotonic ms
+# you want the monotinic clock for measuring time between two events
+time.monotonic()   
+time.sleep(100)
 ```
 
 `net` - tcp sockets:
