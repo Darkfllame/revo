@@ -664,7 +664,7 @@ fn decodeValue(
         },
         .pointer => |ptr| {
             if (ptr.size == .slice and ptr.child == u8) return switch (data) {
-                .string => |sid| vm.stringValue(sid),
+                .string => |sid| allocator.dupe(u8, vm.stringValue(sid)) catch return error.OutOfMemory,
                 else => error.InvalidProcReturn,
             };
             if (ptr.size == .slice) {

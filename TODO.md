@@ -55,6 +55,8 @@ these should be done before the language is considered complete:
 - [ ] struct Runtime figure out the who-owns-what with the vm and runtime relation. maybe entrypoint owns one runtime that is then always shared,
     but the runtime owns the string interner and other state theoretically shareable between vm instances?
 - [ ] move more state into the global scope
+- [ ] lua does something equivalent to moving module_cache, debug_infos, bootstrap_globals from vm to runtime here. super cool and fast 
+    - [ ] node has a scheduler there too but i dont really get it
 
 ## std expansion
 
