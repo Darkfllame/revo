@@ -9,6 +9,11 @@ these should be done before the language is considered complete:
   - needed for zerocost comptime type-checking, like picking the right loop iterator
   - then, make structs comptime and add go's interfaces
 
+- [ ] predictablw const behaviour
+    even i don't know how it works.
+  - [ ] either get rid of it entirely or really make it work well
+  - [ ] document what happens and when
+
 - [ ] **comptime test system**
   - normal tests
   ```ruby
@@ -21,9 +26,9 @@ these should be done before the language is considered complete:
   ## @doc 
   > double(n: positive number) -> n * 2
   >> double(2)
-     (:ok, 4)
+  (:ok, 4)
   >> double("hi")
-     (:err, "arg 0 is not a positive number")
+  (:err, "arg 0 is not a positive number")
 
   returns @n multiplied by 2 for all positive numbers
   ##

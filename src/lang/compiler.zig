@@ -604,13 +604,9 @@ pub const Compiler = struct {
             return;
         }
 
-        // DOC: destructuring binds through a temporary global
-        const temp = try self.nextTemp("__bind");
-        const temp_sym = try self.vm.internAtom(temp);
         try self.compile(binding.value, true);
-        try self.duplicateRegister();
-        try self.emit(.store_global, temp_sym);
-        try self.bindPattern(binding.target, temp_sym, kind);
+        const src_idx = self.active_registers - 1;
+        try self.bindPattern(binding.target, src_idx, kind);
     }
 
     fn compileLocalBinding(
@@ -640,38 +636,41 @@ pub const Compiler = struct {
     fn bindPattern(
         self: *Compiler,
         pattern: *const Node,
-        source_sym: revo.AtomID,
+        source_idx: usize,
         kind: BindingKind,
     ) InternalLowerError!void {
         switch (pattern.expr) {
             .ident => |name| {
                 if (ast.isDiscardName(name)) return;
-                try self.emit(.load_global, source_sym);
+                _ = try self.pushRegister();
+                const move_instr: Instruction = .{ .op = .move, .a = try reg(self.active_registers - 1), .b = try reg(source_idx) };
+                try self.instructions.append(self.alloc, move_instr);
+                try self.spans.append(self.alloc, self.active_span);
                 switch (kind) {
                     .con => try self.emit(.store_global_const, try self.vm.internAtom(name)),
                     .let, .global => try self.emit(.store_global, try self.vm.internAtom(name)),
                 }
             },
             .tuple_pattern => |items| {
-                // only create temps for nested tuple patterns
-                // for simple ident patterns bind directly
                 const mutable = kind != .con;
                 for (items, 0..) |item, idx| {
                     switch (item.expr) {
                         .ident => |name| {
                             if (ast.isDiscardName(name)) continue;
-                            try self.emit(.load_global, source_sym);
+                            _ = try self.pushRegister();
+                            const move_instr: Instruction = .{ .op = .move, .a = try reg(self.active_registers - 1), .b = try reg(source_idx) };
+                            try self.instructions.append(self.alloc, move_instr);
+                            try self.spans.append(self.alloc, self.active_span);
                             try self.emit(.tuple_get_const, idx);
                             try self.emit(if (mutable) .store_global else .store_global_const, try self.vm.internAtom(name));
                         },
                         .tuple_pattern => {
-                            // nested pattern
-                            try self.emit(.load_global, source_sym);
+                            _ = try self.pushRegister();
+                            const move_instr: Instruction = .{ .op = .move, .a = try reg(self.active_registers - 1), .b = try reg(source_idx) };
+                            try self.instructions.append(self.alloc, move_instr);
+                            try self.spans.append(self.alloc, self.active_span);
                             try self.emit(.tuple_get_const, idx);
-                            const nested = try self.nextTemp("__bind");
-                            const nested_sym = try self.vm.internAtom(nested);
-                            try self.emit(.store_global, nested_sym);
-                            try self.bindPattern(item, nested_sym, kind);
+                            try self.bindPattern(item, self.active_registers - 1, kind);
                         },
                         else => {},
                     }
@@ -1503,7 +1502,7 @@ pub const Compiler = struct {
             self.alloc.free(fail_jumps);
 
             if (matcher_expr) |me| try self.bindMatchPattern(me, subject_storage);
-            
+
             if (arm.guard) |guard| {
                 try self.compile(guard, true);
                 const guard_jump = try self.emitJump(.jump_if_false);
@@ -1511,7 +1510,7 @@ pub const Compiler = struct {
             }
 
             try self.compile(arm.then, true);
-            
+
             // move arm result to canonical result location
             const arm_result_reg: Register = @intCast(self.active_registers - 1);
             if (arm_result_reg != arm_base_registers) {
@@ -1524,7 +1523,7 @@ pub const Compiler = struct {
                 try self.spans.append(self.alloc, self.active_span);
             }
             try self.releaseRegister(); // pop arm result
-            self.active_registers = arm_base_registers + 1;  // result is now at arm_base_registers
+            self.active_registers = arm_base_registers + 1; // result is now at arm_base_registers
 
             const end_jump = try self.emitJump(.jump);
             try end_jumps.append(self.alloc, end_jump);
@@ -1690,12 +1689,9 @@ pub const Compiler = struct {
         value: *const Node,
     ) InternalLowerError!void {
         if (target.expr == .tuple_pattern) {
-            const temp = try self.nextTemp("__assign");
-            const temp_sym = try self.vm.internAtom(temp);
             try self.compile(value, true);
-            try self.duplicateRegister();
-            try self.emit(.store_global, temp_sym);
-            try self.bindPattern(target, temp_sym, .let);
+            const src_idx = self.active_registers - 1;
+            try self.bindPattern(target, src_idx, .let);
             return;
         }
         try self.compileAssignSimple(target, value);
@@ -1737,16 +1733,11 @@ pub const Compiler = struct {
     }
 
     // shared tail of field and index assignment: object/key value already loaded,
-    // stash assigned value, call table_set, discard table return, reload assigned value
+    // compile value, emit table_set, release result register
     fn compileAssignIntoTable(self: *Compiler, value: *const Node) InternalLowerError!void {
         try self.compile(value, true);
-        const temp_name = try self.nextTemp("__assign");
-        const temp_sym = try self.vm.internAtom(temp_name);
-        try self.emit(.store_global, temp_sym);
-        try self.emit(.load_global, temp_sym);
         try self.emit(.table_set, 0);
         try self.releaseRegister();
-        try self.emit(.load_global, temp_sym);
     }
 
     fn compileAssignIntoTableAtom(
@@ -1755,13 +1746,8 @@ pub const Compiler = struct {
         value: *const Node,
     ) InternalLowerError!void {
         try self.compile(value, true);
-        const temp_name = try self.nextTemp("__assign");
-        const temp_sym = try self.vm.internAtom(temp_name);
-        try self.emit(.store_global, temp_sym);
-        try self.emit(.load_global, temp_sym);
         try self.emit(.table_set_atom, key_atom);
         try self.releaseRegister();
-        try self.emit(.load_global, temp_sym);
     }
 
     fn compileStruct(
@@ -1773,39 +1759,44 @@ pub const Compiler = struct {
         var ctor_slot: ?LocalSlot = null;
         if (self.inFunction()) ctor_slot = try self.reuseOrDeclareLocal(name, false);
 
-        // still using hidden globals :(
-        const descriptor_name = try self.nextTemp("__struct_desc");
-        const descriptor_sym = try self.vm.internAtom(descriptor_name);
+        const fields_id = try self.compileStructFieldTable(items, .fields);
+        const defaults_id = try self.compileStructFieldTable(items, .defaults);
+        const types_id = try self.compileStructFieldTable(items, .types);
+
+        const fields_const = try self.vm.addConstant(Data.new.table(fields_id));
+        const defaults_const = try self.vm.addConstant(Data.new.table(defaults_id));
+        const types_const = try self.vm.addConstant(Data.new.table(types_id));
+        const name_const = try self.vm.addConstant(try self.vm.ownDataString(name));
 
         try self.emit(.table_new, 0);
         try self.duplicateRegister();
+        const descriptor_name = try self.nextTemp("__struct_desc");
+        const descriptor_sym = try self.vm.internAtom(descriptor_name);
         try self.emit(.store_global, descriptor_sym);
         try self.releaseRegister();
 
-        try self.compileStructDescriptorKey(descriptor_sym, "__name", .{ .string = name });
-        try self.compileStructDescriptorKey(
-            descriptor_sym,
-            "__fields",
-            .{ .table = try self.compileStructFieldTable(items, .fields) },
-        );
-        try self.compileStructDescriptorKey(
-            descriptor_sym,
-            "__defaults",
-            .{ .table = try self.compileStructFieldTable(items, .defaults) },
-        );
-        try self.compileStructDescriptorKey(
-            descriptor_sym,
-            "__types",
-            .{ .table = try self.compileStructFieldTable(items, .types) },
-        );
+        // set all desc fields
+        inline for (&[_]struct { key: []const u8, const_id: usize }{
+            .{ .key = "__name", .const_id = name_const },
+            .{ .key = "__fields", .const_id = fields_const },
+            .{ .key = "__defaults", .const_id = defaults_const },
+            .{ .key = "__types", .const_id = types_const },
+        }) |entry| {
+            try self.emit(.load_global, descriptor_sym);
+            try self.emitConst(Data.new.atom(try self.vm.internAtom(entry.key)));
+            try self.emitLoadConst(entry.const_id);
+            try self.emit(.table_set, 0);
+            try self.releaseRegister();
+        }
 
         for (items) |item| switch (item) {
             .field => {},
             .binding => |binding| {
                 if (binding.target.expr != .ident)
-                    return self.fail(.UnsupportedSyntax, expr, "struct entries need named bindings");
+                    return self.fail(.UnsupportedSyntax, expr, "assignment target must be named");
+                const key_atom = try self.vm.internAtom(binding.target.expr.ident);
                 try self.emit(.load_global, descriptor_sym);
-                try self.emitConst(Data.new.atom(try self.vm.internAtom(binding.target.expr.ident)));
+                try self.emitConst(Data.new.atom(key_atom));
                 if (binding.value.expr == .fn_expr) {
                     try self.compileFn(binding.value.expr.fn_expr, binding.target.expr.ident, false);
                 } else {
@@ -2039,6 +2030,27 @@ pub const Compiler = struct {
             return self.emitSmallInt(@intFromFloat(value.number));
         }
         const idx = try self.vm.addConstant(value);
+        const dst = try self.pushRegister();
+        const instr: Instruction = .{
+            .op = .load_const,
+            .a = dst,
+            .bx = idx,
+        };
+        try self.instructions.append(self.alloc, instr);
+        try self.spans.append(self.alloc, self.active_span);
+    }
+
+    fn emitMove(self: *Compiler, dst: LocalSlot, src: LocalSlot) InternalLowerError!void {
+        const instr: Instruction = .{
+            .op = .move,
+            .a = @intCast(dst),
+            .b = @intCast(src),
+        };
+        try self.instructions.append(self.alloc, instr);
+        try self.spans.append(self.alloc, self.active_span);
+    }
+
+    fn emitLoadConst(self: *Compiler, idx: revo.ConstantID) InternalLowerError!void {
         const dst = try self.pushRegister();
         const instr: Instruction = .{
             .op = .load_const,
