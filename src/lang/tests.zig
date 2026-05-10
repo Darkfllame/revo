@@ -591,22 +591,22 @@ test "metamethods work with mixed types" {
 //
 
 test "result helpers build tagged tuples" {
-    try t.top_string("tostring(ok(42))", "(:ok, 42)");
-    try t.top_string("tostring(err(:Bad))", "(:err, :Bad)");
+    try t.top_string("tostring(ok!(42))", "(:ok, 42)");
+    try t.top_string("tostring(err!(:Bad))", "(:err, :Bad)");
 }
 
 test "error helpers build and classify tagged errors" {
-    try t.top_string("tostring(err(:FileNotFound))", "(:err, :FileNotFound)");
-    try t.top_true("err?(err(:Bad))");
-    try t.top_true("err?(err(:FileNotFound))");
-    try t.top_false("err?(ok(:Bad))");
+    try t.top_string("tostring(err!(:FileNotFound))", "(:err, :FileNotFound)");
+    try t.top_true("err?(err!(:Bad))");
+    try t.top_true("err?(err!(:FileNotFound))");
+    try t.top_false("err?(ok!(:Bad))");
 }
 
 test "result macros replace native functions" {
     try t.top_true("ok?((:ok, 42))");
     try t.top_true("ok?((:ok, :nil))");
-    try t.top_false("ok?(err(:Bad))");
-    try t.top_true("err?(err(:Bad))");
+    try t.top_false("ok?(err!(:Bad))");
+    try t.top_true("err?(err!(:Bad))");
     try t.top_false("err?((:ok, 42))");
 }
 
@@ -615,7 +615,7 @@ test "result and error conventions work with match" {
 }
 
 test "some and none macros work" {
-    try t.top_true("some?(some(42))");
+    try t.top_true("some?(some!(42))");
     try t.top_true("none?((:none,))");
     try t.top_false("none?((:some, 42))");
 }
