@@ -1385,27 +1385,38 @@ test "top-level locals are real closure locals" {
     , .ConstantReassignment);
 }
 
+test "structs with comma-separated items and fn syntax" {
+    try t.top_number(
+        \\ struct User {
+        \\     name: string,
+        \\     fn get_name(self) self.name,
+        \\ }
+        \\ const user = User { name = "alice" }
+        \\ len(user:get_name())
+    , 5);
+}
+
 test "structs build table-backed instances" {
     try t.top_number(
         \\ struct User {
-        \\     name: string
-        \\     age: number = 0
-        \\     const age_next = fn(self) self.age + 1
+        \\     name: string,
+        \\     age: number = 0,
+        \\     const age_next = fn(self) self.age + 1,
         \\ }
         \\ const user = User { name = "ana" }
         \\ user:age_next()
     , 1);
     try t.top_string(
         \\ struct User {
-        \\     name: string
-        \\     age: number = 0
+        \\     name: string,
+        \\     age: number = 0,
         \\ }
         \\ const user = User { name = "ana", age = 12 }
         \\ user.name
     , "ana");
     try t.top_atom(
         \\ struct User {
-        \\     name: string
+        \\     name: string,
         \\ }
         \\ const user = User { name = "ana" }
         \\ type(user)
@@ -1415,7 +1426,7 @@ test "structs build table-backed instances" {
 test "struct fields are mutable" {
     try t.top_number(
         \\ struct User {
-        \\     age: number = 0
+        \\     age: number = 0,
         \\ }
         \\ let user = User {}
         \\ user.age = 12
@@ -1423,23 +1434,23 @@ test "struct fields are mutable" {
     , 12);
     try t.expectRuntimeFailureWithMessage(
         \\ struct User {
-        \\     age: number = 0
+        \\     age: number = 0,
         \\ }
         \\ let user = User {}
         \\ user.name = "bea"
     , .Panic, "unknown field `name` for struct `User`");
     try t.expectRuntimeFailureWithMessage(
         \\ struct User {
-        \\     age: number = 0
+        \\     age: number = 0,
         \\ }
         \\ let user = User {}
         \\ user.age = "old"
     , .Panic, "field `age` on `User` expected number, got string");
     try t.top_number(
         \\ struct User {
-        \\     name: string
-        \\     age: number = 0
-        \\     const with_age_next = fn(self) User { name = self.name, age = self.age + 1 }
+        \\     name: string,
+        \\     age: number = 0,
+        \\     const with_age_next = fn(self) User { name = self.name, age = self.age + 1 },
         \\ }
         \\ let user = User { name = "ana" }
         \\ user = user:with_age_next():with_age_next():with_age_next()
@@ -1449,11 +1460,11 @@ test "struct fields are mutable" {
     , 5);
     try t.top_number(
         \\ struct User {
-        \\     name: string
-        \\     age: number = 0
+        \\     name: string,
+        \\     age: number = 0,
         \\
         \\     const with_age_next = fn(self)
-        \\         User{name = self.name, age = self.age + 1}
+        \\         User{name = self.name, age = self.age + 1},
         \\ }
         \\
         \\ let u = User{
@@ -1470,8 +1481,8 @@ test "struct fields are mutable" {
 test "structs reject bad inputs" {
     try t.expectRuntimeFailureWithMessage(
         \\ struct User {
-        \\     name: string
-        \\     age: number = 0
+        \\     name: string,
+        \\     age: number = 0,
         \\ }
         \\ User { age = 12 }
     , .Panic, "missing field `name` for struct `User`");

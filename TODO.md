@@ -37,6 +37,10 @@ these should be done before the language is considered complete:
   | _ err("arg 0 is not a positive number")
   ```
 
+- [ ] better ext interfaces
+    - [ ] more functions exposed to c
+    - [ ] zig extension api
+
 - [ ] **repl**
   - live ast checking
 

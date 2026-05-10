@@ -1,41 +1,40 @@
+struct Asdf {
+	fn aaa() 1 + 1,
+}
+
+const x = Asdf{}
+
 struct Point {
-    x: number = 0
-    y: number = 0
-    const translate = fn(self, dx, dy)
-        Point{x = self.x + dx, y = self.y + dy}
+    x: number = 0,
+    y: number = 0,
+    fn translate(self, dx, dy) do
+        return Point{x = self.x + dx, y = self.y + dy}
+		end,
 }
 
 struct Counter {
-	count: number = 0
+	count: number = 0,
 
-	const inc = fn(self) do
-		self.count += 1
-		return self.count
-	end
-	const value = fn(self) do
+	fn inc(self) do
+		self.count += 1 # returns it implicitly
+	end,
+	fn val(self) do
 		return self.count
 	end
 }
+
 struct Main {
 	# this is gonna be allowed later
-	const main = fn() do
+	fn main() do
 		const counter = Counter{}
-		counter:inc():inc()
+		counter:inc()
 
 		const p = Point{x = 10, y = 20}
 
-		print(counter:value())
+		print(counter:val())
 		print(p:translate(10, 10))
 	end
 }
 
-(Main()).main()
-
-const x = comp read()
-
-print(x)
-
-const x =
-	if 1 == 1
-		"true"
-	else "false"
+const m = Main{}
+print(m.main())

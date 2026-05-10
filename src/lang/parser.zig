@@ -692,12 +692,12 @@ const Parser = struct {
         var end_span = name.span();
 
         while (!self.check(.rsquiggly) and !self.check(.eof)) {
-            if (self.check(.kw_const) or self.check(.kw_let) or self.check(.kw_global)) {
+            // branch const/let
+            if (self.check(.kw_const) or self.check(.kw_let)) {
                 const binding_start = self.advance();
                 const binding_expr = switch (binding_start.type) {
                     .kw_const => try self.parseBinding(.con_expr, binding_start),
                     .kw_let => try self.parseBinding(.let_expr, binding_start),
-                    .kw_global => try self.parseBinding(.global, binding_start),
                     else => return error.UnexpectedToken,
                 };
                 end_span = binding_expr.span;
@@ -705,15 +705,34 @@ const Parser = struct {
                     .con_expr, .let_expr => |binding| try items.append(self.alloc, .{ .binding = binding }),
                     else => return error.UnexpectedToken,
                 }
+                if (!self.match(.comma)) break;
                 continue;
             }
 
+            // branch fn shorthand: fn name(params) body
+            if (self.check(.kw_fn)) {
+                const fn_start = self.advance();
+                const fn_name = try self.expectIdent();
+                const fn_expr = try self.parseFn(fn_start);
+                end_span = fn_expr.span;
+                const target = try self.allocExpr(fn_name.span(), .{ .ident = fn_name.text });
+                const binding: ast.Binding = .{
+                    .target = target,
+                    .value = fn_expr,
+                };
+                try items.append(self.alloc, .{ .binding = binding });
+                if (!self.match(.comma)) break;
+                continue;
+            }
+
+            // branch field: name: type = default
             const field_name = try self.expectIdent();
             var field: ast.StructField = .{ .name = field_name.text };
             if (self.match(.colon)) field.type_name = (try self.expectIdent()).text;
             if (self.match(.assign)) field.default_value = try self.parseStatementExpression(0);
             end_span = if (field.default_value) |value| value.span else field_name.span();
             try items.append(self.alloc, .{ .field = field });
+            if (!self.match(.comma)) break;
         }
 
         const close = try self.expect(.rsquiggly);
