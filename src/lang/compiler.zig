@@ -588,7 +588,8 @@ pub const Compiler = struct {
     const BindingKind = enum { global, let, con };
     fn compileBinding(self: *Compiler, binding: Binding, kind: BindingKind) InternalLowerError!void {
         // local bindings compile to local slots inside function scope
-        if (self.inFunction() and binding.target.expr == .ident and kind != .global)
+        // (all code is inside synthetic __main, so you're always in a function)
+        if (binding.target.expr == .ident and kind != .global)
             return self.compileLocalBinding(binding.target.expr.ident, binding.value, kind != .con);
 
         if (binding.target.expr == .ident) {
@@ -683,14 +684,6 @@ pub const Compiler = struct {
     fn compileTuple(self: *Compiler, items: []const *Node) InternalLowerError!void {
         for (items) |item| try self.compile(item, true);
         try self.emit(.tuple_new, @intCast(items.len));
-    }
-
-    fn inFunction(self: *const Compiler) bool {
-        return self.functions.items.len != 0;
-    }
-
-    fn inNestedFunction(self: *const Compiler) bool {
-        return self.functions.items.len > 1;
     }
 
     fn currentFunctionState(self: *Compiler) ?*FunctionState {
@@ -1207,6 +1200,7 @@ pub const Compiler = struct {
         // stack: loop_result
     }
 
+    // should be replaced with just Operand
     const VarStorage = union(enum) {
         local: Operand,
         global: revo.AtomID,
@@ -1234,36 +1228,22 @@ pub const Compiler = struct {
             );
         }
 
-        const in_fn = self.inNestedFunction();
-
         var loop = try LoopScope.init(self);
         defer loop.deinit();
 
-        const iter_storage: VarStorage = if (in_fn) blk: {
-            const fn_state = &self.functions.items[self.functions.items.len - 1];
-            const iter_slot: Operand = @intCast(fn_state.next_slot);
-            fn_state.next_slot += 1;
-            break :blk .{ .local = iter_slot };
-        } else blk: {
-            const iter_sym = try self.nextTemp("__for_iter");
-            const iter_global = try self.vm.internAtom(iter_sym);
-            break :blk .{ .global = iter_global };
-        };
+        // all code is now inside __main (synthetic top-level function), so always use locals
+        const fn_state = &self.functions.items[self.functions.items.len - 1];
+        const iter_slot: Operand = @intCast(fn_state.next_slot);
+        fn_state.next_slot += 1;
+        const iter_storage: VarStorage = .{ .local = iter_slot };
 
-        const idx_storage: VarStorage = if (in_fn) blk: {
-            const fn_state = &self.functions.items[self.functions.items.len - 1];
-            const idx_slot: Operand = @intCast(fn_state.next_slot);
-            fn_state.next_slot += 1;
-            break :blk .{ .local = idx_slot };
-        } else blk: {
-            const idx_sym = try self.nextTemp("__for_idx");
-            const idx_global = try self.vm.internAtom(idx_sym);
-            break :blk .{ .global = idx_global };
-        };
+        const idx_slot: Operand = @intCast(fn_state.next_slot);
+        fn_state.next_slot += 1;
+        const idx_storage: VarStorage = .{ .local = idx_slot };
 
         // compile iter expression into iter storage
         try self.compile(iter, true);
-        try self.emitStorageStore(iter_storage, !in_fn);
+        try self.emitStorageStore(iter_storage, false);
 
         // init idx to 0
         try self.emitConst(Data.new.num(0));
@@ -1756,8 +1736,8 @@ pub const Compiler = struct {
         name: []const u8,
         items: []const StructItem,
     ) InternalLowerError!void {
-        var ctor_slot: ?LocalSlot = null;
-        if (self.inFunction()) ctor_slot = try self.reuseOrDeclareLocal(name, false);
+        // always in synth toplevel __main, so always declare local
+        const ctor_slot = try self.reuseOrDeclareLocal(name, false);
 
         const fields_id = try self.compileStructFieldTable(items, .fields);
         const defaults_id = try self.compileStructFieldTable(items, .defaults);
@@ -1808,14 +1788,9 @@ pub const Compiler = struct {
         };
 
         try self.compileStructConstructor(name, descriptor_sym);
-        if (ctor_slot) |slot| {
-            self.markLocalInitialized(slot);
-            try self.duplicateRegister();
-            try self.emit(.bind_local, slot);
-        } else {
-            try self.duplicateRegister();
-            try self.emit(.store_global_const, try self.vm.internAtom(name));
-        }
+        self.markLocalInitialized(ctor_slot);
+        try self.duplicateRegister();
+        try self.emit(.bind_local, ctor_slot);
     }
 
     const StructFieldTableKind = enum {
