@@ -19,18 +19,18 @@ pub const CRevoData = extern struct {
     tag: u64,
     value: u64,
 
-    pub fn toData(self: *const CRevoData) Data {
+    pub fn toData(self: *const CRevoData, _: *VM_mod.VM) !Data {
         const tag: memory.Type = @enumFromInt(
             @as(@typeInfo(memory.Type).@"enum".tag_type, @intCast(self.tag)),
         );
-        return inline for (std.meta.fields(Data)) |field| {
-            if (@field(memory.Type, field.name) == tag) {
-                break @unionInit(Data, field.name, if (comptime std.mem.eql(u8, field.name, "number"))
-                    @bitCast(self.value)
-                else
-                    @intCast(self.value));
-            }
-        } else unreachable;
+        return switch (tag) {
+            .number => .{ .number = @bitCast(self.value) },
+            .string => .{ .string = @intCast(self.value) },
+            .atom => .{ .atom = @intCast(self.value) },
+            .function => .{ .function = @intCast(self.value) },
+            .table => .{ .table = @intCast(self.value) },
+            .tuple => .{ .tuple = @intCast(self.value) },
+        };
     }
 
     pub fn ofData(data: Data, vm_alloc: std.mem.Allocator, strings: *const root.VM.Interner, copies: *std.ArrayList([]u8)) !CRevoData {
@@ -40,7 +40,7 @@ pub const CRevoData = extern struct {
                 const v = @field(data, field.name);
                 break if (comptime std.mem.eql(u8, field.name, "string")) blk: {
                     const str_slice = strings.getAssumeAlive(v);
-                    const copy = try vm_alloc.dupe(u8, str_slice);
+                    const copy = try vm_alloc.dupeZ(u8, str_slice);
                     try copies.append(vm_alloc, copy);
                     break :blk @intFromPtr(copy.ptr);
                 } else if (@TypeOf(v) == f64)
@@ -53,20 +53,15 @@ pub const CRevoData = extern struct {
     }
 };
 
-pub fn internFromC(vm: *anyopaque, ptr_val: u64, len: usize) callconv(.c) u64 {
+pub export fn revo_intern(vm: *anyopaque, ptr_val: u64, len: usize) callconv(.c) u64 {
     const vm_typed: *VM_mod.VM = @ptrCast(@alignCast(vm));
     const ptr: [*]u8 = @ptrFromInt(ptr_val);
     const slice = ptr[0..len];
-    const id = vm_typed.strings.adopt(slice) catch return 0;
+    const id = vm_typed.strings.own(slice) catch return 0;
     return @intCast(id);
 }
 
-pub const revo_intern_fn: @TypeOf(&internFromC) = &internFromC;
-comptime {
-    @export(revo_intern_fn, .{ .name = "revo_intern" });
-}
-
-pub fn getGlobalFromC(vm: *anyopaque, name_ptr: u64, name_len: usize) callconv(.c) CRevoData {
+pub export fn revo_getglobal(vm: *anyopaque, name_ptr: u64, name_len: usize) callconv(.c) CRevoData {
     const vm_typed: *VM_mod.VM = @ptrCast(@alignCast(vm));
     const ptr: [*]u8 = @ptrFromInt(name_ptr);
     const name_slice = ptr[0..name_len];
@@ -88,30 +83,20 @@ pub fn getGlobalFromC(vm: *anyopaque, name_ptr: u64, name_len: usize) callconv(.
     return CRevoData{ .tag = @intFromEnum(memory.Type.atom), .value = 0 }; // nil
 }
 
-pub const revo_getglobal_fn: @TypeOf(&getGlobalFromC) = &getGlobalFromC;
-comptime {
-    @export(revo_getglobal_fn, .{ .name = "revo_getglobal" });
-}
-
-pub fn setGlobalFromC(vm: *anyopaque, name_ptr: u64, name_len: usize, value: CRevoData) callconv(.c) void {
+pub export fn revo_setglobal(vm: *anyopaque, name_ptr: u64, name_len: usize, value: CRevoData) callconv(.c) void {
     const vm_typed: *VM_mod.VM = @ptrCast(@alignCast(vm));
     const ptr: [*]u8 = @ptrFromInt(name_ptr);
     const name_slice = ptr[0..name_len];
 
-    const data = value.toData();
+    const data = value.toData(vm_typed) catch return;
     vm_typed.setGlobal(name_slice, data) catch {};
 }
 
-pub const revo_setglobal_fn: @TypeOf(&setGlobalFromC) = &setGlobalFromC;
-comptime {
-    @export(revo_setglobal_fn, .{ .name = "revo_setglobal" });
-}
-
-pub fn tableGetFromC(vm: *anyopaque, table_id: u64, key: CRevoData) callconv(.c) CRevoData {
+pub export fn revo_table_get(vm: *anyopaque, table_id: u64, key: CRevoData) callconv(.c) CRevoData {
     const vm_typed: *VM_mod.VM = @ptrCast(@alignCast(vm));
 
     const tid: memory.TableID = @intCast(table_id);
-    const key_data = key.toData();
+    const key_data = key.toData(vm_typed) catch return CRevoData{ .tag = @intFromEnum(memory.Type.atom), .value = 0 };
 
     const tbl = vm_typed.tables.get(tid) catch return CRevoData{ .tag = @intFromEnum(memory.Type.atom), .value = 0 };
 
@@ -135,25 +120,15 @@ pub fn tableGetFromC(vm: *anyopaque, table_id: u64, key: CRevoData) callconv(.c)
     };
 }
 
-pub const revo_table_get_fn: @TypeOf(&tableGetFromC) = &tableGetFromC;
-comptime {
-    @export(revo_table_get_fn, .{ .name = "revo_table_get" });
-}
-
-pub fn tableSetFromC(vm: *anyopaque, table_id: u64, key: CRevoData, value: CRevoData) callconv(.c) void {
+pub export fn revo_table_set(vm: *anyopaque, table_id: u64, key: CRevoData, value: CRevoData) callconv(.c) void {
     const vm_typed: *VM_mod.VM = @ptrCast(@alignCast(vm));
 
     const tid: memory.TableID = @intCast(table_id);
-    const key_data = key.toData();
-    const value_data = value.toData();
+    const key_data = key.toData(vm_typed) catch return;
+    const value_data = value.toData(vm_typed) catch return;
 
     const tbl = vm_typed.tables.get(tid) catch return;
     tbl.put(tid, vm_typed, key_data, value_data) catch {};
-}
-
-pub const revo_table_set_fn: @TypeOf(&tableSetFromC) = &tableSetFromC;
-comptime {
-    @export(revo_table_set_fn, .{ .name = "revo_table_set" });
 }
 
 pub fn loadC(vm: *VM_mod.VM, lib_path: []const u8) ![]functions.CFunction {
