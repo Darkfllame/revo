@@ -156,6 +156,9 @@ pub fn build(b: *std.Build) void {
         .name = "erevo",
         .root_module = erevo_mod,
     });
-    b.installArtifact(lib);
+
+    const lib_step = b.step("lib", "build the erevo library");
+    lib_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
+
     b.getInstallStep().dependOn(&b.addInstallHeaderFile(b.path("revo.h"), "revo.h").step);
 }

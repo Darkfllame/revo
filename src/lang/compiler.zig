@@ -408,21 +408,38 @@ pub const Compiler = struct {
                 // unwrap (:ok, x) to x if it got here
                 try self.emit(.unwrap_result, 1); // bx=1 for dont propagate errors
             },
+            .test_block => |block| {
+                if (self.test_mode) {
+                    if (!block.skip) {
+                        const message = try std.fmt.allocPrint(
+                            self.vm.runtime.alloc,
+                            "* test \"{s}\"...",
+                            .{block.name},
+                        );
+                        defer self.vm.runtime.alloc.free(message);
+
+                        try self.emit(.load_global, try self.vm.internAtom("print"));
+                        try self.emitConst(try self.vm.ownDataString(message));
+                        try self.emit(.call, 1);
+                        try self.releaseRegister();
+                        try self.compile(block.body, false);
+                    }
+                }
+                try self.emitNil();
+            },
+            .test_suite => |suite| {
+                if (self.test_mode) {
+                    for (suite.tests) |test_node| {
+                        try self.compile(test_node, false);
+                    }
+                }
+                try self.emitNil();
+            },
             //
             // tech debt
             //
             .macro_expr => return self.fail(.UnsupportedSyntax, expr, "syntax must be expanded before compilation"),
             .proc_macro => return self.fail(.UnsupportedSyntax, expr, "proc must be expanded before compilation"),
-            .test_block => |block| {
-                if (self.test_mode) {
-                    try self.emit(.load_global, try self.vm.internAtom("print"));
-                    try self.emitConst(try self.vm.ownDataString(block.name));
-                    try self.emit(.call, 1);
-                    try self.releaseRegister();
-                    try self.compile(block.body, false);
-                }
-                try self.emitNil();
-            },
         }
     }
 

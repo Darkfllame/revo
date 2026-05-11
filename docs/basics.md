@@ -386,15 +386,35 @@ it uses the same module scope as the rest of the file, so it can call local help
 
 ```ruby
 fn add(a, b) a + b
+fn multiply(a, b) a * b
 
+# the body sees the same module scope as the rest of the file
 test "addition" do
-    assert(add(20, 22) == 42)?
+	assert(add(20, 22) == 42)?
+	assert(add(20, 22) != 22)?
 end
 
-test "unwrap result tuples" do
-    const value = (:ok, 10)?
-    assert(value == 10)?
+# you can also skip tests
+test/skip "subtraction (not implemented)" do
+  assert(sub(2, 3) == 5)?
 end
+
+# you can combine them into suites just like this
+suite "math operations" do
+  test "addition" do
+    assert(add(1, 1) == 2)?
+  end
+
+  test "multiply" do
+    assert(multiply(3, 4) == 12)?
+  end
+end
+
+# despite everything, tests always evaluate to :nil
+const x = test "nothing" do
+	4
+end
+assert(x == :nil)?
 ```
 
 if a test body hits `?` on an error, it behaves like the rest of the language and panics at top-level

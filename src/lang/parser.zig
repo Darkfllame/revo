@@ -302,6 +302,7 @@ const Parser = struct {
             .kw_let => self.parseBinding(.let_expr, token),
             .kw_macro => self.parseMacro(token),
             .kw_test => self.parseTest(token),
+            .kw_suite => self.parseSuite(token),
             .kw_proc => self.parseProc(token),
             .kw_struct => self.parseStruct(token),
             .minus => self.parseUnary(.negate, 60, token),
@@ -697,13 +698,55 @@ const Parser = struct {
     }
 
     /// test "name" do expr end
+    /// test.skip "name" do expr end
     fn parseTest(self: *Parser, start: Token) anyerror!*Node {
+        var skip = false;
+        if (self.match(.slash)) {
+            if (self.check(.kw_skip)) {
+                skip = true;
+                _ = self.advance();
+            } else {
+                return error.UnexpectedToken;
+            }
+        }
         const name = try self.expect(.string);
         const body_start = try self.expect(.kw_do);
         const body = try self.parseBlock(body_start);
         return self.allocExpr(Span.merge(start.span(), body.span), .{ .test_block = .{
             .name = name.text,
             .body = body,
+            .skip = skip,
+        } });
+    }
+
+    /// suite "name" do test ... test end
+    fn parseSuite(self: *Parser, start: Token) anyerror!*Node {
+        const name = try self.expect(.string);
+        const body_start = try self.expect(.kw_do);
+        var tests = try std.ArrayList(*Node).initCapacity(self.alloc, 4);
+        var end_span = body_start.span();
+
+        while (!self.check(.kw_end) and !self.check(.eof)) {
+            if (self.check(.kw_test)) {
+                const test_token = self.advance();
+                const test_node = try self.parseTest(test_token);
+                try tests.append(self.alloc, test_node);
+                end_span = test_node.span;
+            } else if (self.check(.kw_suite)) {
+                const suite_token = self.advance();
+                const suite_node = try self.parseSuite(suite_token);
+                try tests.append(self.alloc, suite_node);
+                end_span = suite_node.span;
+            } else {
+                return error.UnexpectedToken;
+            }
+        }
+
+        const end_token = try self.expect(.kw_end);
+        end_span = end_token.span();
+        return self.allocExpr(Span.merge(start.span(), end_span), .{ .test_suite = .{
+            .name = name.text,
+            .tests = try tests.toOwnedSlice(self.alloc),
         } });
     }
 

@@ -1,25 +1,38 @@
 ## > test blocks, in revo
 
-they let you keep small smoke tests next to the code they exercise
+they let you keep small tests
 they only run when you pass `--test`
+a test run will still execute the whole module
 they fail only when you return an error
 
 ##
 fn add(a, b) a + b
+fn multiply(a, b) a * b
 
 # the body sees the same module scope as the rest of the file
 test "addition" do
-	assert(add(20, 22) == 22)?
+	assert(add(20, 22) == 42)?
+	assert(add(20, 22) != 22)?
 end
 
-# `?` still works inside a test body, so result tuples stay the same
-test "unwrap result tuples" do
-	const value = (:ok, 10)?
-	assert(value == 10)?
+# you can also skip tests
+test/skip "subtraction (not implemented)" do
+  assert(sub(2, 3) == 5)?
 end
 
-# when all expressions succeed, the block just falls through
-test "truthy checks" do
-	assert(len("hello") == 5)?
+# you can combine them into suites just like this
+suite "math operations" do
+  test "addition" do
+    assert(add(1, 1) == 2)?
+  end
+
+  test "multiply" do
+    assert(multiply(3, 4) == 12)?
+  end
+end
+
+# despite everything, tests always evaluate to :nil
+const x = test "nothing" do
 	4
 end
+assert(x == :nil)?

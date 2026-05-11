@@ -144,7 +144,11 @@ fn runMain(init: std.process.Init) !void {
         };
         defer vm.deinit();
 
-        const build_result = revo.lang.build(&vm, .{ .name = "<inline>", .text = code }, .{ .test_mode = test_mode }) catch |err| {
+        const build_result = revo.lang.build(
+            &vm,
+            .{ .name = "<inline>", .text = code },
+            .{ .test_mode = test_mode },
+        ) catch |err| {
             printPrettyError(init, "compilation - {}", .{err});
             return error.CompilationError;
         };
