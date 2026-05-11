@@ -136,6 +136,7 @@ loading_modules: ModuleSet,
 debug_infos: std.ArrayList(DebugInfo),
 pending_debug_info_id: ?DebugInfoID = null,
 panic_message: ?[]const u8 = null,
+panic_span: ?Span = null,
 runtime_message: ?[]const u8 = null,
 gc_instr_counter: usize = 0,
 perf: PerfCounters = .{},
@@ -537,6 +538,7 @@ pub fn setPanicMessage(self: *VM, message: []const u8) !void {
 pub fn clearPanicMessage(self: *VM) void {
     if (self.panic_message) |message| self.runtime.alloc.free(message);
     self.panic_message = null;
+    self.panic_span = null;
 }
 
 pub fn setRuntimeMessage(self: *VM, message: []const u8) !void {
@@ -778,6 +780,7 @@ fn evalFailure(self: *VM, err: EvalError) EvalFailure {
 
     // struct ctor panics originate in generated wrapper code; prefer the user callsite
     if (kind == .Panic and self.panic_message != null) {
+        if (self.panic_span) |span| primary_span = span;
         const msg = self.panic_message.?;
         const is_struct_panic = std.mem.indexOf(u8, msg, " for struct `") != null or
             (std.mem.indexOf(u8, msg, " on `") != null and std.mem.indexOf(u8, msg, " expected ") != null);
@@ -1218,6 +1221,10 @@ fn returnRegister(self: *VM, instr: Instruction) EvalError!void {
         if (tuple.items.len >= 1) {
             const tag = tuple.items[0];
             if (tag == .atom and tag.atom == revo.core_atoms.atom_id(.err)) {
+                self.panic_span = if (self.currentDebugInfo()) |debug|
+                    self.spanAtPc(debug, if (self.currentFiber().pc > 0) self.currentFiber().pc - 1 else 0)
+                else
+                    null;
                 if (tuple.items.len >= 2) {
                     var buf = try std.ArrayList(u8).initCapacity(self.runtime.alloc, 16);
                     defer buf.deinit(self.runtime.alloc);
@@ -1717,28 +1724,48 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             const propagate_errors = instr.bx == 0;
 
             // if val is (:err, ...) is true, return early
-            if (val == .tuple) {
-                const tuple = try self.tuples.get(val.tuple);
-                if (tuple.items.len > 0) {
-                    const tag = tuple.items[0];
-                    if (tag == .atom and tag.atom == revo.core_atoms.atom_id(.err)) {
-                        if (propagate_errors) {
-                            // return immediately with error err tuple
-                            try self.returnRegister(.{ .op = .ret, .a = instr.a });
-                            return;
-                        }
-                        // otherwise just pass thru (don't unwrap errors unless propagating)
-                        return;
-                    }
-                    // check if (:ok, v) then extract
-                    if (tag == .atom and tag.atom == revo.core_atoms.atom_id(.ok)) {
+            if (val != .tuple) return;
+
+            const tuple = try self.tuples.get(val.tuple);
+            if (tuple.items.len == 0) return;
+
+            const tag = tuple.items[0];
+
+            // branch (:err, e)
+            if (tag == .atom and tag.atom == revo.core_atoms.atom_id(.err)) {
+                if (propagate_errors) {
+                    if (self.currentFiber().frames.items.len == 2) {
                         if (tuple.items.len > 1) {
-                            try self.writeRegister(instr.a, tuple.items[1]);
+                            var buf = try std.ArrayList(u8).initCapacity(self.runtime.alloc, 16);
+                            defer buf.deinit(self.runtime.alloc);
+                            tuple.items[1].write(&buf, self, .display) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => return error.Panic,
+                            };
+                            try self.setPanicMessage(buf.items);
                         }
-                        return;
+                        self.panic_span = if (self.currentDebugInfo()) |debug|
+                            self.spanAtPc(debug, if (self.currentFiber().pc > 0) self.currentFiber().pc - 1 else 0)
+                        else
+                            null;
+                        return error.Panic;
                     }
+
+                    try self.returnRegister(.{ .op = .ret, .a = instr.a });
+                    return;
                 }
+                // otherwise just pass thru (don't unwrap unless propagating)
+                return;
             }
+
+            // check if (:ok, v) then extract
+            if (tag == .atom and tag.atom == revo.core_atoms.atom_id(.ok)) {
+                if (tuple.items.len > 1) {
+                    try self.writeRegister(instr.a, tuple.items[1]);
+                }
+                return;
+            }
+
             // otherwise just pass thru
         },
         .jump_if_not_nil_and_not_err => {

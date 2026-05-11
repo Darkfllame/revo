@@ -482,6 +482,14 @@ test "metamethod failures are runtime errors not host panics" {
     , .Panic, "boom");
 }
 
+test "errs returned at toplevel report proper span" {
+    try t.expectRuntimeFailure(
+        \\ do
+        \\ (:err, "boom")?
+        \\ end
+    , .Panic, 2, 2, "boom");
+}
+
 test "metamethod __newindex for field assignment" {
     try t.top_number(
         \\ const mt = {__newindex = fn(self, key, value) table.rawset(self, key, 99)}
