@@ -85,20 +85,23 @@ the fundamental types are:
     only `:false`, `0`, and `:nil` are falsey - everything else (including `""` and `{}`) is truthy
 
     for this reason, the language does not have exceptions/errors and uses
-    (:err, :ErrorName) and (:ok, value) together with pattern matching, `:unwrap()` and macros to
-    handle errors. there are helpers to construct and check these:
+    (:err, :ErrorName) and (:ok, value) together with pattern matching, `?`, `orelse`, `:unwrap()`,
+    and macros to handle errors. toplevel `?` panics instead of returning silently. there are
+    helpers to construct and check these:
     ```ruby
-    ok(42)             # (:ok, 42)
-    err(:FileNotFound) # (:err, :FileNotFound)
-    ok?(ok(42))        # :true
-    err?(err(:Bad))    # :true
+    ok!(42)             # (:ok, 42)
+    err!(:FileNotFound) # (:err, :FileNotFound)
+    ok?(ok!(42))        # :true
+    err?(err!(:Bad))    # :true
 
-    some(42)           # (:some, 42)
+    some!(42)           # (:some, 42)
     (:none,)           # the none value
-    some?(some(42))    # :true
+    some?(some!(42))    # :true
     none?((:none,))    # :true
 
     ok(42):unwrap()    # 42  (panics on :err)
+    (:err, :bad)?      # panics at toplevel
+    (:err, :bad) orelse 0
     ```
 - functions
     a function is very simple. it (technically) is just one expression, to which you can give parameters
@@ -337,46 +340,62 @@ all((1,2,3), fn(x) x > 0)                # :true
 any((1,2,3), fn(x) x > 2)                # :true
 ```
 
-# metatables
+# errors
 
-metatables let you customize table behavior via metamethods. set one with `set_meta`:
+revo does not have exceptions and tries to crash only in extreme scenarios
+
+this means, errors are treated as values
+if a function may error, it's likely to return either
+`(:ok, value)`
+... or `(:err, :ErrorName)`
+
+see examples/errors.rv for full examples
+
+# propagation: `?` and `orelse`
+revo has two operators for error handling: `?` for early return and `orelse` for defaults
 ```ruby
-const mt = {
-    __tostring = fn(self) "MyObj",
-    __display  = fn(self) "MyObj", # used by fmt %v, falls back to __tostring
-    __len      = fn(self) 42,
-    __add      = fn(a, b) 100,
-    __sub      = fn(a, b) 200,
-    __index    = fn(self, key) 0,        # called when a field is missing
-    __newindex = fn(self, key, val) nil, # intercept assignment
-}
-const t = set_metatable({}, mt)
-
-len(t)    # 42
-t + 5     # 100
-t.missing # 0
+fn load_config(path) do
+	const f = fs.open(path)? # has to succeed
+	const raw = f:read() orelse "<none>" # can fall back
+	parse_json(raw)
+end
 ```
 
-plain table fields always resolve before `__index` is called. metatable fields (like methods)
-resolve before `__index` too, which is how `obj:method()` works without any extra magic:
+## the ? operator
+
+`?` propagates errors up the call stack. if an expression is an error (`(:err, ...)`), the function returns immediately with that error. otherwise, the value is unwrapped. at toplevel, the error panics instead of returning silently.
+
 ```ruby
-const mt = {get_x = fn(self) self.x}
-const t = set_metatable({x = 12}, mt)
-t:get_x() # 12
+fn parse_int(s) match tonumber(s)
+	| (:ok, n) n
+	| (:err, e) return (:err, e)
+end
+
+fn parse_int_short(s) do
+	tonumber(s)?
+end
+
+# in a sequence
+fn parse_version(str) do
+	const parts = str:split(".")
+	const major = tonumber(parts[1])?
+	const minor = tonumber(parts[2])?
+	(:ok, (major, minor))
+end
 ```
 
-forloops can also iterate over any object that has an `__iter` metamethod set
+the toplevel is implicitly a function, so returning an error from it panics too
+
+## orelse
+
+`orelse` assigns a default value when an expression is nil or an error
 
 ```ruby
-range = set_metatable({start=1, end=10}, {
-  __iter = fn(self) do
-        return fn() do 
-            self.start = self.start + 1
-            self.start <= self.end
-        end
-    end
-})
-for x in range print(x)
+# fallback to default
+const name = read_file("name.txt") orelse "unknown"
+const x = (:err, :not_found) orelse 0  # x = 0
+const y = nil orelse 0                 # y = 0
+const z = (:ok, 42) orelse 0           # z = 42
 ```
 
 # fibers and channels
@@ -489,7 +508,9 @@ print(b.count) # 41 (same cached module)
 module-level `let`/`const` are private to the module. only the returned value is shared with
 the importer.
 
-# comptime
+# advanced
+
+## comptime
 
 `comp` evaluates an expression at compile time and replaces it with the constant result in the
 bytecode. compile time happens both when executing a script directly and when running
@@ -501,23 +522,23 @@ print(comp (1 < 2))                # :true
 print(comp read())                 # only runs at compilation time
 ```
 
-# macros
+## macros
 
 macros are compile-time code transformers. they use pattern matching to capture and rearrange
 syntax, which lets you extend the language without any runtime cost:
 ```ruby
-# macro `pattern` `template`
-# %e:expr   - capture any expression
-# %n:ident  - capture an identifier
-# %s:str    - capture a string literal
+## macro `pattern` `template`
+## %e:expr   - capture any expression
+## %n:ident  - capture an identifier
+## %s:str    - capture a string literal
 
 const unless! = macro `(%cond:expr %body:expr)` `if %cond :nil else %body`
 unless!(5 < 0, :positive) # :positive
 
-# repetition groups
-# %GROUP(...)* - zero or more
-# %GROUP(...)+ - one or more
-# %GROUP(...)? - optional
+## repetition groups
+## %GROUP(...)* - zero or more
+## %GROUP(...)+ - one or more
+## %GROUP(...)? - optional
 
 const sum_all! = macro `(%first:expr %REST(%item:expr)*)` `%first %REST(+ %item)`
 sum_all!(10, 15, 17) # 42
@@ -528,4 +549,46 @@ some macros come preloaded:
 unless!(:false, 42)                   # 42
 all_true!(1, :true, "t", 1)           # :true
 all_true!(1, :true, "t", 1, :false)   # :false
+```
+
+## metatables
+
+metatables let you customize table behavior via metamethods. set one with `set_meta`:
+```ruby
+const mt = {
+    __tostring = fn(self) "MyObj",
+    __display  = fn(self) "MyObj", # used by fmt %v, falls back to __tostring
+    __len      = fn(self) 42,
+    __add      = fn(a, b) 100,
+    __sub      = fn(a, b) 200,
+    __index    = fn(self, key) 0,        # called when a field is missing
+    __newindex = fn(self, key, val) nil, # intercept assignment
+}
+const t = set_metatable({}, mt)
+
+len(t)    # 42
+t + 5     # 100
+t.missing # 0
+```
+
+plain table fields always resolve before `__index` is called. metatable fields (like methods)
+resolve before `__index` too, which is how `obj:method()` works without any extra magic:
+```ruby
+const mt = {get_x = fn(self) self.x}
+const t = set_metatable({x = 12}, mt)
+t:get_x() # 12
+```
+
+forloops can also iterate over any object that has an `__iter` metamethod set
+
+```ruby
+range = set_metatable({start=1, end=10}, {
+  __iter = fn(self) do
+        return fn() do 
+            self.start = self.start + 1
+            self.start <= self.end
+        end
+    end
+})
+for x in range print(x)
 ```
