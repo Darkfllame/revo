@@ -29,6 +29,7 @@ pub const TokenType = enum {
     kw_const,
     kw_let,
     kw_macro,
+    kw_test,
     kw_struct,
     kw_fn,
     kw_if,
@@ -94,6 +95,7 @@ pub const TokenType = enum {
         .{ "comp", .kw_comp },
         .{ "proc", .kw_proc },
         .{ "macro", .kw_macro },
+        .{ "test", .kw_test },
         .{ "struct", .kw_struct },
         .{ "fn", .kw_fn },
         .{ "if", .kw_if },
@@ -799,6 +801,19 @@ test "lexes struct keyword" {
         .kw_do,
         .ident,
         .colon,
+        .ident,
+        .kw_end,
+        .eof,
+    });
+}
+
+test "lexes test keyword" {
+    try t.expectTypes(
+        \\ test "smoke" do ok? end
+    , &.{
+        .kw_test,
+        .string,
+        .kw_do,
         .ident,
         .kw_end,
         .eof,

@@ -301,6 +301,7 @@ const Parser = struct {
             .kw_global => self.parseBinding(.global, token),
             .kw_let => self.parseBinding(.let_expr, token),
             .kw_macro => self.parseMacro(token),
+            .kw_test => self.parseTest(token),
             .kw_proc => self.parseProc(token),
             .kw_struct => self.parseStruct(token),
             .minus => self.parseUnary(.negate, 60, token),
@@ -695,6 +696,17 @@ const Parser = struct {
         return error.UnexpectedToken;
     }
 
+    /// test "name" do expr end
+    fn parseTest(self: *Parser, start: Token) anyerror!*Node {
+        const name = try self.expect(.string);
+        const body_start = try self.expect(.kw_do);
+        const body = try self.parseBlock(body_start);
+        return self.allocExpr(Span.merge(start.span(), body.span), .{ .test_block = .{
+            .name = name.text,
+            .body = body,
+        } });
+    }
+
     fn parseStruct(self: *Parser, start: Token) anyerror!*Node {
         const name = try self.expectIdent();
         _ = try self.expect(.lsquiggly);
@@ -820,6 +832,14 @@ const Parser = struct {
             "{ [a] = 5, \"b\" = 6, c = 7 }",
             "(table (entry[ a] 5) (entry \"b\" 6) (entry c 7))",
         );
+    }
+
+    test "parser test block parses" {
+        try testing_helpers.expectPrinted(
+            \\test "smoke" do
+            \\    ok?
+            \\end
+        , "(test smoke (block ok?))");
     }
 
     /// (expr, expr, ...) or ()

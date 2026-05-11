@@ -191,6 +191,7 @@ pub const Expr = union(enum) {
     },
     import_expr: *Node,
     macro_expr: struct { pattern: []const u8, template: []const u8 },
+    test_block: struct { name: []const u8, body: *Node },
     block: []*Node,
     tuple: []*Node,
     tuple_pattern: []*Node,
@@ -354,6 +355,12 @@ pub const Node = struct {
                 try writer.writeByte(')');
                 try sep(writer, depth, 1);
                 try pm.body.printAt(writer, child(depth));
+                try close(writer, depth);
+            },
+            .test_block => |block| {
+                try writer.print("(test {s}", .{block.name});
+                try sep(writer, depth, 1);
+                try block.body.printAt(writer, child(depth));
                 try close(writer, depth);
             },
             .con_expr => |binding| try binding.printAt(writer, "const", depth),
