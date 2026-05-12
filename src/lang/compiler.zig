@@ -20,8 +20,6 @@ const ProgramCounter = revo.ProgramCounter;
 const Operand = revo.Operand;
 const Register = revo.opcode.Register;
 
-const FnExpr = @FieldType(Expr, "fn_expr");
-
 //
 // compiler result types
 //
@@ -946,13 +944,6 @@ pub const Compiler = struct {
     //
     // function & loop compilation, shared closure setup/teardown
     //
-    const FnOptions = struct {
-        params: []const ast.FnParam,
-        body: *const Node,
-        name: []const u8,
-        is_loop: bool,
-        loop_sym: revo.AtomID = 0, // only used when is_loop
-    };
 
     fn compileFn(
         self: *Compiler,
@@ -1838,12 +1829,6 @@ pub const Compiler = struct {
         types,
     };
 
-    const StructDescriptorValue = union(enum) {
-        ident: []const u8,
-        string: []const u8,
-        table: revo.TableID,
-    };
-
     fn compileStructFieldTable(
         self: *Compiler,
         items: []const StructItem,
@@ -1872,23 +1857,6 @@ pub const Compiler = struct {
         };
 
         return table_id;
-    }
-
-    fn compileStructDescriptorKey(
-        self: *Compiler,
-        descriptor_sym: revo.AtomID,
-        key_name: []const u8,
-        value: StructDescriptorValue,
-    ) InternalLowerError!void {
-        try self.emit(.load_global, descriptor_sym);
-        try self.emitConst(Data.new.atom(try self.vm.internAtom(key_name)));
-        switch (value) {
-            .ident => |ident| try self.emit(.load_global, try self.vm.internAtom(ident)),
-            .string => |str| try self.emitConst(try self.vm.ownDataString(str)),
-            .table => |table_id| try self.emitConst(Data.new.table(table_id)),
-        }
-        try self.emit(.table_set, 0);
-        try self.releaseRegister();
     }
 
     fn constValueFromNode(self: *Compiler, node: *const Node) InternalLowerError!Data {
@@ -1994,16 +1962,6 @@ pub const Compiler = struct {
             .op = .load_const,
             .a = dst,
             .bx = idx,
-        };
-        try self.instructions.append(self.alloc, instr);
-        try self.spans.append(self.alloc, self.active_span);
-    }
-
-    fn emitMove(self: *Compiler, dst: LocalSlot, src: LocalSlot) InternalLowerError!void {
-        const instr: Instruction = .{
-            .op = .move,
-            .a = @intCast(dst),
-            .b = @intCast(src),
         };
         try self.instructions.append(self.alloc, instr);
         try self.spans.append(self.alloc, self.active_span);

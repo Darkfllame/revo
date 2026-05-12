@@ -62,10 +62,6 @@ fn readLine(init: std.process.Init) ![]u8 {
     };
 }
 
-fn freeLine(line: [*:0]u8) void {
-    libc.free(line);
-}
-
 var sigint_received: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 fn sigintHandler(_: c_int) callconv(.c) void {

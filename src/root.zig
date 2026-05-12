@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 pub const pretty = @import("./pretty.zig");
+fn asdf() void {}
 
 pub const Runtime = struct {
     alloc: std.mem.Allocator,
@@ -197,13 +198,6 @@ pub inline fn isFalse(val: Data) bool {
     return switch (val) {
         .number => |n| n == 0,
         .atom => |id| id <= core_atoms.lastFalse,
-        else => false,
-    };
-}
-
-pub inline fn isNil(data: Data) bool {
-    return switch (data) {
-        .atom => |a| a == core_atoms.atom_id(.nil),
         else => false,
     };
 }

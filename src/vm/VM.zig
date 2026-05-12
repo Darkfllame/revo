@@ -838,20 +838,6 @@ pub fn evalFailure(self: *VM, err: EvalError) EvalFailure {
     return failure;
 }
 
-pub fn callMetamethodByAtom(self: *VM, a: Data, b: Data, atom: mem.AtomID) !bool {
-    if (try self.getMetamethodByAtom(a, atom)) |mm| {
-        self.perf.metamethod_calls += 1;
-        _ = try self.callFunction(mm, &.{ a, b });
-        return true;
-    }
-    if (try self.getMetamethodByAtom(b, atom)) |mm| {
-        self.perf.metamethod_calls += 1;
-        _ = try self.callFunction(mm, &.{ a, b });
-        return true;
-    }
-    return false;
-}
-
 pub fn callBinaryMetamethodByAtom(self: *VM, a: Data, b: Data, atom: mem.AtomID) !?Data {
     if (try self.getMetamethodByAtom(a, atom)) |mm| {
         self.perf.metamethod_calls += 1;
@@ -1167,12 +1153,6 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
             self.currentFiber().pc = proto.addr;
         },
     }
-}
-
-fn regOffset(base: opcode.Register, offset: usize) !opcode.Register {
-    const val = @as(usize, base) + offset;
-    if (val > std.math.maxInt(opcode.Register)) return error.InvalidBytecode;
-    return @intCast(val);
 }
 
 fn callFieldRegister(self: *VM, instr: Instruction) EvalError!void {
@@ -1798,13 +1778,6 @@ pub const setStructInstanceTable = lookup.setStructInstanceTable;
 pub const runModule = module.runModule;
 pub const metamethodTruthy = lookup.metamethodTruthy;
 
-pub fn listAtoms(self: *VM) void {
-    std.debug.print("atoms:\n", .{});
-    var it = self.atoms.keyIterator();
-    while (it.next()) |atom| {
-        std.debug.print("{s}\n", .{atom.*});
-    }
-}
 // gc
 pub fn markData(self: *VM, data: Data) void {
     switch (data) {

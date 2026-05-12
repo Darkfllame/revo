@@ -66,17 +66,6 @@ fn compileCheckedMode(vm: *revo.VM, source: []const u8, test_mode: bool) ![]revo
     };
 }
 
-fn runChecked(vm: *revo.VM, source: []const u8) !void {
-    const result = try vm.runReport();
-    switch (result) {
-        .ok => {},
-        .err => |failure| {
-            printRuntimeFailure(source, failure);
-            return error.RuntimeFailure;
-        },
-    }
-}
-
 fn runTopModuleChecked(vm: *revo.VM, source: []const u8, source_name: []const u8) !void {
     const result = try revo.module.runModuleReport(vm, source_name, source);
     switch (result) {

@@ -27,11 +27,6 @@ pub fn run(vm: *vm_mod.VM) !void {
     }
 }
 
-pub fn runTop(vm: *vm_mod.VM) !revo.Data {
-    try run(vm);
-    return vm.mainResult();
-}
-
 pub fn expectFailure(vm: *vm_mod.VM, expected: vm_mod.EvalErrorKind) !void {
     const result = try vm.runReport();
     switch (result) {

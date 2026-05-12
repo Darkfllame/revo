@@ -506,42 +506,12 @@ const AstSubstituter = struct {
         };
     }
 
-    fn substituteSlice(self: *const AstSubstituter, items: []const *Node) ExpandError!*[]Node {
-        var out = try std.ArrayList(*Node).initCapacity(self.allocator, items.len);
-        defer out.deinit(self.allocator);
-        for (items) |item| try out.append(self.allocator, try self.substitute(item));
-        return out.toOwnedSlice(self.allocator);
-    }
-
     fn alloc(self: *const AstSubstituter, span: Span, expr: ast.Expr) ExpandError!*Node {
         const n = try self.allocator.create(Node);
         n.* = .{ .span = span, .expr = expr };
         return n;
     }
 };
-
-fn substituteTemplate(
-    allocator: std.mem.Allocator,
-    span: Span,
-    template: *Node,
-    singles: []const SingleCapture,
-    groups: []const GroupCapture,
-) ExpandError!*Node {
-    _ = span;
-    var replacements = std.StringHashMap(*Node).init(allocator);
-    defer replacements.deinit();
-
-    for (singles) |cap| try replacements.put(cap.name, cap.expr);
-    for (groups) |group| {
-        for (group.items, 0..) |item, idx| {
-            const key = try std.fmt.allocPrint(allocator, "{s}_{d}", .{ group.item_name, idx });
-            try replacements.put(key, item);
-        }
-    }
-
-    var subst = AstSubstituter{ .allocator = allocator, .replacements = &replacements };
-    return subst.substitute(template);
-}
 
 //
 // template instantiation

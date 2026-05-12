@@ -43,19 +43,6 @@ fn programOf(program: ?*ErevoProgram) ?*Program {
     return if (program) |p| @ptrCast(@alignCast(p)) else null;
 }
 
-fn toC(data: revo.Data) ErevoData {
-    const tag = @intFromEnum(std.meta.activeTag(data));
-    const value = switch (data) {
-        .number => |n| @as(u64, @bitCast(n)),
-        .string => |v| @as(u64, @intCast(v)),
-        .atom => |v| @as(u64, @intCast(v)),
-        .function => |v| @as(u64, @intCast(v)),
-        .table => |v| @as(u64, @intCast(v)),
-        .tuple => |v| @as(u64, @intCast(v)),
-    };
-    return .{ .tag = tag, .value = value };
-}
-
 fn clearError(vm: *VM) void {
     if (vm.last_error) |msg| vm.alloc.free(msg);
     vm.last_error = null;
@@ -164,7 +151,19 @@ fn runProgram(vm: *VM, program: *Program, out_value: ?*ErevoData) bool {
 
     return switch (result) {
         .ok => blk: {
-            if (out_value) |out| out.* = toC(runtime_vm.currentResult());
+            if (out_value) |out| {
+                const cr = runtime_vm.currentResult();
+                const tag = @intFromEnum(std.meta.activeTag(cr));
+                const value = switch (cr) {
+                    .number => |n| @as(u64, @bitCast(n)),
+                    .string => |v| @as(u64, @intCast(v)),
+                    .atom => |v| @as(u64, @intCast(v)),
+                    .function => |v| @as(u64, @intCast(v)),
+                    .table => |v| @as(u64, @intCast(v)),
+                    .tuple => |v| @as(u64, @intCast(v)),
+                };
+                out.* = .{ .tag = tag, .value = value };
+            }
             break :blk true;
         },
         .err => |failure| blk: {

@@ -1261,11 +1261,6 @@ const expr_start_tokens = makeTokenSet(&.{
     .lsquiggly,
 });
 
-/// "foo" -> foo
-fn stripQuotes(text: []const u8, comptime count: usize) []const u8 {
-    return text[count .. text.len - count];
-}
-
 /// expr allows bare call after it (ident, field, call, fn_expr)
 fn exprAllowsBareCall(expr: *const Node) bool {
     return switch (expr.expr) {

@@ -90,33 +90,6 @@ pub fn defineVariadic(
     };
 }
 
-pub fn defineRet(
-    comptime types: []const TypeSpec,
-    comptime ret_type: TypeSpec,
-    impl: NativeFn,
-) NativeFunc {
-    return .{
-        .arity = types.len,
-        .param_types = types,
-        .ret_type = ret_type,
-        .func = impl,
-    };
-}
-
-pub fn defineVariadicRet(
-    comptime types: []const TypeSpec,
-    comptime ret_type: TypeSpec,
-    impl: NativeFn,
-) NativeFunc {
-    return .{
-        .arity = types.len,
-        .variadic = true,
-        .param_types = types,
-        .ret_type = ret_type,
-        .func = impl,
-    };
-}
-
 pub const FuncDef = struct { f: NativeFunc, name: []const u8 };
 
 pub const ResultTag = enum { ok, err };
@@ -155,22 +128,6 @@ fn isBoolAtom(atom: mem.AtomID) bool {
 
 pub fn dataToString(data: Data) []const u8 {
     return @tagName(data);
-}
-
-pub fn expectArgs(args: []const Data, need: []const TypeSpec) bool {
-    if (args.len != need.len) return false;
-    for (need, 0..) |want, i| {
-        if (!want.matches(args[i])) return false;
-    }
-    return true;
-}
-
-pub fn expectArity(args: []const Data, expected: usize) bool {
-    return args.len == expected;
-}
-
-pub fn expectAtLeastArity(args: []const Data, min: usize) bool {
-    return args.len >= min;
 }
 
 pub fn resultTuple(vm: *VM, comptime tag: ResultTag, value: Data) !NativeResult {
@@ -214,23 +171,6 @@ pub fn tupleTag(value: Data, vm: *VM) ?mem.AtomID {
 
 pub fn isResultTag(value: Data, expected: mem.AtomID, vm: *VM) bool {
     return tupleTag(value, vm) == expected;
-}
-
-pub fn asErrorTuple(value: Data, vm: *VM) ?revo.tuple.Tuple {
-    const id = switch (value) {
-        .tuple => |tuple_id| tuple_id,
-        else => return null,
-    };
-    const tuple = vm.tuples.get(id) catch return null;
-    if (tuple.items.len == 0) return null;
-    const tag = switch (tuple.items[0]) {
-        .atom => |atom| atom,
-        else => return null,
-    };
-    const ok_tag = revo.core_atoms.atom_id(.ok);
-    const err_tag = revo.core_atoms.atom_id(.err);
-    if (tag == ok_tag or tag == err_tag) return null;
-    return tuple.*;
 }
 
 pub fn registerFunctions(vm: *VM, funcs: []const FuncDef) !void {
