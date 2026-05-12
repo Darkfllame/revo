@@ -22,6 +22,7 @@ pub fn register_stdlib(vm: *revo.VM) !void {
         .{ .name = "tonumber", .f = define(&[_]TypeSpec{.any}, tonumber) },
         .{ .name = "assert", .f = define(&[_]TypeSpec{.any}, assert_) },
         .{ .name = "set_debug", .f = define(&[_]TypeSpec{.table}, meta.set_debug) },
+        .{ .name = "debug", .f = define(&[_]TypeSpec{}, debug_) },
         .{ .name = "@range", .f = define(&[_]TypeSpec{ .number, .number, .number }, range_) },
         .{ .name = "@range_from", .f = define(&[_]TypeSpec{ .number, .number }, range_from_) },
         .{ .name = "@struct_new", .f = define(&[_]TypeSpec{ .table, .table }, struct_new) },
@@ -361,6 +362,51 @@ pub fn dotest(args: []const Data, vm: *VM) !NativeResult {
         std.debug.print("* failed: {s}\n", .{buf.items});
     }
     return .{ .ok = Data.new.nil() };
+}
+
+pub fn debug_(args: []const Data, vm: *VM) !NativeResult {
+    _ = args;
+
+    const out_id = try vm.tables.create();
+    const out = try vm.tables.get(out_id);
+
+    const flags_id = try vm.tables.create();
+    const flags = try vm.tables.get(flags_id);
+    try flags.putRaw(.{ .atom = try vm.internAtom("dump") }, Data.new.boolean(vm.debug.dump));
+    try flags.putRaw(.{ .atom = try vm.internAtom("trace") }, Data.new.boolean(vm.debug.trace));
+    try flags.putRaw(.{ .atom = try vm.internAtom("instr") }, Data.new.boolean(vm.debug.each_instr));
+    try flags.putRaw(.{ .atom = try vm.internAtom("stack") }, Data.new.boolean(vm.debug.each_stack));
+    try out.putRaw(.{ .atom = try vm.internAtom("flags") }, Data.new.table(flags_id));
+
+    const fiber = vm.currentFiber();
+    try out.putRaw(.{ .atom = try vm.internAtom("fiber_id") }, Data.new.num(fiber.id));
+    try out.putRaw(.{ .atom = try vm.internAtom("pc") }, Data.new.num(fiber.pc));
+    try out.putRaw(.{ .atom = try vm.internAtom("stack_depth") }, Data.new.num(fiber.slots.items.len));
+    try out.putRaw(.{ .atom = try vm.internAtom("frame_depth") }, Data.new.num(fiber.frames.items.len));
+    try out.putRaw(.{ .atom = try vm.internAtom("program_len") }, Data.new.num(fiber.program.len));
+
+    if (vm.currentDebugInfo()) |info| {
+        try out.putRaw(.{ .atom = try vm.internAtom("has_debug_info") }, Data.new.boolean(true));
+        try out.putRaw(.{ .atom = try vm.internAtom("source_name") }, try vm.ownDataString(info.source_name));
+        try out.putRaw(.{ .atom = try vm.internAtom("source") }, try vm.ownDataString(info.source));
+        try out.putRaw(.{ .atom = try vm.internAtom("span_count") }, Data.new.num(info.spans.len));
+    } else {
+        try out.putRaw(.{ .atom = try vm.internAtom("has_debug_info") }, Data.new.boolean(false));
+        try out.putRaw(.{ .atom = try vm.internAtom("source_name") }, Data.new.nil());
+        try out.putRaw(.{ .atom = try vm.internAtom("source") }, Data.new.nil());
+        try out.putRaw(.{ .atom = try vm.internAtom("span_count") }, Data.new.num(0));
+    }
+
+    try out.putRaw(
+        .{ .atom = try vm.internAtom("panic_message") },
+        if (vm.panic_message) |msg| try vm.ownDataString(msg) else Data.new.nil(),
+    );
+    try out.putRaw(
+        .{ .atom = try vm.internAtom("runtime_message") },
+        if (vm.runtime_message) |msg| try vm.ownDataString(msg) else Data.new.nil(),
+    );
+
+    return .okData(Data.new.table(out_id));
 }
 
 /// > len(arg0: any) -> number|nil
