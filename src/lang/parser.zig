@@ -56,7 +56,6 @@ pub fn parseTokensReport(alloc: std.mem.Allocator, tokens: []const Token) anyerr
     var parser = Parser{
         .alloc = alloc,
         .tokens = tokens,
-        .comps = try .initCapacity(alloc, 2),
     };
     const expr = parser.parse() catch |err| switch (err) {
         error.UnexpectedToken => {
@@ -97,7 +96,6 @@ pub fn parseTokensReport(alloc: std.mem.Allocator, tokens: []const Token) anyerr
 const Parser = struct {
     alloc: std.mem.Allocator,
     tokens: []const Token,
-    comps: std.ArrayList(*Node),
     pos: usize = 0,
     stop_token: ?TokenType = null,
     allow_bare_calls: bool = true,
@@ -453,7 +451,6 @@ const Parser = struct {
         if (is_macro) _ = self.advance();
 
         const expr = try self.parseExpression(BP.comp);
-        try self.comps.append(self.alloc, expr);
         return self.allocExpr(
             Span.merge(token.span(), expr.span),
             .{ .comp_block = .{ .expr = expr, .is_macro = is_macro } },
