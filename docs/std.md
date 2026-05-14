@@ -45,6 +45,126 @@ please note that the docgen script, used to generate this, is not yet done and i
 </div>
 # core
 
+### - `fmt(format: string, args: any...) -> string`
+format string with %v, %d, %? specifiers
+%v: display value, %d: as number, %?: debug repr
+
+```ruby
+fmt("hello %v", "world")
+fmt("val: %v, num: %d", "x", 42)
+```
+
+### - `table:len() -> number`
+returns length of table array part
+
+### - `inspect(any) -> any`
+prints one value and returns it back
+
+### - `get_metatable(arg0: any)`
+
+### - `set_metatable(tbl: table, meta: table) -> table`
+returns table with the mt set
+
+```ruby
+t = {}
+mt = {__len = fn() 42}
+set_metatable(t, mt)
+```
+
+### - `typeof(arg0: any) -> string`
+returns type of arg0 as string
+possible values: nil, number, string, atom, function, table, tuple
+
+### - `table:tostring() -> string`
+converts table to display string
+
+### - `tonumber(arg0: any) -> NativeResult`
+converts value to number
+accepts number (passthrough) or string (parsed)
+errors on other types
+
+### - `expect(what: any) -> !what`
+used in tests
+
+return the value back if truthy, otherwise (:err, :AssertionFailed)
+
+### - `expect_eq(what: any) -> !:ok`
+panics if the value is falsy
+
+### - `assert(what: any) -> what`
+panics if the value is falsy
+
+### - `assert(what: any) -> what`
+panics if the value is falsy
+
+### - `set_debug(arg0: table)`
+
+### - `table:__debug() -> string`
+converts table to debug string
+
+### - `@range(start: number, step: number, stop: number) -> tuple`
+creates a range tuple (start, step, stop)
+
+### - `@range_from(start: number, step: number) -> tuple`
+creates a range tuple (start, step) without stop
+
+### - `@struct_new(arg0: table, arg1: table)`
+
+### - `unwrap(result: tuple) -> any`
+unwraps result tuple, panics if not :ok
+
+### - `@dotest(arg0: string, arg1: function) -> NativeResult`
+internal, do not use pls
+
+### - `@dosuite(arg0: string, arg1: function) -> NativeResult`
+internal, pls dont use. runs a test suite
+
+### - `@eval(arg0: string)`
+
+### - `chan(capacity?: number) -> tuple`
+creates a new channel with optional buffer size
+
+```ruby
+chan()        # unbuffered
+chan(5)       # buffer of 5
+```
+
+### - `send(chan: tuple, value: any) -> atom`
+sends value to channel
+
+### - `recv(chan: tuple) -> any`
+receives value from channel, parks if empty
+
+### - `sleep(ms: number) -> parked`
+sleeps current fiber for given milliseconds
+parks fiber instead of blocking
+
+### - `print(args: any...) -> atom`
+prints values to stdout with space separator
+
+```ruby
+print("hello", 42, "world")
+```
+
+### - `panic(args: any...) -> error`
+panics with given message
+
+```ruby
+panic("something went wrong")
+```
+
+### - `cload(path: string) -> nil`
+you should use import() instead. likely going to remove this
+loads a C extension lib and registers its functions as globals
+
+### - `read`
+
+### - `cwd`
+
+### - `system(arg0: table)`
+
+### - `import(arg0: string)`
+
 ---
 # string
 

@@ -40,10 +40,10 @@ pub fn register_stdlib(vm: *revo.VM) !void {
         .{ .name = "print", .f = defineVariadic(&[_]TypeSpec{}, print) },
         .{ .name = "panic", .f = defineVariadic(&[_]TypeSpec{}, panic_) },
         .{ .name = "c_use", .f = define(&[_]TypeSpec{.string}, cload) },
-        .{ .name = "read", .f = defineVariadic(&[_]TypeSpec{}, read_) },
-        .{ .name = "cwd", .f = define(&[_]TypeSpec{}, cwd_) },
+        .{ .name = "read", .f = defineVariadic(&[_]TypeSpec{}, read) },
+        .{ .name = "cwd", .f = define(&[_]TypeSpec{}, cwd) },
         .{ .name = "system", .f = define(&[_]TypeSpec{.table}, system_) },
-        .{ .name = "import", .f = define(&[_]TypeSpec{.string}, import_) },
+        .{ .name = "import", .f = define(&[_]TypeSpec{.string}, import) },
     });
     const argv_id = try vm.tables.create();
     const argv = try vm.tables.get(argv_id);
@@ -829,7 +829,7 @@ pub fn system_(tbl: []const Data, vm: *VM) !NativeResult {
     return .Ok(vm, .{ .tuple = try vm.tuples.create(&[2]Data{ so, se }) });
 }
 
-pub fn read_(args: []const Data, vm: *VM) !NativeResult {
+pub fn read(args: []const Data, vm: *VM) !NativeResult {
     if (args.len > 1) return .errArity(args.len, 1);
 
     var delimiter: u8 = '\n';
@@ -893,14 +893,14 @@ pub fn read_(args: []const Data, vm: *VM) !NativeResult {
     return resultTuple(vm, .ok, try vm.adoptDataString(result_str));
 }
 
-pub fn cwd_(args: []const Data, vm: *VM) !NativeResult {
+pub fn cwd(args: []const Data, vm: *VM) !NativeResult {
     _ = args;
     const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(vm.runtime.io, ".", vm.runtime.alloc);
     defer vm.runtime.alloc.free(cwd_path);
     return .{ .ok = try vm.ownDataString(cwd_path) };
 }
 
-pub fn import_(args: []const Data, vm: *VM) !NativeResult {
+pub fn import(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 1) return .{ .err = .{ .wrong_arity = .{ .got = args.len, .expected = 1 } } };
 
     const raw_path = switch (args[0]) {

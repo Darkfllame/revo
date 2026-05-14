@@ -155,27 +155,25 @@ def render_function(name, types, doc, ret, variadic=False, type_hint=None):
 root_text = ROOT_ZIG.read_text()
 extract_functions(root_text)
 
-# parse root reg
+# parse root reg entries from registerFunctions(vm, &[_]FuncDef{ ... })
 root_registry = []
 reg_pat = re.compile(
-    r'\.name\s*=\s*"([^"]+)".*?'
-    r"\.f\s*=\s*(define(?:Variadic)?)\s*\("
-    r"\s*&(?:\.|\[_\]TypeSpec)\{([^}]*)\}\s*,\s*"
-    r"\s*&(?:\.|\[_\]FuncDef)\{([^}]*)\}\s*,\s*"
-    r"((?:@import\([^)]+\)\.)?[A-Za-z_][A-Za-z0-9_.]*)"
-    r"\s*\)",
+    r'\{\s*\.name\s*=\s*"([^"]+)"\s*,\s*'
+    r"\.f\s*=\s*(define(?:Variadic)?)\s*\(\s*"
+    r"&\[_\]TypeSpec\{([^}]*)\}\s*,\s*"
+    r"((?:@import\([^)]+\)\.)?[A-Za-z_][A-Za-z0-9_.]*)\s*"
+    r"\)\s*\}",
     re.DOTALL,
 )
 
 for m in reg_pat.finditer(root_text):
-    impl = m.group(4).split(".")[-1]
     types = [
         t.strip().lstrip(".") for t in m.group(3).split(",") if t.strip().lstrip(".")
     ]
     root_registry.append(
         {
             "name": m.group(1),
-            "impl": impl,
+            "impl": m.group(4).split(".")[-1],
             "types": types,
             "variadic": "Variadic" in m.group(2),
         }
@@ -218,7 +216,7 @@ for mod_name in MOD_ORDER:
 
     # group by table name from registerTableFunctions
     table_entries = {}  # table_name: [entries]
-    
+
     # extract from registerTableFunctions with tbl names
     reg_table_pat = re.compile(
         r"registerTableFunctions\s*\(vm,\s*\"([^\"]+)\"\s*,\s*&\[_\]root\.FuncDef\{(.+?)\}\s*\)",
@@ -228,14 +226,15 @@ for mod_name in MOD_ORDER:
         table_name = match.group(1)
         if table_name not in table_entries:
             table_entries[table_name] = []
-        
+
         for func_def in re.split(r"(?=\.name\s*=)", match.group(2)):
             if not func_def.strip():
                 continue
 
             name_match = re.search(r'\.name\s*=\s*"([^"]+)"', func_def)
             impl_match = re.search(
-                r"(?:std_lib\.)?root\.define(?:Variadic)?\s*\([^)]*,\s*(\w+)\s*\)", func_def
+                r"(?:std_lib\.)?root\.define(?:Variadic)?\s*\([^)]*,\s*(\w+)\s*\)",
+                func_def,
             )
             types_match = re.search(r"&(?:\.|[_\]])\{([^}]+)\}", func_def)
 
@@ -262,14 +261,15 @@ for mod_name in MOD_ORDER:
     for match in reg_fn_pat.finditer(mod_text):
         if mod_name not in table_entries:
             table_entries[mod_name] = []
-        
+
         for func_def in re.split(r"(?=\.name\s*=)", match.group(1)):
             if not func_def.strip():
                 continue
 
             name_match = re.search(r'\.name\s*=\s*"([^"]+)"', func_def)
             impl_match = re.search(
-                r"(?:std_lib\.)?root\.define(?:Variadic)?\s*\([^)]*,\s*(\w+)\s*\)", func_def
+                r"(?:std_lib\.)?root\.define(?:Variadic)?\s*\([^)]*,\s*(\w+)\s*\)",
+                func_def,
             )
             types_match = re.search(r"&(?:\.|[_\]])\{([^}]+)\}", func_def)
 
@@ -321,7 +321,8 @@ for mod_name in MOD_ORDER:
 
             types_match = re.search(r"&(?:\.|[_\]])\{([^}]+)\}", method_str)
             impl_match = re.search(
-                r"(?:std_lib\.)?root\.define(?:Variadic)?\s*\([^)]*,\s*(\w+)\s*\)", method_str
+                r"(?:std_lib\.)?root\.define(?:Variadic)?\s*\([^)]*,\s*(\w+)\s*\)",
+                method_str,
             )
 
             if types_match and impl_match:
@@ -344,7 +345,7 @@ for mod_name in MOD_ORDER:
         entries = table_entries[table_name]
         if not entries:
             continue
-        
+
         # dedup if same name exists as both global and mm keep only global
         seen_names = {}
         deduped = []
@@ -380,4 +381,3 @@ for mod_name in MOD_ORDER:
             )
 
 print("\n".join(output))
-
