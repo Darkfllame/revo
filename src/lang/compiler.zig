@@ -147,11 +147,9 @@ pub const Compiler = struct {
 
     const Temps = struct {
         pipe: usize = 0,
-        loop_result: usize = 0,
         match_subject: usize = 0,
         bind: usize = 0,
         match_temp: usize = 0,
-        struct_desc: usize = 0,
     };
 
     vm: *VM,
@@ -523,6 +521,22 @@ pub const Compiler = struct {
         , 402);
     }
 
+    test "pipe into hash method call" {
+        try testing.top_number(
+            \\ const x = {
+            \\   foo = fn(self, n) n + 40
+            \\ }
+            \\ x |> :foo(2)
+        , 42);
+
+        try testing.top_number(
+            \\ const x = {
+            \\   bar = fn(self) 100
+            \\ }
+            \\ x |> :bar
+        , 100);
+    }
+
     test "nested closure captures grandparent local" {
         try testing.top_number(
             \\ fn outer() do
@@ -670,10 +684,9 @@ pub const Compiler = struct {
         self.temps.pipe += 1;
         const tmp_atom = try self.vm.internAtom(tmp_name);
         try self.emit(.store_global, tmp_atom);
-        const ident_name = try std.fmt.allocPrint(self.alloc, "__pipe_tmp_{d}", .{self.temps.pipe - 1});
         const left_node = Node{
             .span = self.active_span,
-            .expr = .{ .ident = ident_name },
+            .expr = .{ .ident = tmp_name },
         };
         try self.compilePipe(&left_node, right);
     }
@@ -1528,23 +1541,22 @@ pub const Compiler = struct {
         param_count: usize,
         loop_sym: revo.AtomID,
     ) InternalLowerError!void {
-        const result_name = try std.fmt.allocPrint(self.alloc, "__loop_result_{d}", .{self.temps.loop_result});
-        defer self.alloc.free(result_name);
-        self.temps.loop_result += 1;
-        const result_sym = try self.vm.internAtom(result_name);
+        const result_slot = self.slot_allocators.items[self.slot_allocators.items.len - 1];
+        self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
+        if (self.max_registers < result_slot + 1) self.max_registers = result_slot + 1;
 
         if (param_count > 0) {
-            try self.emit(.store_global, result_sym);
+            try self.emit(.bind_local, result_slot);
         } else {
             try self.releaseRegister();
         }
         try self.emit(.load_global, loop_sym);
 
         if (param_count == 1) {
-            try self.emit(.load_global, result_sym);
+            try self.emit(.load_local, result_slot);
         } else if (param_count > 1) {
             for (0..param_count) |idx| {
-                try self.emit(.load_global, result_sym);
+                try self.emit(.load_local, result_slot);
                 try self.emit(.tuple_get_const, idx);
             }
         }
@@ -1928,6 +1940,11 @@ pub const Compiler = struct {
     ) InternalLowerError!void {
         // always in synth toplevel __main, so always declare local
         const descriptor_slot = try self.reuseOrDeclareLocal(name, false);
+        if (self.slot_allocators.items.len == 0) return error.InvalidBytecode;
+        const idx = self.slot_allocators.items.len - 1;
+        const descriptor_temp = self.slot_allocators.items[idx];
+        self.slot_allocators.items[idx] += 1;
+        self.reserveLocalSlots();
 
         const fields_id = try self.compileStructFieldTable(items, .fields);
         const defaults_id = try self.compileStructFieldTable(items, .defaults);
@@ -1939,13 +1956,7 @@ pub const Compiler = struct {
         const name_const = try self.vm.addConstant(try self.vm.ownDataString(name));
 
         try self.emit(.table_new, 0);
-        try self.duplicateRegister();
-        const descriptor_name = try std.fmt.allocPrint(self.alloc, "__struct_desc_{d}", .{self.temps.struct_desc});
-        defer self.alloc.free(descriptor_name);
-        self.temps.struct_desc += 1;
-        const descriptor_sym = try self.vm.internAtom(descriptor_name);
-        try self.emit(.store_global, descriptor_sym);
-        try self.releaseRegister();
+        try self.emitStorageStore(.{ .local = descriptor_temp }, false);
 
         // set all desc fields
         inline for (&[_]struct { key: []const u8, const_id: usize }{
@@ -1954,7 +1965,7 @@ pub const Compiler = struct {
             .{ .key = "__defaults", .const_id = defaults_const },
             .{ .key = "__types", .const_id = types_const },
         }) |entry| {
-            try self.emit(.load_global, descriptor_sym);
+            try self.emitStorageLoad(.{ .local = descriptor_temp });
             try self.emitConst(Data.new.atom(try self.vm.internAtom(entry.key)));
             try self.emitLoadConst(entry.const_id);
             try self.emit(.table_set, 0);
@@ -1967,7 +1978,7 @@ pub const Compiler = struct {
                 if (binding.target.expr != .ident)
                     return self.fail(.UnsupportedSyntax, expr, "assignment target must be named");
                 const key_atom = try self.vm.internAtom(binding.target.expr.ident);
-                try self.emit(.load_global, descriptor_sym);
+                try self.emitStorageLoad(.{ .local = descriptor_temp });
                 try self.emitConst(Data.new.atom(key_atom));
                 if (binding.value.expr == .fn_expr) {
                     try self.compileFn(binding.value.expr.fn_expr.params, binding.value.expr.fn_expr.body, binding.target.expr.ident, null);
@@ -1980,7 +1991,7 @@ pub const Compiler = struct {
         };
 
         // __call mm for the desc bound to struct name
-        try self.emit(.load_global, descriptor_sym);
+        try self.emitStorageLoad(.{ .local = descriptor_temp });
         self.markLocalInitialized(descriptor_slot);
         try self.duplicateRegister();
         try self.emit(.bind_local, descriptor_slot);

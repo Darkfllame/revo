@@ -1559,6 +1559,21 @@ test "structs do not leak" {
     , .UndefinedVariable);
 }
 
+test "struct descriptors stay off globals" {
+    var vm = try VM.init(t.runtime());
+    defer vm.deinit();
+
+    const built = try lang.build(&vm, .{
+        .text =
+        \\ struct User { name: string = "hi" }
+    }, .{});
+    try std.testing.expect(built == .ok);
+    defer alloc.free(built.ok.instructions);
+    defer alloc.free(built.ok.spans);
+
+    try std.testing.expect(!vm.globals.contains(try vm.internAtom("__struct_desc_0")));
+}
+
 test "top module globals do not leak into imported module" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

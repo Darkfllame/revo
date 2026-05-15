@@ -255,16 +255,72 @@ const Parser = struct {
                 // consumethe pipe token
                 _ = self.advance();
 
-                // specialcase fns and match on rhs: `value |> fn(...) body`
-                // and `value |> match | pat ...`
-                const next_tok = self.peek().type;
+                // unused in dot and hash but here for dedup
                 var right: *Node = undefined;
-                if (next_tok == .kw_fn) {
-                    right = try self.parseFnWithBodyMin(self.advance(), bp + 1);
-                } else if (next_tok == .kw_match) {
-                    right = try self.parseMatch(self.advance(), left);
-                } else {
-                    right = try self.parseExpression(bp + 1);
+                const into_what = self.peek().type;
+                switch (into_what) {
+                    // pipe into field call like `value |> .method(args)`
+                    .dot => {
+                        // consume .dot
+                        _ = self.advance();
+
+                        const method_tok = self.advance();
+                        var args: []*Node = &.{};
+                        if (self.check(.lparen)) {
+                            _ = try self.expect(.lparen);
+                            args = try self.parseDelimitedExprList(.rparen);
+                            _ = try self.expect(.rparen);
+                        }
+                        const callee = try self.allocExpr(method_tok.span(), .{
+                            .field = .{
+                                .object = left,
+                                .name = method_tok.text,
+                            },
+                        });
+                        left = try self.allocExpr(
+                            Span.merge(
+                                left.span,
+                                if (args.len > 0) args[args.len - 1].span else method_tok.span(),
+                            ),
+                            .{ .call = .{
+                                .callee = callee,
+                                .args = args,
+                                .implicit_self = false,
+                            } },
+                        );
+                        continue;
+                    },
+                    // pipe into hash method call like `value |> :method(args)`
+                    .hash => {
+                        const hash_tok = self.advance();
+                        const method_name = hash_tok.text[1..];
+                        var args: []*Node = &.{};
+                        if (self.check(.lparen)) {
+                            _ = try self.expect(.lparen);
+                            args = try self.parseDelimitedExprList(.rparen);
+                            _ = try self.expect(.rparen);
+                        }
+                        const callee = try self.allocExpr(hash_tok.span(), .{
+                            .field = .{
+                                .object = left,
+                                .name = method_name,
+                            },
+                        });
+                        left = try self.allocExpr(
+                            Span.merge(left.span, if (args.len > 0) args[args.len - 1].span else hash_tok.span()),
+                            .{ .call = .{
+                                .callee = callee,
+                                .args = args,
+                                .implicit_self = true,
+                            } },
+                        );
+                        continue;
+                    },
+                    // specialcase fns and match on rhs: `value |> fn(...) body`
+                    .kw_fn => right = try self.parseFnWithBodyMin(self.advance(), bp + 1),
+                    // and `value |> match | pat ...`
+                    .kw_match => right = try self.parseMatch(self.advance(), left),
+                    else => right = try self.parseExpression(bp + 1),
                 }
 
                 left = try self.allocExpr(Span.merge(left.span, right.span), switch (op) {
@@ -1122,7 +1178,7 @@ const Parser = struct {
 
     fn canContinueExpression(self: *Parser, left: *const Node) bool {
         const t = self.peek().type;
-        if (t == .dot or t == .lbracket or t == .assign or t == .dotdot or t == .pipe_forward or t == .pipe_forward_ok or t == .pipe_forward_err) return true;
+        if (t == .dot or t == .lbracket or t == .assign or t == .dotdot or t == .pipe_forward or t == .pipe_forward_ok or t == .pipe_forward_err or t == .hash) return true;
         if (t == .plus_assign or t == .minus_assign or t == .star_assign or t == .slash_assign or t == .percent_assign) return true;
         if (logicalBindingPower(t) != null) return true;
         if (infixBindingPower(t) != null) return true;

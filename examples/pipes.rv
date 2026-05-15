@@ -62,5 +62,30 @@ fn ff(what)
   |>? fn(_) "is correct"
   |>~ fn(_) "is incorrect"
 
-ff(2) |> inspect
-ff(4) |> inspect
+ff(2)
+ff(4)
+
+"hi"
+  |> :upper
+  |> assert_eq("HI")
+
+"hello"
+  |> :sub(1, 2)
+  |> assert_eq("el")
+
+let t = {
+  inc = fn(self) self.counter += 1,
+  counter = 5,
+  double = fn(a) a * 2
+}
+
+let one = t
+  |> .double(21)
+  |> assert_eq(42)
+
+t |> :inc
+assert_eq(t.counter, 6)
+
+# wont need a new pipe token
+t |>~ :might_err
+

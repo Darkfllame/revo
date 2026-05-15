@@ -308,14 +308,20 @@ match safe_div(10, 0)
 pipe passes a value as the first argument to the next function or match expression:
 ```ruby
 fn double(x) x * 2
-fn add_one(x) x + 1
+fn and_one(x) x + 1
+fn and_both(a, b) x + a + b
 
 21 |> double     # 42
 "hello" |> print
 
 # chain with intermediate vars
-const val = 5 |> add_one # 6
+const val = 5 |> and_one # 6
+const val = 5 |> and_both(1, 2) # 8
 val |> double            # 12
+
+# you can call a method with the : syntax
+"hello" |> :upper # "HELLO"
+"hello" |> :sub(1,2) # "el"
 
 # polymorphism, with match!
 fn poly(x)
@@ -326,6 +332,21 @@ fn poly(x)
 
 assert_eq(poly("asdf"), "str")
 assert_eq(poly(42), "num")
+
+# and ad-hoc polymorphism
+fn morph(a: any) tostring(a)
+struct Foo {
+  age: number = 67,
+  fn morph(self) fmt("a %d-yr old", self.age),
+}
+struct Bar {
+  name: string = "molly",
+  fn morph(self) fmt("someone named %s", self.name),
+}
+
+let x = foo_or_bar_or_garbage()
+# calls own, like Foo/Bar.morph(x), x:morph() (but really x.morph(x))
+x |> :morph
 ```
 
 they apply to most of the language, since everything will likely return something useful 
