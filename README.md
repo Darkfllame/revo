@@ -1,20 +1,31 @@
-# revo
+<div align="center">
+<h1>revo</h1>
+
+![written in Zig](https://img.shields.io/badges/written%20in-Zig-orange)
+
 [homepage & docs](https://gills.pages.dev/revo)
 | [github](https://github.com/if-not-nil/revo)
 | [learn](https://gills.pages.dev/revo/basics)
 
-**revo** is an expressive, dynamically-typed language that is made\
-to balance semantic freedom and readability
+</div>
 
-see [homepage](https://gills.pages.dev/revo) and [docs/basics](https://gills.pages.dev/revo/basics/)
+**revo** is an expressive, dynamically-typed language that is made to balance semantic freedom and readability.
+
+check out the [homepage](https://gills.pages.dev/revo),
+the [basics guide](https://gills.pages.dev/revo/basics/),
+and the [blog](https://gills.pages.dev/revo/blog/apples/)
+
+# sections
 
 - [installation](#installing)
 - [cli reference](#cli-reference)
   - [development](#development)
   - [credits](#credits)
+- [license](#license)
 
 # installing
-you will need [zig `0.16.0`](https://ziglang.org/download)
+
+you will need [zig `0.16.0`](https://ziglang.org/download) to build revo
 
 ```bash
 git clone https://github.com/if-not-nil/revo && cd revo
@@ -23,7 +34,7 @@ cp ./zig-out/bin/revo ~/.local/bin/revo
 revo -h
 ```
 
-binary releases not yet available
+binary releases are not yet available
 
 # usage
 
@@ -82,14 +93,7 @@ zig build test --summary all -Dtest_filter="some test name filter"
 
 recommending to a friend is always greatly appreciated. any contributions are welcome!
 
-see `TODO.md` for plans
-
-if adding an std function, please add a doc-comment that can get parsed by `scripts/docgen.py`
-
-please do not submit LLM-authored code if you do not understand it,\
-can't explain it or have not tested it. describe the request in your own words,\
-rather than pulling in a wall of AI-generated text.\
-this greatly reduces maintenance burden
+see [CONTRIBUTING.md](./CONTRIBUTING.md) for more details
 
 ## credits
 
@@ -98,3 +102,7 @@ this greatly reduces maintenance burden
 **optional repl backends, not vendored but linked dynamically**
 - [libedit](https://thrysoee.dk/editline/) - BSD
 - [GNU readline](https://tiswww.case.edu/php/chet/readline/rltop.html) - GPLv3
+
+# license
+
+revo is licensed under [MIT.](https://mit-license.org/) see the [LICENSE.txt](./LICENSE.txt) file for details
