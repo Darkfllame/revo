@@ -211,12 +211,8 @@ pub fn init(runtime: revo.Runtime) !VM {
 // combined poll fn that calls net poll an async backend poll
 fn default_io_poll(vm: *VM, timeout_ms: i32) anyerror!bool {
     var woke = try revo.std_net.pollIoWaiters(vm, timeout_ms);
-    if (vm.runtime.async_backend) |bb| {
-        if (bb.data != null) {
-            const backend_woke = try revo.async_backend_posix.poll_all(vm, 0);
-            woke = woke or backend_woke;
-        }
-    }
+    if (revo.has_async_backend)
+        woke = woke or try revo.async_backend_impl.poll_all(@ptrCast(vm), 0);
     return woke;
 }
 
@@ -746,7 +742,7 @@ pub fn runReport(self: *VM) !EvalResult {
 
         if (!has_sleepers and !has_waiting) break;
 
-        if (has_io_waiters or (self.runtime.async_backend != null and has_waiting)) {
+        if (has_io_waiters or (revo.has_async_backend and has_waiting)) {
             const timeout_ms: i32 = if (self.sched.nextSleepDelayNs(self.schedNowMonotonicNs())) |delay_ns|
                 @as(i32, @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(i32)))))
             else

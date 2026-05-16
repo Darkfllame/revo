@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const revo = @import("../root.zig");
 const root = @import("root.zig");
 const meta = @import("meta.zig");
@@ -37,6 +38,9 @@ const RecvWaitToken = struct {
 };
 
 fn setSocketNonBlocking(handle: std.posix.fd_t) !void {
+    if (builtin.target.os.tag == .windows) {
+        return;
+    }
     const flags = std.c.fcntl(handle, std.posix.F.GETFL, @as(c_int, 0));
     if (flags == -1) return error.Unexpected;
     const new_flags: c_int = flags | @as(c_int, @bitCast(std.posix.O{ .NONBLOCK = true }));
@@ -261,6 +265,9 @@ pub fn register(vm: *VM) !void {
 
 // poll io waiters, poll and wake fibers
 pub fn pollIoWaiters(vm: *VM, timeout_ms: i32) !bool {
+    if (builtin.target.os.tag == .windows) {
+        return false;
+    }
     var poll_fds = try std.ArrayList(std.posix.pollfd).initCapacity(vm.runtime.alloc, 4);
     defer poll_fds.deinit(vm.runtime.alloc);
 
@@ -467,6 +474,7 @@ fn listen_fn(args: []const Data, vm: *VM) !NativeResult {
 /// > socket:accept() -> socket
 /// accepts an incoming client connection on a server socket
 fn accept_fn(args: []const Data, vm: *VM) !NativeResult {
+    if (builtin.target.os.tag == .windows) return error.OsNotSupported;
     const socket_data = Data{ .table = args[0].table };
 
     if (!try isServer(socket_data, vm)) return try root.resultTuple(vm, .err, revo.core_atoms.data(.NotServerSocket));
@@ -490,7 +498,7 @@ fn accept_fn(args: []const Data, vm: *VM) !NativeResult {
             .buffer = null,
             .max_bytes = 0,
         };
-        _ = try revo.async_backend_posix.submit(backend, @ptrCast(vm), job);
+        _ = try revo.async_backend_impl.submit(backend, @ptrCast(vm), job);
         // park current fiber; backend must wake it
         vm.sched.parkCurrent(.{ .io = .{ .wait_id = @intCast(server.socket.handle) } });
         return .parked();
@@ -532,6 +540,7 @@ fn accept_fn(args: []const Data, vm: *VM) !NativeResult {
 /// > socket:send(data: string) -> number
 /// sends data over the socket, returns number of bytes sent
 fn send_fn(args: []const Data, vm: *VM) !NativeResult {
+    if (builtin.target.os.tag == .windows) return error.OsNotSupported;
     const socket_data = Data{ .table = args[0].table };
     const message = vm.stringValue(args[1].string);
 
@@ -557,7 +566,7 @@ fn send_fn(args: []const Data, vm: *VM) !NativeResult {
             .buffer = null,
             .max_bytes = 0,
         };
-        _ = try revo.async_backend_posix.submit(backend, @ptrCast(vm), job);
+        _ = try revo.async_backend_impl.submit(backend, @ptrCast(vm), job);
         vm.sched.parkCurrent(.{ .io = .{ .wait_id = @intCast(handle) } });
         return .parked();
     }
@@ -633,6 +642,7 @@ fn parseRecvOptions(opts_data: Data, vm: *VM) !RecvWaitToken {
 /// > socket:recv(opts: table) -> string
 /// receives data according to opts.mode (:read_some | :read_all | :read_line)
 fn recv(args: []const Data, vm: *VM) !NativeResult {
+    if (builtin.target.os.tag == .windows) return error.OsNotSupported;
     const socket_data = Data{ .table = args[0].table };
     const opts_data = args[1];
 

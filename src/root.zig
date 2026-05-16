@@ -3,7 +3,11 @@ const builtin = @import("builtin");
 pub const pretty = @import("./pretty.zig");
 pub const std_net = @import("./std/net.zig");
 pub const async_backend = @import("./runtime/async_backend.zig");
-pub const async_backend_posix = @import("./runtime/async_backend_posix.zig");
+pub const async_backend_impl = if (builtin.target.os.tag == .windows)
+    @import("./runtime/async_backend_none.zig")
+else
+    @import("./runtime/async_backend_posix.zig");
+pub const has_async_backend = builtin.target.os.tag != .windows;
 
 pub const Runtime = struct {
     alloc: std.mem.Allocator,

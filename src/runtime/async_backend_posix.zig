@@ -199,7 +199,8 @@ fn drain_pipe(vm: *revo.VM, bs: *BackendState) !bool {
     return any;
 }
 
-fn poll_impl(vm: *revo.VM, timeout_ms: i32) anyerror!bool {
+fn poll_impl(vm_ptr: *anyopaque, timeout_ms: i32) anyerror!bool {
+    const vm: *revo.VM = @ptrCast(@alignCast(vm_ptr));
     var woke_any = false;
     var used_timeout = timeout_ms;
 
@@ -222,6 +223,6 @@ fn poll_impl(vm: *revo.VM, timeout_ms: i32) anyerror!bool {
     return woke_any or io_woke;
 }
 
-pub fn poll_all(vm: *revo.VM, timeout_ms: i32) anyerror!bool {
+pub fn poll_all(vm: *anyopaque, timeout_ms: i32) anyerror!bool {
     return poll_impl(vm, timeout_ms);
 }
