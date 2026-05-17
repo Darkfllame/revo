@@ -430,13 +430,13 @@ fn ensureAbsoluteSlot(self: *VM, slot: usize) !void {
     @memset(slots.items[old_len..], revo.core_atoms.data(.missing));
 }
 
-fn readRegister(self: *VM, reg: opcode.Register) !Data {
+pub fn readRegister(self: *VM, reg: opcode.Register) !Data {
     const slot = try self.absoluteRegisterIndex(reg);
     if (slot >= self.currentFiber().slots.items.len) return revo.core_atoms.data(.missing);
     return self.currentFiber().slots.items[slot];
 }
 
-fn writeRegister(self: *VM, reg: opcode.Register, value: Data) !void {
+pub fn writeRegister(self: *VM, reg: opcode.Register, value: Data) !void {
     const slot = try self.absoluteRegisterIndex(reg);
     try self.ensureAbsoluteSlot(slot);
     self.currentFiber().slots.items[slot] = value;
@@ -823,6 +823,10 @@ pub inline fn callFunction(self: *VM, callee: Data, args: []const Data) EvalErro
     return self.callFunctionParts(callee, null, args);
 }
 
+pub fn compare(self: *VM, lh: Data, rh: Data) std.math.Order {
+    return compare_impl.compare(self, lh, rh);
+}
+
 pub fn evalFailure(self: *VM, err: EvalError) EvalFailure {
     const kind: EvalErrorKind = switch (err) {
         inline else => |tag| @field(EvalErrorKind, @errorName(tag)),
@@ -929,38 +933,6 @@ pub fn getMetatableId(self: *VM, val: Data) !?mem.TableID {
     };
 }
 
-fn compareTag(lh: Data, rh: Data) std.math.Order {
-    const left = std.meta.activeTag(lh);
-    const right = std.meta.activeTag(rh);
-    return std.math.order(@intFromEnum(left), @intFromEnum(right));
-}
-
-pub fn compare(self: *VM, lh: Data, rh: Data) std.math.Order {
-    if (lh == .number and rh == .number) {
-        return std.math.order(lh.as_number() catch return .eq, rh.as_number() catch return .eq);
-    }
-    const tag_order = compareTag(lh, rh);
-    if (tag_order != .eq) return tag_order;
-
-    return switch (lh) {
-        .number => |n| std.math.order(n, rh.number),
-        .string => |id| std.mem.order(u8, self.stringValue(id), self.stringValue(rh.string)),
-        .atom => |atom_id| std.math.order(atom_id, rh.atom),
-        .function => |id| std.math.order(id, rh.function),
-        .table => |id| std.math.order(id, rh.table),
-        .tuple => |id| blk: {
-            const left_tuple = self.tuples.get(id) catch return .eq;
-            const right_tuple = self.tuples.get(rh.tuple) catch return .eq;
-            for (left_tuple.items, 0..) |item, idx| {
-                if (idx >= right_tuple.items.len) break :blk .gt;
-                const item_order = self.compare(item, right_tuple.items[idx]);
-                if (item_order != .eq) break :blk item_order;
-            }
-            break :blk std.math.order(left_tuple.items.len, right_tuple.items.len);
-        },
-    };
-}
-
 pub const EvalError = error{
     StackUnderflow,
     StackOverflow,
@@ -979,26 +951,10 @@ pub const EvalError = error{
     InvalidTuple,
     OutOfMemory,
 } || root.functions.NativeError;
+
 fn writeAbsoluteSlot(self: *VM, slot: usize, value: Data) !void {
     try self.ensureAbsoluteSlot(slot);
     self.currentFiber().slots.items[slot] = value;
-}
-
-fn evalRegisterCompare(
-    self: *VM,
-    instr: Instruction,
-    comptime name: []const u8,
-    comptime fallback_name: ?[]const u8,
-    comptime negate_fallback: bool,
-    comptime pred: fn (std.math.Order) bool,
-) EvalError!void {
-    const lhs = try self.readRegister(instr.b);
-    const rhs = try self.readRegister(instr.c);
-    if (try self.metamethodTruthy(lhs, rhs, name, fallback_name, negate_fallback)) |result| {
-        try self.writeRegister(instr.a, Data.new.boolean(result));
-        return;
-    }
-    try self.writeRegister(instr.a, Data.new.boolean(pred(self.compare(lhs, rhs))));
 }
 
 fn callRegister(self: *VM, instr: Instruction) EvalError!void {
@@ -1464,36 +1420,7 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             try self.setRuntimeMessageFmt("cannot negate {s}", .{revo.std_lib.dataToString(v)});
             return error.IncompatibleTypes;
         },
-        .eq => try self.evalRegisterCompare(instr, "__eq", null, false, struct {
-            fn pred(order: std.math.Order) bool {
-                return order == .eq;
-            }
-        }.pred),
-        .neq => try self.evalRegisterCompare(instr, "__ne", "__eq", true, struct {
-            fn pred(order: std.math.Order) bool {
-                return order != .eq;
-            }
-        }.pred),
-        .lt => try self.evalRegisterCompare(instr, "__lt", null, false, struct {
-            fn pred(order: std.math.Order) bool {
-                return order == .lt;
-            }
-        }.pred),
-        .gt => try self.evalRegisterCompare(instr, "__gt", null, false, struct {
-            fn pred(order: std.math.Order) bool {
-                return order == .gt;
-            }
-        }.pred),
-        .lte => try self.evalRegisterCompare(instr, "__lte", "__gt", true, struct {
-            fn pred(order: std.math.Order) bool {
-                return order != .gt;
-            }
-        }.pred),
-        .gte => try self.evalRegisterCompare(instr, "__gte", "__lt", true, struct {
-            fn pred(order: std.math.Order) bool {
-                return order != .lt;
-            }
-        }.pred),
+        inline .eq, .neq, .lt, .gt, .lte, .gte => |op| try compare_impl.eval(self, instr, op),
         .@"and" => try self.writeRegister(
             instr.a,
             Data.new.boolean(!revo.isFalse(try self.readRegister(instr.b)) and !revo.isFalse(try self.readRegister(instr.c))),
@@ -1949,6 +1876,7 @@ pub const EvalResult = root.debug.EvalResult;
 const Frame = root.functions.Frame;
 const FunctionPool = root.functions.FunctionPool;
 pub const lookup = root.lookup;
+const compare_impl = @import("compare.zig");
 
 pub const memory = root.memory;
 const mem = memory;

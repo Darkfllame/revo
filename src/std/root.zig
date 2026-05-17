@@ -58,7 +58,7 @@ pub fn register_stdlib(vm: *revo.VM) !void {
     try @import("net.zig").register(vm);
     try @import("json.zig").register(vm);
     try @import("time.zig").register(vm);
-    try @import("meta.zig").comparison_mt.register(vm);
+    // try @import("meta.zig").comparison_mt.register(vm);
     try @import("tuple.zig").register(vm);
     try @import("iter.zig").register(vm);
     try @import("fs.zig").register(vm);
