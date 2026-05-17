@@ -50,6 +50,7 @@ fn clearError(vm: *VM) void {
 
 fn setError(vm: *VM, message: []const u8) void {
     clearError(vm);
+    // SAFETY: c api, null means no error
     vm.last_error = vm.alloc.dupeZ(u8, message) catch null;
 }
 

@@ -207,14 +207,6 @@ pub fn init(runtime: revo.Runtime) !VM {
     return vm;
 }
 
-// combined poll fn that calls net poll an async backend poll
-fn default_io_poll(vm: *VM, timeout_ms: i32) anyerror!bool {
-    var woke = try revo.std_net.pollIoWaiters(vm, timeout_ms);
-    if (revo.has_async_backend)
-        woke = woke or try revo.async_backend_impl.poll_all(@ptrCast(vm), 0);
-    return woke;
-}
-
 /// TODO: use @sizeOf everywhere at callsite because this is all over the place
 pub fn noteGCPressure(self: *VM, bytes: usize) void {
     if (!self.gc_enabled) return;
@@ -310,6 +302,7 @@ pub fn adoptDataString(self: *VM, value: []u8) !Data {
 }
 
 pub fn stringValue(self: *VM, id: mem.StringID) []const u8 {
+    // SAFETY: debug helper, returns placeholder on error
     return self.strings.get(id) catch "<dead>";
 }
 
@@ -419,7 +412,7 @@ fn runReadyFibers(self: *VM) !?EvalFailure {
 pub fn pop(self: *VM) !Data {
     const fiber = self.currentFiber();
     if (fiber.slots.items.len == 0) return error.StackUnderflow;
-    const ret = fiber.slots.pop().?;
+    const ret = fiber.slots.pop() orelse unreachable;
     if (self.debug.each_stack) self.printStack();
     return ret;
 }
@@ -462,6 +455,7 @@ pub fn internAtom(self: *VM, name: []const u8) !mem.AtomID {
 }
 
 pub fn atomName(self: *VM, id: mem.AtomID) []const u8 {
+    // SAFETY: debug helper, returns placeholder on error
     return self.strings.get(id) catch "<dead>";
 }
 
@@ -854,7 +848,7 @@ pub fn evalFailure(self: *VM, err: EvalError) EvalFailure {
         if (is_struct_panic and top_is_non_module and
             frames[frames.len - 1].call_site_pc != null and info != null)
         {
-            primary_span = self.spanAtPc(info.?, frames[frames.len - 1].call_site_pc.?);
+            primary_span = self.spanAtPc(info orelse unreachable, frames[frames.len - 1].call_site_pc orelse unreachable);
         }
     }
 
@@ -862,7 +856,7 @@ pub fn evalFailure(self: *VM, err: EvalError) EvalFailure {
         .kind = kind,
         .span = primary_span,
         .message = if (kind == .Panic and self.panic_message != null)
-            self.panic_message.?
+            self.panic_message orelse unreachable
         else if (self.runtime_message) |message|
             message
         else
@@ -1073,9 +1067,9 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
             var c_args = try self.runtime.alloc.alloc(revo.ffi.CRevoData, args.len);
             defer self.runtime.alloc.free(c_args);
 
-            var string_copies = try std.ArrayList([]u8).initCapacity(self.runtime.alloc, argc);
+            var string_copies = try std.ArrayList([:0]u8).initCapacity(self.runtime.alloc, argc);
             defer {
-                for (string_copies.items) |copy| self.runtime.alloc.free(copy.ptr[0 .. copy.len + 1]);
+                for (string_copies.items) |copy| self.runtime.alloc.free(copy);
                 string_copies.deinit(self.runtime.alloc);
             }
 
@@ -1244,7 +1238,7 @@ fn callFieldRegister(self: *VM, instr: Instruction) EvalError!void {
 
 fn returnRegister(self: *VM, instr: Instruction) EvalError!void {
     const result = try self.readRegister(instr.a);
-    const frame = self.currentFiber().frames.pop().?;
+    const frame = self.currentFiber().frames.pop() orelse unreachable;
     try self.closeUpvalues(frame.base);
     self.currentFiber().pc = frame.return_addr;
 

@@ -20,10 +20,6 @@ const StructItem = ast.StructItem;
 const expander = lang.expander;
 const testing = lang.testing;
 
-fn print(comptime fmt: []const u8, args: anytype) void {
-    if (comptime false) std.debug.print(fmt, args);
-}
-
 //
 // compiler result types
 //
@@ -102,7 +98,7 @@ const LoopScope = struct {
         _ = c.loop_result_regs.pop();
         const exit_addr: usize = c.instructions.items.len;
         while (c.break_jumps.items.len > self.break_start) {
-            const idx = c.break_jumps.pop().?;
+            const idx = c.break_jumps.pop() orelse unreachable;
             c.instructions.items[idx].bx = @intCast(exit_addr);
         }
         c.in_loop_depth = self.prev_in_loop;
@@ -707,19 +703,6 @@ pub const Compiler = struct {
         }
     }
 
-    fn compilePipeAtTop(self: *Compiler, right: *const Node) InternalLowerError!void {
-        const tmp_name = try std.fmt.allocPrint(self.alloc, "__pipe_tmp_{d}", .{self.temps.pipe});
-        defer self.alloc.free(tmp_name);
-        self.temps.pipe += 1;
-        const tmp_atom = try self.vm.internAtom(tmp_name);
-        try self.emit(.store_global, tmp_atom);
-        const left_node = Node{
-            .span = self.active_span,
-            .expr = .{ .ident = tmp_name },
-        };
-        try self.compilePipe(&left_node, right);
-    }
-
     // compile the comp as a complete program in isolation
     fn compileComp(self: *Compiler, expr: *Node) InternalLowerError!void {
         // implies shared runtime
@@ -922,13 +905,15 @@ pub const Compiler = struct {
                 return err;
             };
             self.slot_allocators.append(self.alloc, 0) catch |err| {
-                var leaked = self.functions.pop().?;
+                // SAFETY: functions was just pushed above
+                var leaked = self.functions.pop() orelse unreachable;
                 leaked.deinit(self.alloc);
                 return err;
             };
             state_ptr = &self.functions.items[self.functions.items.len - 1];
         }
-        const state = state_ptr.?;
+        // SAFETY: state_ptr is set in the if block above if it was null
+        const state = state_ptr orelse unreachable;
         const slot = self.slot_allocators.items[self.slot_allocators.items.len - 1];
         self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
         const local: LocalVar = .{ .name = name, .slot = slot, .mutable = mutable, .initialized = false, .kind = .unknown };
@@ -1148,16 +1133,16 @@ pub const Compiler = struct {
             return err;
         };
         self.slot_allocators.append(self.alloc, params_len) catch |err| {
-            var leaked = self.functions.pop().?;
+            var leaked = self.functions.pop() orelse unreachable;
             leaked.deinit(self.alloc);
             return err;
         };
 
         var state_pushed = true;
         errdefer if (state_pushed) {
-            var leaked = self.functions.pop().?;
+            var leaked = self.functions.pop() orelse unreachable;
             leaked.deinit(self.alloc);
-            _ = self.slot_allocators.pop().?;
+        _ = self.slot_allocators.pop() orelse unreachable;
         };
 
         const prev_in_loop = self.in_loop_depth;
@@ -1182,9 +1167,10 @@ pub const Compiler = struct {
         self.active_registers = caller_registers;
         self.max_registers = caller_max_registers;
 
-        var finished = self.functions.pop().?;
+        // SAFETY: functions was pushed in compileFn
+        var finished = self.functions.pop() orelse unreachable;
         defer finished.deinit(self.alloc);
-        _ = self.slot_allocators.pop().?;
+        _ = self.slot_allocators.pop() orelse unreachable;
         const const_locals = try self.collectConstLocals(finished.all_locals.items);
         defer self.alloc.free(const_locals);
 

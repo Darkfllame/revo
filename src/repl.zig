@@ -89,6 +89,7 @@ pub fn run(vm: *VM, gpa: Allocator, init: std.process.Init) !void {
             continue;
         }
 
+        // SAFETY: REPL exits on read error
         const raw = readLine(init) catch break;
         defer init.gpa.free(raw);
         const line = std.mem.trim(u8, raw, " \t\r\n");
@@ -109,6 +110,7 @@ pub fn run(vm: *VM, gpa: Allocator, init: std.process.Init) !void {
             continue :outer;
         }
 
+        // SAFETY: REPL discards input on append/build errors
         source_acc.appendSlice(gpa, line) catch break :outer;
         source_acc.append(gpa, '\n') catch break :outer;
 

@@ -34,7 +34,7 @@ pub const CRevoData = extern struct {
         };
     }
 
-    pub fn ofData(data: Data, vm_alloc: std.mem.Allocator, strings: *const root.VM.Interner, copies: *std.ArrayList([]u8)) !CRevoData {
+    pub fn ofData(data: Data, vm_alloc: std.mem.Allocator, strings: *const root.VM.Interner, copies: *std.ArrayList([:0]u8)) !CRevoData {
         const tag = std.meta.activeTag(data);
         const value: u64 = inline for (std.meta.fields(Data)) |field| {
             if (@field(memory.Type, field.name) == tag) {

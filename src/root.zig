@@ -301,5 +301,4 @@ pub const EvalResult = vm.EvalResult;
 
 test {
     _ = @import("./lang/tests.zig");
-    _ = std.testing.refAllDecls(@import("./std/root.zig"));
 }

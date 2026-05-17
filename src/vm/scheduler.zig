@@ -336,7 +336,7 @@ pub fn channelRecv(self: *@This(), alloc: std.mem.Allocator, channel_id: Channel
     var channel = self.channels.getPtr(channel_id) orelse return error.InvalidChannel;
 
     if (channel.queueLen() > 0) {
-        const value = channel.popQueue().?;
+        const value = channel.popQueue() orelse unreachable;
 
         // maybe wake sender, if fiber is still valid
         while (channel.cap > 0 and channel.queueLen() < channel.cap) {
@@ -349,7 +349,7 @@ pub fn channelRecv(self: *@This(), alloc: std.mem.Allocator, channel_id: Channel
                 else => false,
             };
             if (!waiting_on_send) continue;
-            try channel.pushQueue(alloc, sender.value.?);
+            try channel.pushQueue(alloc, sender.value orelse unreachable);
             try self.wakeFiber(alloc, sender.fiber_id, null);
             break;
         }

@@ -633,6 +633,7 @@ fn as_stack_index(value: Data) ?usize {
         .number => |n| n,
         else => return null,
     };
+    // SAFETY: asIndex returns null for non-integer/out-of-range numbers
     return revo.asIndex(num) catch null;
 }
 
@@ -827,11 +828,11 @@ pub fn system_(tbl: []const Data, vm: *VM) !NativeResult {
     defer stdout_buf.deinit();
 
     var read_buf: [1024]u8 = undefined;
-    var stdout_reader = proc.stdout.?.reader(vm.runtime.io, &read_buf);
+    var stdout_reader = (proc.stdout orelse unreachable).reader(vm.runtime.io, &read_buf);
     _ = try stdout_reader.interface.streamRemaining(&stdout_buf.writer);
 
     var read_buf2: [1024]u8 = undefined;
-    var stderr_reader = proc.stderr.?.reader(vm.runtime.io, &read_buf2);
+    var stderr_reader = (proc.stderr orelse unreachable).reader(vm.runtime.io, &read_buf2);
     _ = try stderr_reader.interface.streamRemaining(&stderr_buf.writer);
 
     const so = try vm.adoptDataString(try stdout_buf.toOwnedSlice());

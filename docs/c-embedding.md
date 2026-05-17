@@ -4,7 +4,7 @@ title: embedding revo in c
 
 # embedding revo in c
 
-`revo.h` is the public C API for both extensions and embedding
+`revo.h` is the public c api for both extensions and embedding
 the embedding side is small for now: create a vm, compile code, run it, or eval source directly
 
 see `examples/c/basic.c` for a minimal working program

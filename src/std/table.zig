@@ -314,25 +314,6 @@ fn merge(args: []const Data, vm: *VM) !NativeResult {
     return .okData(.{ .table = result_table });
 }
 
-/// > table:get(key: any) -> tuple
-/// gets value by key as a Maybe
-fn get(args: []const Data, vm: *VM) !NativeResult {
-    if (args.len != 2) return .errArity(args.len, 2);
-    const id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
-    const t = vm.tables.get(id) catch return .errType(0, "table", dataToString(args[0]));
-    const res = try t.get(args[1], vm);
-    if (res) |v| {
-        return .okData(Data.new.tuple(try vm.tuples.create(&[_]Data{
-            revo.core_atoms.data(.some),
-            v,
-        })));
-    }
-    return .okData(revo.core_atoms.data(.none));
-}
-
 /// > rawget(table: table, key: any) -> any
 /// gets value without metamethods
 /// returns :undef if key missing
@@ -361,24 +342,6 @@ fn rawset(args: []const Data, vm: *VM) !NativeResult {
 
 test "table library" {
     try testing.top_number("len({1, 2, 3})", 3);
-}
-
-/// > tuple[idx: number] -> any
-/// indexes tuple by number
-fn index(args: []const Data, vm: *VM) !NativeResult {
-    if (args.len != 2) return .errArity(args.len, 2);
-    const id = switch (args[0]) {
-        .tuple => |id| id,
-        else => return .errType(0, "tuple", dataToString(args[0])),
-    };
-    const idx = switch (args[1]) {
-        .number => |idx| revo.asIndex(idx) catch
-            return .errType(1, "valid index", dataToString(args[1])),
-        else => return .errType(1, "number", dataToString(args[1])),
-    };
-    const t = vm.tuples.get(id) catch return .errType(0, "tuple", dataToString(args[0]));
-    if (idx >= t.items.len) return .okData(revo.core_atoms.data(.missing));
-    return .okData(t.items[idx]);
 }
 
 /// > table + other: table -> table
