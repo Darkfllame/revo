@@ -15,3 +15,13 @@ a |> fn(c) c:mutate()
     (:ok, c)
   end
   |> inspect
+
+a = {inner = 21, mutate = fn(self) self.inner *= 2}
+# placeholder
+a |> _:mutate()
+  |> assert_eq(_.inner, 42)
+  |> do
+    print("got", _)
+    (:ok, _)
+  end
+  |> inspect

@@ -27,6 +27,7 @@ pub fn compileLocalBinding(
         try state.reuseOrDeclareLocal(self, name, mutable)
     else
         try state.declareLocal(self, name, mutable);
+    state.reserveLocalSlots(self);
     if (value.expr == .fn_expr) {
         try self.compileFn(value.expr.fn_expr.params, value.expr.fn_expr.body, name, null);
     } else {

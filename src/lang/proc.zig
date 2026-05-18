@@ -245,10 +245,6 @@ fn walkExpr(
             .predicate = v.predicate,
             .body = try ctx.walk(allocator, v.body, ctx),
         } }),
-        .pipe_expr => |v| alloc(allocator, expr.span, .{ .pipe_expr = .{
-            .left = try ctx.walk(allocator, v.left, ctx),
-            .right = try ctx.walk(allocator, v.right, ctx),
-        } }),
         .break_expr => |v| alloc(allocator, expr.span, .{
             .break_expr = if (v) |inner| try ctx.walk(allocator, inner, ctx) else null,
         }),

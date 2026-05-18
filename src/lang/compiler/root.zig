@@ -316,7 +316,6 @@ pub const Compiler = struct {
             //
             // core sugar
             //
-            .pipe_expr => |pipe| try flow.compilePipe(self, pipe.left, pipe.right),
             .loop_expr => |v| try flow.compileLoop(self, v.body),
             .for_loop => |v| try flow.compileFor(self, v.params, v.body, v.iter),
             .while_loop => |v| try flow.compileWhile(self, v.predicate, v.body),

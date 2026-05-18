@@ -256,8 +256,6 @@ const Parser = struct {
                 if (bp < min_bp) break;
                 _ = self.advance();
 
-                // SAFETY: set by switch branches below
-                var right: *Node = undefined;
                 const into_what = self.peek().type;
                 switch (into_what) {
                     .hash => {
@@ -285,15 +283,19 @@ const Parser = struct {
                         );
                         continue;
                     },
-                    .kw_match => right = try self.parseMatch(self.advance(), left),
-                    .kw_fn => right = try self.parseFnWithBodyMin(self.advance(), bp + 1),
-                    else => right = try self.parseExpression(bp + 1),
+                    .kw_match => {
+                        left = try self.parseMatch(self.advance(), left);
+                        continue;
+                    },
+                    else => {
+                        const right = if (into_what == .kw_fn)
+                            try self.parseFnWithBodyMin(self.advance(), bp + 1)
+                        else
+                            try self.parseExpression(bp + 1);
+                        left = try self.desugarPipe(left, right);
+                        continue;
+                    },
                 }
-
-                left = try self.allocExpr(Span.merge(left.span, right.span), .{
-                    .pipe_expr = .{ .left = left, .right = right },
-                });
-                continue;
             }
 
             // pf ?
@@ -391,7 +393,7 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
-                const body = try self.parseExpression(body_min_bp);
+                const body = try self.parseStatementExpression(body_min_bp);
 
                 // insert self as first parameter
                 var new_params = try self.alloc.alloc(ast.FnParam, params.len + 1);
@@ -428,7 +430,7 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
-                const body = try self.parseExpression(body_min_bp);
+                const body = try self.parseStatementExpression(body_min_bp);
 
                 // create fn(params) body (no self)
                 const fn_node = try self.allocExpr(
@@ -459,7 +461,7 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
-                const body = try self.parseExpression(body_min_bp);
+                const body = try self.parseStatementExpression(body_min_bp);
 
                 const fn_node = try self.allocExpr(
                     Span.merge(start.span(), body.span),
@@ -482,7 +484,7 @@ const Parser = struct {
         _ = try self.expect(.lparen);
         const params = try self.parseParamList(.rparen);
         _ = try self.expect(.rparen);
-        const body = try self.parseExpression(body_min_bp);
+        const body = try self.parseStatementExpression(body_min_bp);
         return self.allocExpr(Span.merge(start.span(), body.span), .{ .fn_expr = .{ .params = params, .body = body } });
     }
 
@@ -986,6 +988,7 @@ const Parser = struct {
     /// check if expr can be followed by bare call which is string table literal
     fn isBareCallArgumentStart(self: *Parser, callee: *Node) bool {
         if (!exprAllowsBareCall(callee)) return false;
+        if (self.stop_on_stmt_start and callee.span.line != self.peek().line) return false;
         return bare_call_arg_start_tokens.get(self.peek().type);
     }
 
@@ -1191,7 +1194,99 @@ const Parser = struct {
         node.* = .{ .span = span, .expr = expr };
         return node;
     }
+
+    fn desugarPipe(self: *Parser, left: *Node, right: *Node) anyerror!*Node {
+        if (hasUnderscore(right)) {
+            return self.wrapPipeLexical(left, right);
+        }
+        return switch (right.expr) {
+            .ident, .fn_expr => {
+                if (left.expr == .block) return self.wrapPipeCallWithTemp(left, right, &.{}, false);
+                const args = try self.alloc.alloc(*Node, 1);
+                args[0] = left;
+                return self.allocExpr(Span.merge(left.span, right.span), .{ .call = .{
+                    .callee = right,
+                    .args = args,
+                } });
+            },
+            .call => |call| {
+                if (left.expr == .block) return self.wrapPipeCallWithTemp(left, call.callee, call.args, call.implicit_self);
+                const call_args = try self.alloc.alloc(*Node, call.args.len + 1);
+                call_args[0] = left;
+                @memcpy(call_args[1..], call.args);
+                return self.allocExpr(Span.merge(left.span, right.span), .{ .call = .{
+                    .callee = call.callee,
+                    .args = call_args,
+                    .implicit_self = call.implicit_self,
+                } });
+            },
+            else => self.wrapPipeLexical(left, right),
+        };
+    }
+
+    fn wrapPipeCallWithTemp(
+        self: *Parser,
+        left: *Node,
+        callee: *Node,
+        args: []const *Node,
+        implicit_self: bool,
+    ) anyerror!*Node {
+        const temp_target = try self.allocExpr(left.span, .{ .ident = pipe_temp_name });
+        const temp_ref = try self.allocExpr(left.span, .{ .ident = pipe_temp_name });
+        const bind = try self.allocExpr(left.span, .{ .con_expr = .{
+            .target = temp_target,
+            .value = left,
+        } });
+
+        const call_args = try self.alloc.alloc(*Node, args.len + 1);
+        call_args[0] = temp_ref;
+        @memcpy(call_args[1..], args);
+        const call = try self.allocExpr(Span.merge(left.span, callee.span), .{ .call = .{
+            .callee = callee,
+            .args = call_args,
+            .implicit_self = implicit_self,
+        } });
+
+        const exprs = try self.alloc.alloc(*Node, 2);
+        exprs[0] = bind;
+        exprs[1] = call;
+        return self.allocExpr(Span.merge(left.span, callee.span), .{ .block = exprs });
+    }
+
+    fn wrapPipeLexical(self: *Parser, left: *Node, right: *Node) anyerror!*Node {
+        const underscore = try self.allocExpr(left.span, .{ .ident = "_" });
+        const bind = try self.allocExpr(left.span, .{ .con_expr = .{
+            .target = underscore,
+            .value = left,
+        } });
+        const exprs = try self.alloc.alloc(*Node, 2);
+        exprs[0] = bind;
+        exprs[1] = right;
+        return self.allocExpr(Span.merge(left.span, right.span), .{ .block = exprs });
+    }
 };
+
+const UnderscoreVisitor = struct {
+    found: bool = false,
+
+    pub fn visit(self: *UnderscoreVisitor, node: *const Node) void {
+        if (self.found) return;
+        switch (node.expr) {
+            .ident => |name| {
+                if (std.mem.eql(u8, name, "_")) self.found = true;
+            },
+            else => ast.walkAST(UnderscoreVisitor, self, node),
+        }
+    }
+};
+
+fn hasUnderscore(node: *const Node) bool {
+    var visitor = UnderscoreVisitor{};
+    visitor.visit(node);
+    return visitor.found;
+}
+
+const pipe_temp_name = "_";
 
 const BindingPower = struct {
     left: u8,
