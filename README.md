@@ -107,6 +107,7 @@ you will need [zig `0.16.0`](https://ziglang.org/download) to build revo
 
 ```bash
 git clone https://github.com/if-not-nil/revo && cd revo
+git submodule update --init --recursive
 zig build -Doptimize=ReleaseFast
 cp ./zig-out/bin/revo ~/.local/bin/revo
 
