@@ -11,10 +11,30 @@ const Token = lexer.Token;
 const TokenType = lexer.TokenType;
 
 const BP: struct {
-    assign: comptime_int = 5,
-    compound: comptime_int = 5,
-    comp: comptime_int = 0,
+    const i = comptime_int;
+    assign: i = 5,
+    compound: i = 5, // += -= *= /= %= same as assign, right-associative
+    comp: i = 0,
+    pipe: i = 15,
+    range: i = 36, // `a < b..c` is `(a < b)..c`
+    bare_call: i = 70, // `f "str"` or `f { a = 1 }`
+    try_op: i = 80, // ? postfix -- `x?`, err propagation
+    suffix: i = 90, // . [] () :()
 } = .{};
+
+// left < right = left-assoc (a + b + c = (a + b) + c)
+// left > right = right-assoc (a = b = c = a = (b = c))
+const BindingPower = struct {
+    left: u8,
+    right: u8,
+    op: ast.BinOp,
+};
+
+// short-circuit, flow control
+const LogicalBinding = struct {
+    left: u8,
+    right: u8,
+};
 
 pub const ParseFailure = struct {
     kind: Kind,
@@ -40,6 +60,7 @@ pub const ParseResult = union(enum) {
 //
 // api
 //
+
 pub fn parseTokens(allocator: std.mem.Allocator, tokens: []const Token) anyerror!*Node {
     return switch (try parseTokensReport(allocator, tokens)) {
         .ok => |expr| expr,
@@ -53,53 +74,35 @@ pub fn parseTokens(allocator: std.mem.Allocator, tokens: []const Token) anyerror
 }
 
 pub fn parseTokensReport(alloc: std.mem.Allocator, tokens: []const Token) anyerror!ParseResult {
-    var parser = Parser{
-        .alloc = alloc,
-        .tokens = tokens,
-    };
+    var parser = Parser{ .alloc = alloc, .tokens = tokens };
     const expr = parser.parse() catch |err| switch (err) {
         error.UnexpectedToken => {
             const token = parser.peek();
-            return .{
-                .err = .{
-                    .kind = .UnexpectedToken,
-                    .span = token.span(),
-                    .message = "unexpected token",
-                },
-            };
+            return .{ .err = .{ .kind = .UnexpectedToken, .span = token.span(), .message = "unexpected token" } };
         },
         error.ExpectedIdentifier => {
             const token = parser.peek();
-            return .{ .err = .{
-                .kind = .ExpectedIdentifier,
-                .span = token.span(),
-                .message = "expected identifier",
-            } };
+            return .{ .err = .{ .kind = .ExpectedIdentifier, .span = token.span(), .message = "expected identifier" } };
         },
         error.ExpectedMatchArm => {
             const token = parser.peek();
-            return .{ .err = .{
-                .kind = .ExpectedMatchArm,
-                .span = token.span(),
-                .message = "match expression requires at least one arm",
-            } };
+            return .{ .err = .{ .kind = .ExpectedMatchArm, .span = token.span(), .message = "match expression requires at least one arm" } };
         },
         else => return err,
     };
-
     return .{ .ok = expr };
 }
 
-//
-// rdp parser
-//
+/// recursive descent + pratt hybrid
+/// parser holds state: tokens, pos, stop conditions, bare-call toggle
+/// ret: block if multiple exprs, single node otherwise
 const Parser = struct {
     alloc: std.mem.Allocator,
     tokens: []const Token,
     pos: usize = 0,
     stop_token: ?TokenType = null,
-    allow_bare_calls: bool = true,
-    stop_on_stmt_start: bool = false,
+    allow_bare_calls: bool = true, // permit `f "str"`, disabled in pattern positions
+    stop_on_stmt_start: bool = false, // treat statement-starting tokens as expr boundaries
 
     fn parse(self: *Parser) anyerror!*Node {
         const exprs = try self.parseExprListUntil(.eof);
@@ -108,7 +111,8 @@ const Parser = struct {
         return self.allocExpr(ast.spanFromNodes(exprs, eof.span()), .{ .block = exprs });
     }
 
-    //// pratt-ish binding power loop
+    /// starts with a prefix node, then consumes infix/postfix ops while binding power allows
+    /// min_bp is the floor; if an operator's left power is below this, itll stop and return
     fn parseExpression(self: *Parser, min_bp: u8) anyerror!*Node {
         var left = try self.parsePrefix();
 
@@ -116,129 +120,117 @@ const Parser = struct {
             if (self.stop_token) |stop| if (self.check(stop)) break;
             if (self.stop_on_stmt_start and self.isStatementBoundary(left)) break;
 
+            // postfix `obj.field`
             if (self.match(.dot)) {
                 const name = try self.expectIdent();
                 left = try self.allocExpr(Span.merge(left.span, name.span()), .{
-                    .field = .{
-                        .object = left,
-                        .name = name.text,
-                    },
+                    .field = .{ .object = left, .name = name.text },
                 });
                 continue;
             }
 
+            // postfix: method call `obj:method(args)`; sugar for `obj.field(args)` with implicit self
             if (self.peek().type == .hash and self.peekAt(1).type == .lparen) {
                 const method = self.advance();
                 _ = try self.expect(.lparen);
                 const call_args = try self.parseDelimitedExprList(.rparen);
                 const close = try self.expect(.rparen);
-                const callee = try self.allocExpr(Span.merge(left.span, method.span()), .{ .field = .{
-                    .object = left,
-                    .name = method.text[1..],
-                } });
-                left = try self.allocExpr(Span.merge(left.span, close.span()), .{ .call = .{
-                    .callee = callee,
-                    .args = call_args,
-                    .implicit_self = true,
-                } });
+                const callee = try self.allocExpr(Span.merge(left.span, method.span()), .{
+                    .field = .{ .object = left, .name = method.text[1..] },
+                });
+                left = try self.allocExpr(Span.merge(left.span, close.span()), .{
+                    .call = .{ .callee = callee, .args = call_args, .implicit_self = true },
+                });
                 continue;
             }
 
+            // postfix: index `obj[key]`
             if (self.match(.lbracket)) {
                 const key = try self.parseExpression(0);
                 const close = try self.expect(.rbracket);
-                left = try self.allocExpr(Span.merge(left.span, close.span()), .{ .index = .{
-                    .object = left,
-                    .key = key,
-                } });
+                left = try self.allocExpr(Span.merge(left.span, close.span()), .{
+                    .index = .{ .object = left, .key = key },
+                });
                 continue;
             }
 
+            // postfix: paren call `f(args)`; only if f allows it (ident, field, call, fn, index)
             if (self.peek().type == .lparen and (exprAllowsParenCall(left) or self.isTightSuffix(left))) {
                 _ = try self.expect(.lparen);
                 const args = try self.parseDelimitedExprList(.rparen);
                 const close = try self.expect(.rparen);
-                left = try self.allocExpr(Span.merge(left.span, close.span()), .{ .call = .{
-                    .callee = left,
-                    .args = args,
-                } });
+                left = try self.allocExpr(Span.merge(left.span, close.span()), .{
+                    .call = .{ .callee = left, .args = args },
+                });
                 continue;
             }
 
+            // postfix: bare call `f "str"` or `f { a = 1 }`
             if (self.allow_bare_calls and self.isBareCallArgumentStart(left)) {
-                const bp: u8 = 70;
+                const bp: u8 = BP.bare_call;
                 if (bp < min_bp) break;
-
                 const arg = try self.parseExpression(bp);
                 var args = try std.ArrayList(*Node).initCapacity(self.alloc, 1);
                 errdefer args.deinit(self.alloc);
                 try args.append(self.alloc, arg);
-                left = try self.allocExpr(Span.merge(left.span, arg.span), .{ .call = .{
-                    .callee = left,
-                    .args = try args.toOwnedSlice(self.alloc),
-                } });
+                left = try self.allocExpr(Span.merge(left.span, arg.span), .{
+                    .call = .{ .callee = left, .args = try args.toOwnedSlice(self.alloc) },
+                });
                 continue;
             }
 
+            // infix: assignment `x = y`; right-associative, converts lhs to pattern
             if (BP.assign >= min_bp and self.match(.assign)) {
                 const value = try self.parseExpression(BP.assign);
-                left = try self.allocExpr(Span.merge(left.span, value.span), .{ .assign_expr = .{
-                    .target = try self.exprToPattern(left),
-                    .value = value,
-                } });
+                left = try self.allocExpr(Span.merge(left.span, value.span), .{
+                    .assign_expr = .{ .target = try self.exprToPattern(left), .value = value },
+                });
                 continue;
             }
 
-            const comp_binop = compoundAssignOp(self.peek().type);
+            // infix: comp assign `x += y`; desugars to `x = x + y`
+            const comp_binop = compound_assign_table.get(self.peek().type);
             if (BP.compound >= min_bp and comp_binop != null) {
                 const binop = comp_binop.?;
                 _ = self.advance();
                 const right = try self.parseExpression(BP.compound);
-                const binary = try self.allocExpr(Span.merge(left.span, right.span), .{ .binary = .{
-                    .op = binop,
-                    .left = left,
-                    .right = right,
-                } });
-                left = try self.allocExpr(binary.span, .{ .assign_expr = .{
-                    .target = try self.exprToPattern(left),
-                    .value = binary,
-                } });
+                const binary = try self.allocExpr(Span.merge(left.span, right.span), .{
+                    .binary = .{ .op = binop, .left = left, .right = right },
+                });
+                left = try self.allocExpr(binary.span, .{
+                    .assign_expr = .{ .target = try self.exprToPattern(left), .value = binary },
+                });
                 continue;
             }
 
-            // start..end OR start..step..end
+            // infix: range `start..end` or `start..step..end` the special three-part form
+            // stop_token trick prevents `0..2..10` from parsing as `0..(2..10)`
             if (self.match(.dotdot)) {
-                // stop token is here because 0..2..10 would become 0..(2..10) otherwise
                 const prev_stop = self.stop_token;
                 self.stop_token = .dotdot;
-
-                const step_or_end = self.parseExpression(36) catch |err| {
-                    self.stop_token = prev_stop; // idk if i should do it
+                const step_or_end = self.parseExpression(BP.range) catch |err| {
+                    self.stop_token = prev_stop;
                     return err;
                 };
                 self.stop_token = prev_stop;
 
-                // SAFETY: set by match branches below
                 var step_node: *Node = undefined;
-                // SAFETY: set by match branches below
                 var end_node: *Node = undefined;
 
-                // for the three part one
                 if (self.match(.dotdot)) {
                     step_node = step_or_end;
-
-                    end_node = try self.parseExpression(36);
+                    end_node = try self.parseExpression(BP.range);
                 } else {
                     step_node = try self.allocExpr(step_or_end.span, .{ .number = 1 });
                     end_node = step_or_end;
                 }
-
                 left = try self.buildRangeExpr(left, end_node, step_node);
                 continue;
             }
 
+            // infix: logical `and` `or` `orelse`
             const op = self.peek().type;
-            if (logicalBindingPower(op)) |binding| {
+            if (logical_binding_table.get(op)) |binding| {
                 if (binding.left < min_bp) break;
                 _ = self.advance();
                 const right = try self.parseExpression(binding.right);
@@ -251,42 +243,39 @@ const Parser = struct {
                 continue;
             }
 
+            // infix: pipe forward `|>`
             if (op == .pipe_forward) {
-                const bp: u8 = 15;
+                const bp: u8 = BP.pipe;
                 if (bp < min_bp) break;
                 _ = self.advance();
 
                 const into_what = self.peek().type;
                 switch (into_what) {
-                    .hash => {
-                        const hash_tok = self.advance();
-                        const method_name = hash_tok.text[1..];
-                        var args: []*Node = &.{};
-                        if (self.check(.lparen)) {
-                            _ = try self.expect(.lparen);
-                            args = try self.parseDelimitedExprList(.rparen);
-                            _ = try self.expect(.rparen);
-                        }
-                        const callee = try self.allocExpr(hash_tok.span(), .{
-                            .field = .{
-                                .object = left,
-                                .name = method_name,
-                            },
-                        });
-                        left = try self.allocExpr(
-                            Span.merge(left.span, if (args.len > 0) args[args.len - 1].span else hash_tok.span()),
-                            .{ .call = .{
-                                .callee = callee,
-                                .args = args,
-                                .implicit_self = true,
-                            } },
-                        );
-                        continue;
-                    },
+                    // `x |> :method(args)` => `x:method(args)`
+                    // .hash => {
+                    //     const hash_tok = self.advance();
+                    //     const method_name = hash_tok.text[1..];
+                    //     var args: []*Node = &.{};
+                    //     if (self.check(.lparen)) {
+                    //         _ = try self.expect(.lparen);
+                    //         args = try self.parseDelimitedExprList(.rparen);
+                    //         _ = try self.expect(.rparen);
+                    //     }
+                    //     const callee = try self.allocExpr(hash_tok.span(), .{
+                    //         .field = .{ .object = left, .name = method_name },
+                    //     });
+                    //     left = try self.allocExpr(
+                    //         Span.merge(left.span, if (args.len > 0) args[args.len - 1].span else hash_tok.span()),
+                    //         .{ .call = .{ .callee = callee, .args = args, .implicit_self = true } },
+                    //     );
+                    //     continue;
+                    // },
+                    // `x |> match ...` -- pipe into match expression
                     .kw_match => {
                         left = try self.parseMatch(self.advance(), left);
                         continue;
                     },
+                    // `x |> fn(p) body` or `x |> f(y)`; desugar to call with x as first arg
                     else => {
                         const right = if (into_what == .kw_fn)
                             try self.parseFnWithBodyMin(self.advance(), bp + 1)
@@ -298,33 +287,29 @@ const Parser = struct {
                 }
             }
 
-            // pf ?
-            // TODO: what did i mean by pf
+            // postfix: try operator `x?`
             if (op == .huh) {
-                const bp: u8 = 80;
+                const bp: u8 = BP.try_op;
                 if (bp < min_bp) break;
                 _ = self.advance();
-                left = try self.allocExpr(Span.merge(left.span, left.span), .{
-                    .try_expr = left,
-                });
+                left = try self.allocExpr(Span.merge(left.span, left.span), .{ .try_expr = left });
                 continue;
             }
 
-            const binding = infixBindingPower(op) orelse break;
+            // infix: math/compare ops; look up bp, consume, recurse
+            const binding = infix_binding_table.get(op) orelse break;
             if (binding.left < min_bp) break;
             _ = self.advance();
             const right = try self.parseExpression(binding.right);
-            left = try self.allocExpr(Span.merge(left.span, right.span), .{ .binary = .{
-                .op = binding.op,
-                .left = left,
-                .right = right,
-            } });
+            left = try self.allocExpr(Span.merge(left.span, right.span), .{
+                .binary = .{ .op = binding.op, .left = left, .right = right },
+            });
         }
 
         return left;
     }
 
-    /// literals, keywords, and prefix operators
+    /// literals, keywords, unary ops, and statement forms
     fn parsePrefix(self: *Parser) anyerror!*Node {
         const token = self.advance();
         return switch (token.type) {
@@ -359,10 +344,8 @@ const Parser = struct {
             .kw_join => self.parseJoin(token),
             .kw_yield => self.parseYield(token),
             .lsquiggly => self.parseTable(token),
-            else => {
-                std.debug.print("unexpected token: {s}", .{token.text});
-                return error.UnexpectedToken;
-            },
+            .eof => return error.UnexpectedToken,
+            else => return error.UnexpectedToken,
         };
     }
 
@@ -380,51 +363,38 @@ const Parser = struct {
     }
 
     fn parseFnWithBodyMin(self: *Parser, start: Token, body_min_bp: u8) anyerror!*Node {
-        // check if this is a named function definition
+        // is named fn def?
         if (self.check(.ident)) {
             const first_ident = self.advance();
 
-            // > fn obj:method(params) body
-            // :method is lexed as a single atom token (.hash type)
+            // `fn obj:method(params) body`, implicit self
             if (self.peek().type == .hash) {
                 const atom_token = self.advance();
-                const method_name = atom_token.text[1..]; // skip ':'
-
+                const method_name = atom_token.text[1..];
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
                 const body = try self.parseStatementExpression(body_min_bp);
 
-                // insert self as first parameter
                 var new_params = try self.alloc.alloc(ast.FnParam, params.len + 1);
+                errdefer self.alloc.free(new_params);
                 new_params[0] = .{ .name = "self" };
                 @memcpy(new_params[1..], params);
 
-                // create fn(self, params) body
-                const fn_node = try self.allocExpr(
-                    Span.merge(start.span(), body.span),
-                    .{ .fn_expr = .{ .params = new_params, .body = body } },
-                );
-
-                // create index access for obj["method"]
+                const fn_node = try self.allocExpr(Span.merge(start.span(), body.span), .{
+                    .fn_expr = .{ .params = new_params, .body = body },
+                });
                 const obj_node = try self.allocExpr(first_ident.span(), .{ .ident = first_ident.text });
-                const key_node = try self.allocExpr(
-                    atom_token.span(),
-                    .{ .hash = method_name },
-                );
-                const index_node = try self.allocExpr(
-                    Span.merge(first_ident.span(), atom_token.span()),
-                    .{ .index = .{ .object = obj_node, .key = key_node } },
-                );
-
-                // create obj["method"] = fn(...)
-                return self.allocExpr(
-                    Span.merge(start.span(), body.span),
-                    .{ .assign_expr = .{ .target = index_node, .value = fn_node } },
-                );
+                const key_node = try self.allocExpr(atom_token.span(), .{ .hash = method_name });
+                const index_node = try self.allocExpr(Span.merge(first_ident.span(), atom_token.span()), .{
+                    .index = .{ .object = obj_node, .key = key_node },
+                });
+                return self.allocExpr(Span.merge(start.span(), body.span), .{
+                    .assign_expr = .{ .target = index_node, .value = fn_node },
+                });
             }
 
-            // field function definition: fn obj.field(params) body (no self)
+            // `fn obj.field(params) body`
             if (self.match(.dot)) {
                 const field_name = try self.expectIdent();
                 _ = try self.expect(.lparen);
@@ -432,60 +402,45 @@ const Parser = struct {
                 _ = try self.expect(.rparen);
                 const body = try self.parseStatementExpression(body_min_bp);
 
-                // create fn(params) body (no self)
-                const fn_node = try self.allocExpr(
-                    Span.merge(start.span(), body.span),
-                    .{ .fn_expr = .{ .params = params, .body = body } },
-                );
-
-                // index access for obj["field"]
+                const fn_node = try self.allocExpr(Span.merge(start.span(), body.span), .{
+                    .fn_expr = .{ .params = params, .body = body },
+                });
                 const obj_node = try self.allocExpr(first_ident.span(), .{ .ident = first_ident.text });
-                const key_node = try self.allocExpr(
-                    field_name.span(),
-                    .{ .string = field_name.text },
-                );
-                const index_node = try self.allocExpr(
-                    Span.merge(first_ident.span(), field_name.span()),
-                    .{ .index = .{ .object = obj_node, .key = key_node } },
-                );
-
-                // obj["field"] = fn(...)
-                return self.allocExpr(
-                    Span.merge(start.span(), body.span),
-                    .{ .assign_expr = .{ .target = index_node, .value = fn_node } },
-                );
+                const key_node = try self.allocExpr(field_name.span(), .{ .hash = field_name.text });
+                const index_node = try self.allocExpr(Span.merge(first_ident.span(), field_name.span()), .{
+                    .index = .{ .object = obj_node, .key = key_node },
+                });
+                return self.allocExpr(Span.merge(start.span(), body.span), .{
+                    .assign_expr = .{ .target = index_node, .value = fn_node },
+                });
             }
 
-            // function definition: fn name(params) body
+            // `fn name(params) body`
             if (self.check(.lparen)) {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
                 const body = try self.parseStatementExpression(body_min_bp);
 
-                const fn_node = try self.allocExpr(
-                    Span.merge(start.span(), body.span),
-                    .{ .fn_expr = .{ .params = params, .body = body } },
-                );
-
+                const fn_node = try self.allocExpr(Span.merge(start.span(), body.span), .{
+                    .fn_expr = .{ .params = params, .body = body },
+                });
                 const target = try self.allocExpr(first_ident.span(), .{ .ident = first_ident.text });
-
-                return self.allocExpr(
-                    Span.merge(start.span(), body.span),
-                    .{ .con_expr = .{ .target = target, .value = fn_node } },
-                );
+                return self.allocExpr(Span.merge(start.span(), body.span), .{
+                    .con_expr = .{ .target = target, .value = fn_node },
+                });
             }
-
-            // neither colon, dot, nor lparen
             return error.UnexpectedToken;
         }
 
-        // anon fn: fn(params) body
+        // anon `fn(params) body`
         _ = try self.expect(.lparen);
         const params = try self.parseParamList(.rparen);
         _ = try self.expect(.rparen);
         const body = try self.parseStatementExpression(body_min_bp);
-        return self.allocExpr(Span.merge(start.span(), body.span), .{ .fn_expr = .{ .params = params, .body = body } });
+        return self.allocExpr(Span.merge(start.span(), body.span), .{
+            .fn_expr = .{ .params = params, .body = body },
+        });
     }
 
     fn parseComp(self: *Parser, token: Token) anyerror!*Node {
@@ -493,10 +448,9 @@ const Parser = struct {
         if (is_macro) _ = self.advance();
 
         const expr = try self.parseExpression(BP.comp);
-        return self.allocExpr(
-            Span.merge(token.span(), expr.span),
-            .{ .comp_block = .{ .expr = expr, .is_macro = is_macro } },
-        );
+        return self.allocExpr(Span.merge(token.span(), expr.span), .{
+            .comp_block = .{ .expr = expr, .is_macro = is_macro },
+        });
     }
 
     /// if <expr> then <expr> else <expr>
@@ -505,27 +459,25 @@ const Parser = struct {
         const then_expr = try self.parseExpression(0);
         const else_expr = if (self.match(.kw_else)) try self.parseExpression(0) else null;
         const end_span = if (else_expr) |branch| branch.span else then_expr.span;
-        return self.allocExpr(Span.merge(start.span(), end_span), .{ .if_expr = .{
-            .condition = condition,
-            .then_expr = then_expr,
-            .else_expr = else_expr,
-        } });
+        return self.allocExpr(Span.merge(start.span(), end_span), .{
+            .if_expr = .{ .condition = condition, .then_expr = then_expr, .else_expr = else_expr },
+        });
     }
 
     /// match expr | pat expr | pat expr
     fn parseMatch(self: *Parser, start: Token, subj: ?*Node) anyerror!*Node {
         const subject = subj orelse try self.parseExpression(25);
-
         var arms = try std.ArrayList(ast.MatchArm).initCapacity(self.alloc, 2);
-        errdefer arms.deinit(self.alloc);
-
+        errdefer {
+            for (arms.items) |arm| self.alloc.free(arm.matchers);
+            arms.deinit(self.alloc);
+        }
         var end_span = subject.span;
         while (self.match(.pipe)) {
             const arm = try self.parseMatchArm();
             end_span = arm.then.span;
             try arms.append(self.alloc, arm);
         }
-
         if (arms.items.len == 0) return error.ExpectedMatchArm;
         return self.allocExpr(Span.merge(start.span(), end_span), .{ .match_expr = .{
             .subject = subject,
@@ -543,10 +495,9 @@ const Parser = struct {
                 _ = self.advance();
                 try matchers.append(self.alloc, .wildcard);
             } else {
-                try matchers.append(
-                    self.alloc,
-                    .{ .expr = try self.exprToPattern(try self.parseScoped(null, false, 25)) },
-                );
+                try matchers.append(self.alloc, .{
+                    .expr = try self.exprToPattern(try self.parseScoped(null, false, 25)),
+                });
             }
             if (!self.match(.comma)) break;
         }
@@ -561,11 +512,7 @@ const Parser = struct {
     /// const x = expr or let x = expr, with const (a, b) = <expr> tuple destructuring
     /// with tuples and type annotations
     fn parseBinding(self: *Parser, comptime tag: std.meta.Tag(Expr), start: Token) anyerror!*Node {
-        var binding: ast.Binding = .{
-            // SAFETY: both fields set by subsequent code
-            .target = undefined,
-            .value = undefined,
-        };
+        var binding: ast.Binding = .{ .target = undefined, .value = undefined };
 
         if (self.check(.lparen)) {
             _ = self.advance();
@@ -576,29 +523,18 @@ const Parser = struct {
             if (self.match(.comma)) {
                 var items = try std.ArrayList(*Node).initCapacity(self.alloc, 2);
                 errdefer items.deinit(self.alloc);
-                try items.append(
-                    self.alloc,
-                    try self.allocExpr(first.span(), .{ .ident = first.text }),
-                );
+                try items.append(self.alloc, try self.allocExpr(first.span(), .{ .ident = first.text }));
+
                 while (true) {
                     const item = try self.expectIdent();
-                    try items.append(
-                        self.alloc,
-                        try self.allocExpr(item.span(), .{ .ident = item.text }),
-                    );
+                    try items.append(self.alloc, try self.allocExpr(item.span(), .{ .ident = item.text }));
                     if (!self.match(.comma)) break;
                 }
-                binding.target = try self.allocExpr(
-                    ast.spanFromNodes(items.items, first.span()),
-                    .{
-                        .tuple_pattern = try items.toOwnedSlice(self.alloc),
-                    },
-                );
+                binding.target = try self.allocExpr(ast.spanFromNodes(items.items, first.span()), .{
+                    .tuple_pattern = try items.toOwnedSlice(self.alloc),
+                });
             } else {
-                binding.target = try self.allocExpr(
-                    first.span(),
-                    .{ .ident = first.text },
-                );
+                binding.target = try self.allocExpr(first.span(), .{ .ident = first.text });
             }
         }
 
@@ -627,18 +563,12 @@ const Parser = struct {
         const predicate = try self.parseExpression(25);
         const body = try self.parseExpression(0);
         return self.allocExpr(Span.merge(start.span(), body.span), .{
-            .while_loop = .{
-                .predicate = predicate,
-                .body = body,
-            },
+            .while_loop = .{ .predicate = predicate, .body = body },
         });
     }
 
     fn parseFor(self: *Parser, start: Token) anyerror!*Node {
-        var params = try std.ArrayList(ast.FnParam).initCapacity(
-            self.alloc,
-            2,
-        );
+        var params = try std.ArrayList(ast.FnParam).initCapacity(self.alloc, 2);
         errdefer params.deinit(self.alloc);
         const first = try self.expectIdent();
         try params.append(self.alloc, .{ .name = first.text });
@@ -650,11 +580,7 @@ const Parser = struct {
         const iter = try self.parseExpression(0);
         const body = try self.parseExpression(0);
         return self.allocExpr(Span.merge(start.span(), body.span), .{
-            .for_loop = .{
-                .params = try params.toOwnedSlice(self.alloc),
-                .iter = iter,
-                .body = body,
-            },
+            .for_loop = .{ .params = try params.toOwnedSlice(self.alloc), .iter = iter, .body = body },
         });
     }
 
@@ -727,14 +653,9 @@ const Parser = struct {
             _ = try self.expect(.rparen);
             const body = try self.parseExpression(0);
 
-            return try self.allocExpr(
-                Span.merge(start.span(), body.span),
-                .{ .proc_macro = .{
-                    .param = param,
-                    .body = body,
-                    .name = first_ident.text,
-                } },
-            );
+            return try self.allocExpr(Span.merge(start.span(), body.span), .{
+                .proc_macro = .{ .param = param, .body = body, .name = first_ident.text },
+            });
         }
         // neither colon, dot, nor lparen
         return error.UnexpectedToken;
@@ -748,24 +669,17 @@ const Parser = struct {
             if (self.check(.kw_skip)) {
                 skip = true;
                 _ = self.advance();
-            } else {
-                return error.UnexpectedToken;
-            }
+            } else return error.UnexpectedToken;
         }
         const name = try self.expect(.string);
         const body_start = try self.expect(.kw_do);
         const body = try self.parseBlock(body_start);
         const body_fn = try self.allocExpr(Span.merge(body_start.span(), body.span), .{
-            .fn_expr = .{
-                .params = &.{},
-                .body = body,
-            },
+            .fn_expr = .{ .params = &.{}, .body = body },
         });
-        return self.allocExpr(Span.merge(start.span(), body.span), .{ .test_block = .{
-            .name = name.text,
-            .body = body_fn,
-            .skip = skip,
-        } });
+        return self.allocExpr(Span.merge(start.span(), body.span), .{
+            .test_block = .{ .name = name.text, .body = body_fn, .skip = skip },
+        });
     }
 
     /// suite "name" do ... end
@@ -776,16 +690,11 @@ const Parser = struct {
 
         // wrap suite body in a closure
         const suite_fn = try self.allocExpr(Span.merge(body_start.span(), body.span), .{
-            .fn_expr = .{
-                .params = &.{},
-                .body = body,
-            },
+            .fn_expr = .{ .params = &.{}, .body = body },
         });
-
-        return self.allocExpr(Span.merge(start.span(), body.span), .{ .test_suite = .{
-            .name = name.text,
-            .body = suite_fn,
-        } });
+        return self.allocExpr(Span.merge(start.span(), body.span), .{
+            .test_suite = .{ .name = name.text, .body = suite_fn },
+        });
     }
 
     fn parseStruct(self: *Parser, start: Token) anyerror!*Node {
@@ -793,7 +702,15 @@ const Parser = struct {
         _ = try self.expect(.lsquiggly);
 
         var items = try std.ArrayList(ast.StructItem).initCapacity(self.alloc, 4);
-        errdefer items.deinit(self.alloc);
+        errdefer {
+            for (items.items) |item| {
+                switch (item) {
+                    .binding => {},
+                    .field => {},
+                }
+            }
+            items.deinit(self.alloc);
+        }
         var end_span = name.span();
 
         while (!self.check(.rsquiggly) and !self.check(.eof)) {
@@ -1044,6 +961,7 @@ const Parser = struct {
 
         while (!self.check(terminator) and !self.check(.eof)) {
             try exprs.append(self.alloc, try self.parseStatementExpression(0));
+            if (self.pos >= self.tokens.len) break;
         }
 
         return exprs.toOwnedSlice(self.alloc);
@@ -1056,6 +974,7 @@ const Parser = struct {
 
         while (!self.check(terminator)) {
             try items.append(self.alloc, try self.parseExpression(0));
+            if (self.pos >= self.tokens.len) break;
             if (!self.match(.comma)) break;
         }
 
@@ -1151,13 +1070,11 @@ const Parser = struct {
         const t = self.peek().type;
         if (t == .dot or t == .lbracket or t == .assign or t == .dotdot or t == .pipe_forward or t == .hash) return true;
         if (t == .plus_assign or t == .minus_assign or t == .star_assign or t == .slash_assign or t == .percent_assign) return true;
-        if (logicalBindingPower(t) != null) return true;
-        if (infixBindingPower(t) != null) return true;
+        if (logical_binding_table.get(t) != null) return true;
+        if (infix_binding_table.get(t) != null) return true;
         if (t == .lparen and (exprAllowsParenCall(left) or self.isTightSuffix(left))) return true;
         if (t == .hash and self.peekAt(1).type == .lparen) return true;
-        if (self.allow_bare_calls and exprAllowsBareCall(left)) {
-            return bare_call_arg_start_tokens.get(t);
-        }
+        if (self.allow_bare_calls and exprAllowsBareCall(left)) return bare_call_arg_start_tokens.get(t);
         return false;
     }
 
@@ -1177,9 +1094,7 @@ const Parser = struct {
                     if (i + 1 >= self.tokens.len) return false;
                     return self.tokens[i + 1].type == .assign;
                 }
-            } else if (t == .eof) {
-                return false;
-            }
+            } else if (t == .eof) return false;
         }
         return false;
     }
@@ -1196,13 +1111,13 @@ const Parser = struct {
     }
 
     fn desugarPipe(self: *Parser, left: *Node, right: *Node) anyerror!*Node {
-        if (hasUnderscore(right)) {
-            return self.wrapPipeLexical(left, right);
-        }
+        if (hasUnderscore(right)) return self.wrapPipeLexical(left, right);
+
         return switch (right.expr) {
             .ident, .fn_expr => {
                 if (left.expr == .block) return self.wrapPipeCallWithTemp(left, right, &.{}, false);
                 const args = try self.alloc.alloc(*Node, 1);
+                errdefer self.alloc.free(args);
                 args[0] = left;
                 return self.allocExpr(Span.merge(left.span, right.span), .{ .call = .{
                     .callee = right,
@@ -1212,6 +1127,7 @@ const Parser = struct {
             .call => |call| {
                 if (left.expr == .block) return self.wrapPipeCallWithTemp(left, call.callee, call.args, call.implicit_self);
                 const call_args = try self.alloc.alloc(*Node, call.args.len + 1);
+                errdefer self.alloc.free(call_args);
                 call_args[0] = left;
                 @memcpy(call_args[1..], call.args);
                 return self.allocExpr(Span.merge(left.span, right.span), .{ .call = .{
@@ -1239,6 +1155,7 @@ const Parser = struct {
         } });
 
         const call_args = try self.alloc.alloc(*Node, args.len + 1);
+        errdefer self.alloc.free(call_args);
         call_args[0] = temp_ref;
         @memcpy(call_args[1..], args);
         const call = try self.allocExpr(Span.merge(left.span, callee.span), .{ .call = .{
@@ -1248,6 +1165,7 @@ const Parser = struct {
         } });
 
         const exprs = try self.alloc.alloc(*Node, 2);
+        errdefer self.alloc.free(exprs);
         exprs[0] = bind;
         exprs[1] = call;
         return self.allocExpr(Span.merge(left.span, callee.span), .{ .block = exprs });
@@ -1260,6 +1178,7 @@ const Parser = struct {
             .value = left,
         } });
         const exprs = try self.alloc.alloc(*Node, 2);
+        errdefer self.alloc.free(exprs);
         exprs[0] = bind;
         exprs[1] = right;
         return self.allocExpr(Span.merge(left.span, right.span), .{ .block = exprs });
@@ -1287,29 +1206,6 @@ fn hasUnderscore(node: *const Node) bool {
 }
 
 const pipe_temp_name = "_";
-
-const BindingPower = struct {
-    left: u8,
-    right: u8,
-    op: ast.BinOp,
-};
-
-fn infixBindingPower(kind: TokenType) ?BindingPower {
-    return infix_binding_table.get(kind);
-}
-
-const LogicalBinding = struct {
-    left: u8,
-    right: u8,
-};
-
-fn logicalBindingPower(kind: TokenType) ?LogicalBinding {
-    return logical_binding_table.get(kind);
-}
-
-fn compoundAssignOp(kind: TokenType) ?ast.BinOp {
-    return compound_assign_table.get(kind);
-}
 
 const InfixBindingTable = std.EnumArray(TokenType, ?BindingPower);
 const infix_binding_table: InfixBindingTable = blk: {
@@ -1370,31 +1266,12 @@ const call_stmt_boundary_tokens = makeTokenSet(&.{
 });
 
 const expr_start_tokens = makeTokenSet(&.{
-    .number,
-    .string,
-    .multiline_string,
-    .hash,
-    .ident,
-    .kw_const,
-    .kw_let,
-    .kw_macro,
-    .kw_struct,
-    .minus,
-    .kw_not,
-    .pipe_forward,
-    .lparen,
-    .kw_fn,
-    .kw_if,
-    .kw_match,
-    .kw_do,
-    .kw_loop,
-    .kw_break,
-    .kw_return,
-    .kw_import,
-    .kw_spawn,
-    .kw_join,
-    .kw_yield,
-    .lsquiggly,
+    .number,    .string,       .multiline_string, .hash,      .ident,
+    .kw_const,  .kw_let,       .kw_macro,         .kw_struct, .minus,
+    .kw_not,    .pipe_forward, .lparen,           .kw_fn,     .kw_if,
+    .kw_match,  .kw_do,        .kw_loop,          .kw_break,  .kw_return,
+    .kw_import, .kw_spawn,     .kw_join,          .kw_yield,  .lsquiggly,
+    .eof,
 });
 
 /// expr allows bare call after it (ident, field, call, fn_expr)
