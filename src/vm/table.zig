@@ -179,6 +179,23 @@ pub const Table = struct {
         };
     }
 
+    pub fn structFieldIndex(self: *const Table, vm: *revo.VM, field_atom: memory.AtomID) !?usize {
+        const mt_id = self.metatable orelse return null;
+        const mt = try vm.tables.get(mt_id);
+        const fields_data = mt.getRaw(.{ .atom = try vm.internAtom("__fields") }) orelse return null;
+        const fields_id = switch (fields_data) {
+            .table => |id| id,
+            else => return null,
+        };
+        const fields = try vm.tables.get(fields_id);
+        const field_key = Data.new.atom(field_atom);
+        if (fields.getRaw(field_key) == null) return null;
+        for (fields.hash_order.items, 0..) |key, idx| {
+            if (key == .atom and field_key == .atom and key.atom == field_key.atom) return idx;
+        }
+        return null;
+    }
+
     pub fn put(self: *Table, table_id: memory.TableID, vm: *revo.VM, key: Data, val: Data) !void {
         if (self.metatable == null) {
             return self.putRaw(key, val);
@@ -230,6 +247,15 @@ pub const Table = struct {
                         }
                     }
                 }
+            }
+
+            if (try self.structFieldIndex(vm, key_atom)) |field_idx| {
+                if (field_idx >= self.array.items.len) {
+                    const old_len = self.array.items.len;
+                    try self.array.resize(vm.runtime.alloc, field_idx + 1);
+                    @memset(self.array.items[old_len..], revo.core_atoms.data(.missing));
+                }
+                self.array.items[field_idx] = val;
             }
 
             try self.putRaw(key, val);
@@ -327,7 +353,11 @@ pub const Table = struct {
 
     pub fn write(self: *Table, writer: *std.Io.Writer, vm: *revo.VM, mode: Data.RenderMode) anyerror!void {
         try writer.writeAll("{ ");
-        const should_write_idx = self.hash_entries.count() != 0;
+        const has_struct_fields = if (self.metatable) |mt_id| blk: {
+            const mt = try vm.tables.get(mt_id);
+            break :blk mt.getRaw(.{ .atom = try vm.internAtom("__fields") }) != null;
+        } else false;
+        const should_write_idx = self.hash_entries.count() != 0 and !has_struct_fields;
         for (self.array.items, 0..) |val, idx| {
             if (should_write_idx) {
                 try Data.new.num(idx).write(writer, vm, mode);

@@ -374,6 +374,7 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
+                const return_type = if (self.match(.arrow)) (try self.expectIdent()).text else null;
                 const body = try self.parseStatementExpression(body_min_bp);
 
                 var new_params = try self.alloc.alloc(ast.FnParam, params.len + 1);
@@ -382,7 +383,7 @@ const Parser = struct {
                 @memcpy(new_params[1..], params);
 
                 const fn_node = try self.allocExpr(Span.merge(start.span(), body.span), .{
-                    .fn_expr = .{ .params = new_params, .body = body },
+                    .fn_expr = .{ .params = new_params, .return_type = return_type, .body = body },
                 });
                 const obj_node = try self.allocExpr(first_ident.span(), .{ .ident = first_ident.text });
                 const key_node = try self.allocExpr(atom_token.span(), .{ .hash = method_name });
@@ -400,10 +401,11 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
+                const return_type = if (self.match(.arrow)) (try self.expectIdent()).text else null;
                 const body = try self.parseStatementExpression(body_min_bp);
 
                 const fn_node = try self.allocExpr(Span.merge(start.span(), body.span), .{
-                    .fn_expr = .{ .params = params, .body = body },
+                    .fn_expr = .{ .params = params, .return_type = return_type, .body = body },
                 });
                 const obj_node = try self.allocExpr(first_ident.span(), .{ .ident = first_ident.text });
                 const key_node = try self.allocExpr(field_name.span(), .{ .hash = field_name.text });
@@ -420,10 +422,11 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
+                const return_type = if (self.match(.arrow)) (try self.expectIdent()).text else null;
                 const body = try self.parseStatementExpression(body_min_bp);
 
                 const fn_node = try self.allocExpr(Span.merge(start.span(), body.span), .{
-                    .fn_expr = .{ .params = params, .body = body },
+                    .fn_expr = .{ .params = params, .return_type = return_type, .body = body },
                 });
                 const target = try self.allocExpr(first_ident.span(), .{ .ident = first_ident.text });
                 return self.allocExpr(Span.merge(start.span(), body.span), .{
@@ -437,9 +440,10 @@ const Parser = struct {
         _ = try self.expect(.lparen);
         const params = try self.parseParamList(.rparen);
         _ = try self.expect(.rparen);
+        const return_type = if (self.match(.arrow)) (try self.expectIdent()).text else null;
         const body = try self.parseStatementExpression(body_min_bp);
         return self.allocExpr(Span.merge(start.span(), body.span), .{
-            .fn_expr = .{ .params = params, .body = body },
+            .fn_expr = .{ .params = params, .return_type = return_type, .body = body },
         });
     }
 

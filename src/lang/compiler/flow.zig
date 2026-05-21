@@ -29,6 +29,8 @@ pub fn compileLoop(self: *Compiler, body: *const Node) !void {
     try self.compile(body, true);
     try emit.regRelease(self);
     try emit.emit(self, .jump, loop_start);
+    // sync stack to loop result so bindings see the correct value
+    self.active_registers = self.loop_result_regs.items[self.loop_result_regs.items.len - 1] + 1;
 }
 
 pub fn compileWhile(
@@ -47,10 +49,11 @@ pub fn compileWhile(
     try emit.regRelease(self);
     try emit.emit(self, .jump, loop_start);
 
-    // patch exit_jump to here (predicate is false, exit loop)
-    // this is also where breaks should jump
     emit.patchJump(self, exit_jump);
+    // sync stack to loop result so bindings see the correct value
+    self.active_registers = self.loop_result_regs.items[self.loop_result_regs.items.len - 1] + 1;
 }
+
 pub fn compileForRange(
     self: *Compiler,
     params: []const ast.FnParam,
@@ -67,20 +70,15 @@ pub fn compileForRange(
     try self.compile(step_expr, true);
     try self.compile(end_expr, true);
 
-    // state layout in consecutive registers starting at base:
-    // R[base]   = current (start initially)
-    // R[base+1] = step
-    // R[base+2] = limit
     const base_reg = try toRegister(self.active_registers - 3);
     const range_init_instr: Instruction = .{
         .op = .range_init,
-        .a = base_reg, // output: start of loop state
-        .b = try toRegister(self.active_registers - 3), // input: start
-        .bx = @intCast(self.active_registers - 2), // input: step (register index via bx)
-        .c = try toRegister(self.active_registers - 1), // input: end
+        .a = base_reg,
+        .b = try toRegister(self.active_registers - 3),
+        .bx = @intCast(self.active_registers - 2),
+        .c = try toRegister(self.active_registers - 1),
     };
-    try self.instructions.append(self.alloc, range_init_instr);
-    try self.spans.append(self.alloc, self.active_span);
+    try emit.appendRecorded(self, range_init_instr);
 
     const needs_index = params.len == 2 and !ast.isDiscardName(params[1].name);
 
@@ -93,76 +91,70 @@ pub fn compileRangeLoopBody(
     self: *Compiler,
     params: []const ast.FnParam,
     body: *const Node,
-    state_reg: Register, // base register holding loop state (current, step, limit)
+    state_reg: Register,
     needs_index: bool,
 ) !void {
+    if (params.len >= 1 and !ast.isDiscardName(params[0].name)) {
+        if (state.currentFunctionState(self)) |fn_state| {
+            try fn_state.var_types.put(params[0].name, "int");
+        }
+    }
+    if (params.len == 2 and !ast.isDiscardName(params[1].name)) {
+        if (state.currentFunctionState(self)) |fn_state| {
+            try fn_state.var_types.put(params[1].name, "int");
+        }
+    }
+
     const loop_check: ProgramCounter = @intCast(self.instructions.items.len);
 
-    // output registers for range_next
-    const value_reg = try toRegister(self.active_registers); // new register for value
-    const index_reg = if (needs_index) try toRegister(self.active_registers + 1) else 0; // new for index
-    const has_next_reg = try toRegister(self.active_registers + @as(usize, if (needs_index) 2 else 1)); // new for has_next
+    const value_reg = try toRegister(self.active_registers);
+    const index_reg = if (needs_index) try toRegister(self.active_registers + 1) else 0;
+    const has_next_reg = try toRegister(self.active_registers + @as(usize, if (needs_index) 2 else 1));
 
     const range_next_instr: Instruction = .{
         .op = .range_next,
-        .a = value_reg, // output: value
-        .b = state_reg, // input: loop state base (current, step, limit)
-        .c = index_reg, // output: index (or 0 if not needed)
-        .bx = @intCast(has_next_reg), // output: has_next
+        .a = value_reg,
+        .b = state_reg,
+        .c = index_reg,
+        .bx = @intCast(has_next_reg),
     };
-    try self.instructions.append(self.alloc, range_next_instr);
-    try self.spans.append(self.alloc, self.active_span);
-    self.active_registers += if (needs_index) 3 else 2; // +value, +index (if needed), +has_next
+    try emit.appendRecorded(self, range_next_instr);
+    self.active_registers += if (needs_index) 3 else 2;
 
-    // maybe exit when if !has_next (@ top of stack)
     const end_jump = try emit.jump(self, .jump_if_false);
-    // jump already consumes has_next from stack
 
-    // bind first param (val) to the value register
     if (params.len >= 1 and !ast.isDiscardName(params[0].name)) {
         const temp_reg = try toRegister(self.active_registers);
-
-        // duplicate value to top of stack before storing binding
         const move_val: Instruction = .{
             .op = .move,
             .a = temp_reg,
             .b = value_reg,
         };
-        try self.instructions.append(self.alloc, move_val);
-        try self.spans.append(self.alloc, self.active_span);
+        try emit.appendRecorded(self, move_val);
         self.active_registers += 1;
-
-        // store to global (consumes top)
         try emit.emit(self, .store_global, try self.vm.internAtom(params[0].name));
     }
 
-    // bind second param (idx) to the index register
     if (params.len == 2 and !ast.isDiscardName(params[1].name)) {
         const temp_reg = try toRegister(self.active_registers);
-
         const move_idx: Instruction = .{
             .op = .move,
             .a = temp_reg,
             .b = index_reg,
         };
-        try self.instructions.append(self.alloc, move_idx);
-        try self.spans.append(self.alloc, self.active_span);
+        try emit.appendRecorded(self, move_idx);
         self.active_registers += 1;
-
         try emit.emit(self, .store_global, try self.vm.internAtom(params[1].name));
     }
 
-    // drop value and index
-    if (needs_index) try emit.regRelease(self); // idx
-    try emit.regRelease(self); // val
+    if (needs_index) try emit.regRelease(self);
+    try emit.regRelease(self);
 
-    // body clobbers them if you dont reserve
     const loop_state_end = try toRegister(state_reg + 3);
     reserveRegisters(self, loop_state_end);
 
     try self.compile(body, true);
 
-    // move body result to loop result
     const body_result_reg: Register = @intCast(self.active_registers - 1);
     const loop_result_reg: Register = @intCast(self.loop_result_regs.items[self.loop_result_regs.items.len - 1]);
     if (body_result_reg != loop_result_reg) {
@@ -171,24 +163,18 @@ pub fn compileRangeLoopBody(
             .a = loop_result_reg,
             .b = body_result_reg,
         };
-        try self.instructions.append(self.alloc, move_res);
-        try self.spans.append(self.alloc, self.active_span);
+        try emit.appendRecorded(self, move_res);
     }
-    try emit.regRelease(self); // pop body result, loop_result remains
+    try emit.regRelease(self);
 
-    // back to loop check
     try emit.emit(self, .jump, loop_check);
-
     emit.patchJump(self, end_jump);
 
-    // clean up loop state registers and leftover value/index
-    // stack at this point: loop_result, current, step, limit, value, [index]
-    try emit.regRelease(self); // value
-    if (needs_index) try emit.regRelease(self); // index
-    try emit.regRelease(self); // limit
-    try emit.regRelease(self); // step
-    try emit.regRelease(self); // current
-    // stack: loop_result
+    try emit.regRelease(self);
+    if (needs_index) try emit.regRelease(self);
+    try emit.regRelease(self);
+    try emit.regRelease(self);
+    try emit.regRelease(self);
 }
 
 pub fn compileFor(
@@ -201,7 +187,6 @@ pub fn compileFor(
         return self.fail(.UnsupportedSyntax, iter, "for expects one or two binding names");
     }
 
-    // theres a happy path
     if (iter.expr == .range_literal) {
         const range_info = iter.expr.range_literal;
         return compileForRange(
@@ -218,7 +203,6 @@ pub fn compileFor(
     var loop = try LoopScopeT.init(self);
     defer loop.deinit();
 
-    // all code is now inside __main (synthetic top-level function), so always use locals
     const iter_slot: Operand = @intCast(self.slot_allocators.items[self.slot_allocators.items.len - 1]);
     self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
     const iter_storage: VarStorage = .{ .local = iter_slot };
@@ -227,17 +211,13 @@ pub fn compileFor(
     self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
     const idx_storage: VarStorage = .{ .local = idx_slot };
 
-    // compile iter expression into iter storage
     try self.compile(iter, true);
     try emitStorageStore(self, iter_storage, false);
-
-    // init idx to 0
     try emit.@"const"(self, Data.new.num(0));
     try emitStorageStore(self, idx_storage, false);
 
     const loop_check: ProgramCounter = @intCast(self.instructions.items.len);
 
-    // check idx < len(iter)
     try emitStorageLoad(self, idx_storage);
     try emit.emit(self, .load_global, try self.vm.internAtom("len"));
     try emitStorageLoad(self, iter_storage);
@@ -245,7 +225,6 @@ pub fn compileFor(
     try emit.emit(self, .lt, 0);
     const end_jump = try emit.jump(self, .jump_if_false);
 
-    // load iter value w tuple/table/__iter dispatch
     try emitForValueLoad(self, iter_storage, idx_storage);
     if (!ast.isDiscardName(params[0].name)) {
         try emit.regDupe(self);
@@ -271,7 +250,6 @@ pub fn compileFor(
 
     try self.compile(body, true);
 
-    // mv body result to loop result
     const body_result_reg: Register = @intCast(self.active_registers - 1);
     const loop_result_reg: Register = @intCast(self.loop_result_regs.items[self.loop_result_regs.items.len - 1]);
     if (body_result_reg != loop_result_reg) {
@@ -280,20 +258,19 @@ pub fn compileFor(
             .a = loop_result_reg,
             .b = body_result_reg,
         };
-        try self.instructions.append(self.alloc, move_res);
-        try self.spans.append(self.alloc, self.active_span);
+        try emit.appendRecorded(self, move_res);
     }
-    try emit.regRelease(self); // pop body result, loop_result left
+    try emit.regRelease(self);
 
-    // idx = idx + 1
     try emitStorageLoad(self, idx_storage);
     try emit.@"const"(self, Data.new.num(1));
     try emit.emit(self, .add, 0);
     try emitStorageStore(self, idx_storage, false);
     try emit.emit(self, .jump, loop_check);
 
-    // patch end_jump to here (loop exit)
     emit.patchJump(self, end_jump);
+    // sync stack pointer to loop result register so next binding sees the value
+    self.active_registers = self.loop_result_regs.items[self.loop_result_regs.items.len - 1] + 1;
 }
 
 pub fn emitStorageLoad(
@@ -316,6 +293,7 @@ pub fn emitStorageStore(
         .global => |sym| try emit.emit(self, if (is_const) .store_global_const else .store_global, sym),
     }
 }
+
 pub fn emitForValueLoad(
     self: *Compiler,
     iter_storage: VarStorage,
@@ -407,15 +385,10 @@ pub fn compileMatch(
     if (state.currentFunctionState(self) == null)
         return self.fail(.UnsupportedSyntax, subject, "match requires function scope");
 
-    // to restore after match
-    // TODO: this also means you cant define globals from within matches
-    //       i am genuinely surprised this doesnt break defining globals from arms
-    //
     const saved_next_slot = self.slot_allocators.items[self.slot_allocators.items.len - 1];
     const saved_active = self.active_registers;
     const saved_max = self.max_registers;
 
-    // single scope for whole match's subject
     try state.pushScope(self);
     errdefer state.popScope(self);
     errdefer {
@@ -439,7 +412,6 @@ pub fn compileMatch(
     for (arms) |arm| {
         self.active_registers = arm_base_registers;
 
-        // each arm gets its own lex scope for pattern variables
         try state.pushScope(self);
         errdefer state.popScope(self);
 
@@ -464,7 +436,6 @@ pub fn compileMatch(
 
         try self.compile(arm.then, true);
 
-        // move arm result to canonical result location
         const arm_result_reg: Register = @intCast(self.active_registers - 1);
         if (arm_result_reg != arm_base_registers) {
             const move_instr: Instruction = .{
@@ -472,16 +443,14 @@ pub fn compileMatch(
                 .a = try toRegister(arm_base_registers),
                 .b = try toRegister(arm_result_reg),
             };
-            try self.instructions.append(self.alloc, move_instr);
-            try self.spans.append(self.alloc, self.active_span);
+            try emit.appendRecorded(self, move_instr);
         }
-        try emit.regRelease(self); // pop arm result
-        self.active_registers = arm_base_registers + 1; // result is now at arm_base_registers
+        try emit.regRelease(self);
+        self.active_registers = arm_base_registers + 1;
 
         const end_jump = try emit.jump(self, .jump);
         try end_jumps.append(self.alloc, end_jump);
 
-        // needs to happen before patching jumps so that pattern vars go out of scope
         state.popScope(self);
 
         const next_arm = self.instructions.items.len;
@@ -491,10 +460,8 @@ pub fn compileMatch(
     }
     state.popScope(self);
 
-    // so that neighbouring code gets fresh slot numbers
     self.slot_allocators.items[self.slot_allocators.items.len - 1] = saved_next_slot;
 
-    // default case & success patches
     self.active_registers = arm_base_registers;
     try emit.nil(self);
     for (end_jumps.items) |jump_idx| {
@@ -505,7 +472,7 @@ pub fn compileMatch(
 }
 
 pub fn patchJumpToLabel(self: *Compiler, jump_idx: usize, target: usize) void {
-    self.instructions.items[jump_idx].bx = @intCast(target);
+    emit.patchJumpToLabel(self, jump_idx, target);
 }
 
 pub fn reserveRegisters(self: *Compiler, min_register: Register) void {
@@ -590,9 +557,8 @@ pub fn compilePatternChecks(
     const expr = matcher orelse return fail_jumps.toOwnedSlice(self.alloc);
 
     switch (expr.expr) {
-        .ident => {}, // wildcard in matcher position
+        .ident => {},
         .tuple_pattern => |items| {
-            // check tuple type
             try emit.emit(self, .load_global, try self.vm.internAtom("type"));
             try emitStorageLoad(self, subject);
             try emit.emit(self, .call, 1);
@@ -600,7 +566,6 @@ pub fn compilePatternChecks(
             try emit.emit(self, .eq, 0);
             try fail_jumps.append(self.alloc, try emit.jump(self, .jump_if_false));
 
-            // check exact tuple length
             try emit.emit(self, .load_global, try self.vm.internAtom("len"));
             try emitStorageLoad(self, subject);
             try emit.emit(self, .call, 1);
@@ -635,6 +600,7 @@ pub fn compilePatternChecks(
     }
     return fail_jumps.toOwnedSlice(self.alloc);
 }
+
 pub fn compileIf(
     self: *Compiler,
     condition: *const Node,
@@ -714,11 +680,9 @@ pub fn compileBreak(self: *Compiler, expr: *const Node, value: ?*const Node) !vo
     const loop_res = self.loop_result_regs.items[self.loop_result_regs.items.len - 1];
     const move_to_res: Instruction = .{ .op = .move, .a = try toRegister(loop_res), .b = try toRegister(r) };
 
-    try self.instructions.append(self.alloc, move_to_res);
-    try self.spans.append(self.alloc, self.active_span);
+    try emit.appendRecorded(self, move_to_res);
     const move_back: Instruction = .{ .op = .move, .a = try toRegister(r), .b = try toRegister(loop_res) };
-    try self.instructions.append(self.alloc, move_back);
-    try self.spans.append(self.alloc, self.active_span);
+    try emit.appendRecorded(self, move_back);
     const jump_idx = try emit.jump(self, .jump);
     try self.break_jumps.append(self.alloc, jump_idx);
 }

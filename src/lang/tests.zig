@@ -30,9 +30,39 @@ test "lang surface exports parse and build pipeline entrypoints" {
     try std.testing.expect(built.ok.instructions.len != 0);
 }
 
+test "typed struct field access emits fast opcodes" {
+    var vm = try VM.init(t.runtime());
+    defer vm.deinit();
+
+    const built = try lang.build(&vm, .{
+        .text =
+        \\ struct User {
+        \\     age: number = 0,
+        \\ }
+        \\ let user: User = User {}
+        \\ const before = user.age
+        \\ user.age = 12
+        \\ before + user.age
+        ,
+    }, .{});
+    try std.testing.expect(built == .ok);
+    defer alloc.free(built.ok.instructions);
+    defer alloc.free(built.ok.spans);
+
+    var saw_get = false;
+    var saw_set = false;
+    for (built.ok.instructions) |inst| {
+        if (inst.op == .struct_get_offset) saw_get = true;
+        if (inst.op == .struct_set_offset) saw_set = true;
+    }
+
+    try std.testing.expect(saw_get);
+    try std.testing.expect(saw_set);
+}
+
 test {
     _ = @import("expander.zig").testing;
-    _ = std.testing.refAllDecls(@import("compiler.zig"));
+    _ = std.testing.refAllDecls(@import("compiler/root.zig"));
 }
 
 //
@@ -2446,3 +2476,217 @@ test "pipe: nested scope capture" {
         \\ end
     , "HELLO");
 }
+
+//
+// Type system tests (types.zig)
+//
+
+test "types: TypeInfo equality" {
+    const int_type: revo.lang.compiler.types.TypeInfo = .int;
+    const any_type: revo.lang.compiler.types.TypeInfo = .any;
+
+    try std.testing.expect(int_type.eql(.int));
+    try std.testing.expect(!int_type.eql(.float));
+    try std.testing.expect(any_type.eql(.any));
+}
+
+test "types: numeric type check" {
+    const types = revo.lang.compiler.types;
+    try std.testing.expect(types.isNumeric(.int));
+    try std.testing.expect(types.isNumeric(.float));
+    try std.testing.expect(!types.isNumeric(.string));
+    try std.testing.expect(!types.isNumeric(.any));
+}
+
+test "types: type coercion" {
+    const types = revo.lang.compiler.types;
+    try std.testing.expect(types.canCoerce(.int, .int));
+    try std.testing.expect(types.canCoerce(.int, .float));
+    try std.testing.expect(!types.canCoerce(.float, .int)); // float doesn't coerce to int
+    try std.testing.expect(types.canCoerce(.int, .any)); // anything to any
+    try std.testing.expect(types.canCoerce(.any, .int)); // any to anything (optimistic)
+}
+
+test "types: binary op inference - arithmetic" {
+    const types = revo.lang.compiler.types;
+    const add_int_int = types.inferBinaryOp(.add, .int, .int);
+    try std.testing.expect(add_int_int.eql(.int));
+
+    const add_float_float = types.inferBinaryOp(.add, .float, .float);
+    try std.testing.expect(add_float_float.eql(.float));
+
+    const add_int_float = types.inferBinaryOp(.add, .int, .float);
+    try std.testing.expect(add_int_float.eql(.float));
+}
+
+test "types: binary op inference - comparison" {
+    const types = revo.lang.compiler.types;
+    const cmp = types.inferBinaryOp(.eq, .int, .int);
+    try std.testing.expect(cmp.eql(.bool));
+
+    const cmp2 = types.inferBinaryOp(.lt, .float, .float);
+    try std.testing.expect(cmp2.eql(.bool));
+}
+
+test "types: unary op inference" {
+    const types = revo.lang.compiler.types;
+    const negate_int = types.inferUnaryOp(.negate, .int);
+    try std.testing.expect(negate_int.eql(.int));
+
+    const not_bool = types.inferUnaryOp(.not, .bool);
+    try std.testing.expect(not_bool.eql(.bool));
+}
+
+//
+// IR tests (ir.zig)
+//
+
+test "ir: IrBuilder init and deinit" {
+    var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+    defer builder.deinit();
+    try std.testing.expect(builder.instructions.items.len == 0);
+}
+
+test "ir: IrBuilder add instruction" {
+    var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+    defer builder.deinit();
+
+    const inst = try builder.addInstruction(
+        .load_int,
+        .int,
+        &.{},
+    );
+
+    try std.testing.expect(inst.op == .load_int);
+    try std.testing.expect(inst.result_type.eql(.int));
+    try std.testing.expect(builder.instructions.items.len == 1);
+}
+
+test "ir: IrBuilder add binary operation" {
+    var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+    defer builder.deinit();
+
+    const lhs = try builder.addInstruction(.load_int, .int, &.{});
+    const rhs = try builder.addInstruction(.load_int, .int, &.{});
+
+    const add_inst = try builder.addInstruction(
+        .add,
+        .int,
+        &.{ .{ .inst = lhs }, .{ .inst = rhs } },
+    );
+
+    try std.testing.expect(add_inst.op == .add);
+    try std.testing.expect(add_inst.result_type.eql(.int));
+    try std.testing.expect(builder.instructions.items.len == 3);
+}
+
+test "ir: IrBuilder constant pool" {
+    var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+    defer builder.deinit();
+
+    const idx1 = try builder.addConst("hello");
+    const idx2 = try builder.addConst("world");
+
+    try std.testing.expect(idx1 == 0);
+    try std.testing.expect(idx2 == 1);
+    try std.testing.expect(builder.constants.items.len == 2);
+}
+
+//
+// Type checker tests (type_check.zig)
+//
+
+// test "type_check: check int literal" {
+//     var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+//     defer builder.deinit();
+//
+//     var checker = try revo.lang.compiler.type_check.TypeChecker.init(alloc, &builder);
+//     defer checker.deinit();
+//
+//     const expr = revo.lang.compiler.type_check.Expr{ .int_literal = 42 };
+//     const inferred = try checker.checkExpr(expr);
+//
+//     try std.testing.expect(inferred.eql(.int));
+//     try std.testing.expect(builder.instructions.items.len == 1);
+// }
+//
+// test "type_check: check float literal" {
+//     var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+//     defer builder.deinit();
+//
+//     var checker = try revo.lang.compiler.type_check.TypeChecker.init(alloc, &builder);
+//     defer checker.deinit();
+//
+//     const expr = revo.lang.compiler.type_check.Expr{ .float_literal = 3.14 };
+//     const inferred = try checker.checkExpr(expr);
+//
+//     try std.testing.expect(inferred.eql(.float));
+// }
+//
+// test "type_check: check string literal" {
+//     var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+//     defer builder.deinit();
+//
+//     var checker = try revo.lang.compiler.type_check.TypeChecker.init(alloc, &builder);
+//     defer checker.deinit();
+//
+//     const expr = revo.lang.compiler.type_check.Expr{ .string_literal = "hello" };
+//     const inferred = try checker.checkExpr(expr);
+//
+//     try std.testing.expect(inferred.eql(.string));
+// }
+//
+// test "type_check: check bool literal" {
+//     var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+//     defer builder.deinit();
+//
+//     var checker = try revo.lang.compiler.type_check.TypeChecker.init(alloc, &builder);
+//     defer checker.deinit();
+//
+//     const expr = revo.lang.compiler.type_check.Expr{ .bool = true };
+//     const inferred = try checker.checkExpr(expr);
+//
+//     try std.testing.expect(inferred.eql(.bool));
+// }
+//
+// test "type_check: check binary add (int + int = int)" {
+//     var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+//     defer builder.deinit();
+//
+//     var checker = try revo.lang.compiler.type_check.TypeChecker.init(alloc, &builder);
+//     defer checker.deinit();
+//
+//     const left = revo.lang.compiler.type_check.Expr{ .int_literal = 10 };
+//     const right = revo.lang.compiler.type_check.Expr{ .int_literal = 20 };
+//
+//     const bin = try alloc.create(revo.lang.compiler.type_check.BinaryExpr);
+//     bin.* = .{
+//         .op = .add,
+//         .left = left,
+//         .right = right,
+//     };
+//     defer alloc.destroy(bin);
+//
+//     const expr = revo.lang.compiler.type_check.Expr{ .binary = bin };
+//     const inferred = try checker.checkExpr(expr);
+//     try std.testing.expect(inferred.eql(.int));
+// }
+//
+// test "type_check: check unary negate (int -> int)" {
+//     var builder = try revo.lang.compiler.ir.IrBuilder.init(alloc);
+//     defer builder.deinit();
+//
+//     var checker = try revo.lang.compiler.type_check.TypeChecker.init(alloc, &builder);
+//     defer checker.deinit();
+//
+//     const un = try alloc.create(revo.lang.compiler.type_check.UnaryExpr);
+//     un.* = .{
+//         .op = .negate,
+//         .operand = .{ .int_literal = 42 },
+//     };
+//     defer alloc.destroy(un);
+//
+//     const expr = revo.lang.compiler.type_check.Expr{ .unary = un };
+//     const inferred = try checker.checkExpr(expr);
+//     try std.testing.expect(inferred.eql(.int));
+// }

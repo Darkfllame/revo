@@ -65,15 +65,3 @@ doto(
 )
 
 print(grunt)
-##
-{ :name: Grunt,
-  :hp: 30,
-  :max_hp: 30,
-  :attack: 17,
-  :defense: 3,
-  :inventory: { },
-  :weapon: serrated cleaver,
-  :armor: leather scraps,
-  :faction: Bleakwood,
-  :rage: 10, }
-##

@@ -1475,7 +1475,110 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             return error.IncompatibleTypes;
         },
 
+        // specialized unary opcodes (no tag checks)
+        .negate_int => {
+            const v = self.readRegisterFast(base, instr.b).number;
+            const v_int = @as(i64, @intFromFloat(v));
+            try self.writeRegisterFast(base, instr.a, Data.new.num(@as(f64, @floatFromInt(-v_int))));
+        },
+
+        .negate_float => {
+            const v = self.readRegisterFast(base, instr.b).number;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(-v));
+        },
+
+        // specialized arith opcodes for typed int/float (no tag checks)
+        .add_int => {
+            const lhs = self.readRegisterFast(base, instr.b).number;
+            const rhs = self.readRegisterFast(base, instr.c).number;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(lhs + rhs));
+        },
+
+        .sub_int => {
+            const lhs = self.readRegisterFast(base, instr.b).number;
+            const rhs = self.readRegisterFast(base, instr.c).number;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(lhs - rhs));
+        },
+
+        .mul_int => {
+            const lhs = self.readRegisterFast(base, instr.b).number;
+            const rhs = self.readRegisterFast(base, instr.c).number;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(lhs * rhs));
+        },
+
+        .div_int => {
+            const lhs = self.readRegisterFast(base, instr.b).number;
+            const rhs = self.readRegisterFast(base, instr.c).number;
+            if (rhs == 0) return error.DivisionByZero;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(@divTrunc(@as(i64, @intFromFloat(lhs)), @as(i64, @intFromFloat(rhs)))));
+        },
+
+        .add_float => {
+            const lhs = self.readRegisterFast(base, instr.b).number;
+            const rhs = self.readRegisterFast(base, instr.c).number;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(lhs + rhs));
+        },
+
+        .sub_float => {
+            const lhs = self.readRegisterFast(base, instr.b).number;
+            const rhs = self.readRegisterFast(base, instr.c).number;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(lhs - rhs));
+        },
+
+        .mul_float => {
+            const lhs = self.readRegisterFast(base, instr.b).number;
+            const rhs = self.readRegisterFast(base, instr.c).number;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(lhs * rhs));
+        },
+
+        .div_float => {
+            const lhs = self.readRegisterFast(base, instr.b).number;
+            const rhs = self.readRegisterFast(base, instr.c).number;
+            if (rhs == 0) return error.DivisionByZero;
+            try self.writeRegisterFast(base, instr.a, Data.new.num(lhs / rhs));
+        },
+
         inline .eq, .neq, .lt, .gt, .lte, .gte => |op| try compare_impl.eval(self, instr, op),
+
+        // specialized comparison opcodes for int (no metamethods, no type conversion)
+        inline .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int => |op| {
+            const lhs_val = try self.readRegister(instr.b);
+            const rhs_val = try self.readRegister(instr.c);
+            const lhs = lhs_val.as_number() catch unreachable;
+            const rhs = rhs_val.as_number() catch unreachable;
+            const lhs_int = @as(i64, @intFromFloat(lhs));
+            const rhs_int = @as(i64, @intFromFloat(rhs));
+
+            const result = switch (op) {
+                .eq_int => lhs_int == rhs_int,
+                .neq_int => lhs_int != rhs_int,
+                .lt_int => lhs_int < rhs_int,
+                .gt_int => lhs_int > rhs_int,
+                .lte_int => lhs_int <= rhs_int,
+                .gte_int => lhs_int >= rhs_int,
+                else => unreachable,
+            };
+            try self.writeRegister(instr.a, Data.new.boolean(result));
+        },
+
+        // specialized comparison opcodes for float (no metamethods)
+        inline .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float => |op| {
+            const lhs_val = try self.readRegister(instr.b);
+            const rhs_val = try self.readRegister(instr.c);
+            const lhs = lhs_val.as_number() catch unreachable;
+            const rhs = rhs_val.as_number() catch unreachable;
+            const result = switch (op) {
+                .eq_float => lhs == rhs,
+                .neq_float => lhs != rhs,
+                .lt_float => lhs < rhs,
+                .gt_float => lhs > rhs,
+                .lte_float => lhs <= rhs,
+                .gte_float => lhs >= rhs,
+                else => unreachable,
+            };
+            try self.writeRegister(instr.a, Data.new.boolean(result));
+        },
+
         .@"and" => try self.writeRegisterFast(
             base,
             instr.a,
@@ -1581,6 +1684,45 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
                 return error.InvalidTuple;
             }
             try self.writeRegister(instr.a, t.items[instr.bx]);
+        },
+
+        .struct_get_offset => {
+            const object = try self.readRegister(instr.b);
+            const table_id = switch (object) {
+                .table => |id| id,
+                else => return error.TypeError,
+            };
+            const table = try self.tables.get(table_id);
+            if (instr.bx < table.array.items.len) {
+                try self.writeRegister(instr.a, table.array.items[instr.bx]);
+            } else {
+                try self.writeRegister(instr.a, revo.core_atoms.data(.undef));
+            }
+        },
+        .struct_set_offset => {
+            const object = try self.readRegister(instr.a);
+            const table_id = switch (object) {
+                .table => |id| id,
+                else => return error.TypeError,
+            };
+            const table = try self.tables.get(table_id);
+            const value = self.readRegisterFast(base, instr.c);
+            if (table.metatable) |mt_id| {
+                const mt = try self.tables.get(mt_id);
+                // TODO: make it a core atom
+                if (mt.getRaw(.{ .atom = try self.internAtom("__fields") })) |fields_data| {
+                    if (fields_data == .table) {
+                        const fields = try self.tables.get(fields_data.table);
+                        if (instr.bx < fields.hash_order.items.len) {
+                            const field_key = fields.hash_order.items[instr.bx];
+                            try table.put(table_id, self, field_key, value);
+                            try self.writeRegisterFast(base, instr.a, .{ .table = table_id });
+                            return;
+                        }
+                    }
+                }
+            }
+            return error.TypeError;
         },
         .jump => self.currentFiber().pc = instr.bx,
         .jump_if_false => {

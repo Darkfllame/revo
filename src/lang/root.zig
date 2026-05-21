@@ -1,6 +1,5 @@
 pub const ast = @import("ast.zig");
 pub const pipeline = @import("lang_pipeline.zig");
-pub const compiler = @import("compiler.zig");
 pub const expander = @import("expander.zig");
 pub const proc = @import("proc.zig");
 pub const lexer = @import("lexer.zig");
@@ -13,8 +12,22 @@ pub const parse = pipeline.parse;
 pub const expand = pipeline.expand;
 pub const lower = pipeline.lower;
 pub const build = pipeline.build;
-pub const renderError = pipeline.renderError;
+
+pub const compiler = @import("compiler/root.zig");
+
+pub const LowerErrorKind = compiler.LowerErrorKind;
+pub const LowerFailure = compiler.LowerFailure;
+pub const LowerResult = compiler.LowerResult;
+pub const Artifact = compiler.Artifact;
+pub const ArtifactResult = compiler.ArtifactResult;
+pub const LowerError = compiler.LowerError;
+pub const Compiler = compiler.Compiler;
 pub const lowerExprArtifactReport = compiler.lowerExprArtifactReport;
+pub const types = compiler.types;
+pub const ir = compiler.ir;
+
+
+pub const renderError = pipeline.renderError;
 pub const expandExpr = expander.expandExpr;
 pub const lex = lexer.lex;
 pub const lexReport = lexer.lexReport;
@@ -28,18 +41,14 @@ pub const spanFromNodes = ast.spanFromNodes;
 pub const Source = pipeline.Source;
 pub const Parsed = pipeline.Parsed;
 pub const Expanded = pipeline.Expanded;
-pub const Artifact = pipeline.Artifact;
 pub const Error = pipeline.Error;
 pub const ParseOptions = pipeline.ParseOptions;
 pub const LowerOptions = pipeline.LowerOptions;
 pub const BuildOptions = pipeline.BuildOptions;
 pub const ParseResult = pipeline.ParseResult;
 pub const ExpandResult = pipeline.ExpandResult;
-pub const LowerResult = pipeline.LowerResult;
 pub const BuildResult = pipeline.BuildResult;
 pub const ParseFailure = pipeline.ParseFailure;
-pub const LowerErrorKind = compiler.LowerErrorKind;
-pub const LowerFailure = compiler.LowerFailure;
 pub const Token = lexer.Token;
 pub const TokenType = lexer.TokenType;
 pub const LexError = lexer.LexError;
@@ -47,7 +56,6 @@ pub const LexResult = lexer.LexResult;
 
 test {
     _ = @import("ast.zig");
-    _ = @import("compiler.zig");
     _ = @import("expander.zig");
     _ = @import("proc.zig");
     _ = @import("lexer.zig");

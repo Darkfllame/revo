@@ -74,6 +74,7 @@ pub const TokenType = enum {
     star_assign,
     slash_assign,
     percent_assign,
+    arrow,
     dot,
     dotdot,
     colon,
@@ -270,6 +271,8 @@ const Lexer = struct {
                 self.makeToken(.plus, start, self.pos, line, column),
             '-' => if (self.matchChar('='))
                 self.makeToken(.minus_assign, start, self.pos, line, column)
+            else if (self.matchChar('>'))
+                self.makeToken(.arrow, start, self.pos, line, column)
             else if (std.ascii.isDigit(self.peek()))
                 self.lexNumberSigned(start, line, column)
             else

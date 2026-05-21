@@ -531,6 +531,7 @@ fn struct_new(args: []const Data, vm: *VM) !NativeResult {
             }
         }
 
+        try instance.push(value);
         try instance.putRaw(field_key, value);
     }
 

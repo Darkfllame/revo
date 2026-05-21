@@ -1,5 +1,7 @@
 # contributing
 
+contributing is anything from a pull request to an issue or a suggestion, all contributions are welcome!
+
 ## where to start
 
 - check out [TODO.md](./TODO.md) for plans and pick an issue
@@ -26,7 +28,4 @@ please do not submit LLM-authored code if you do not understand it, can't explai
 describe the request in your own words, rather than pulling in a wall of AI-generated text.
 this greatly reduces maintenance burden.
 
----
-
-we value learning as a whole and creating this project as a community.
-so thank you for considering contributing to revo!
+thank you for considering contributing to revo!

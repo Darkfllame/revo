@@ -1,75 +1,113 @@
-<div align="center">
-<h1>revo</h1>
+# `revo, the programming language
 
-![written in Zig](https://img.shields.io/badge/written%20in-Zig-orange)
-![version 0.0.1a](https://img.shields.io/badge/version-0.0.1a-navy)
-
+  
 [homepage & docs](https://gills.pages.dev/revo)
 | [github](https://github.com/if-not-nil/revo)
 | [learn](https://gills.pages.dev/revo/basics)
 | [chat & discuss](https://discord.com/invite/XzGWh7TX59)
 
-</div>
+an expressive, dynamically-typed language for the joy of programming
 
-**revo** is an expressive, dynamically-typed language that is made to balance semantic freedom and readability
+![written in Zig](https://img.shields.io/badge/written%20in-Zig-orange)  ![version 0.0.1a](https://img.shields.io/badge/version-0.0.1a-navy)
 
-check out the [homepage](https://gills.pages.dev/revo),
-the [basics guide](https://gills.pages.dev/revo/basics/),
-and the [blog](https://gills.pages.dev/revo/blog/apples/)
-
-# sections
-
-- [why revo?](#why-revo)
-- [installation](#installing)
+- [introduction](#introduction)
+- [installing](#installing)
   - [on posix systems](#on-posix-systems)
-  - [on windows](#on-windows-powershell)
-- [cli reference](#cli-reference)
-  - [development](#development)
-  - [credits](#credits)
+  - [windows](#windows)
+- [usage](#usage)
+- [development](#development)
+- [credits](#credits)
 - [license](#license)
 
-# why revo?
-
-revo creates an ergonimic programming experience with:
-
-## pattern matching and result types
+# introduction
 
 ```ruby
+# =======================
+# everything is something
+# =======================
+let x = do # 15
+    let y = 5 + 10
+    y
+end
+
+# =====
+# pipes
+# =====
+let x = "hello"
+  |> _:upper()
+  |> _:sub(1, 2)
+  |> assert_eq("el")
+  |> do
+    let el = _
+    "h" + el + "lo"
+  end
+  |> assert_eq("hello")
+  |> fn(c)
+
+# ===============================
+# pattern matching & result types
+# ===============================
 fn safe_div(a, b)
   if b == 0 (:err, :DivByZero)
   else (:ok, a / b)
 
 match safe_div(10, 2)
-  | (:ok, v)  print(v)     # 5
+  | (:ok, v)  print(v) # 5
   | (:err, e) print(e)
-```
 
-## fibers
+# =============================================================
+# seamless concurrency
+# > write blocking code,
+# > then make it non-blocking by putting `spawn` in front of it
+# =============================================================
+const h = spawn fn() add(20, 22)
+join(h) # 42
 
-```ruby
-const h = spawn add(20, 22)
-join(h)  # 42
-```
+let ch = chan()
+fn worker(n) do
+    if n == 6 do
+      send(ch, :done)
+      return n
+    end
+    sleep(n * 100)
+    send(ch, n * 10)
+end
 
-## testing that doesn't hurt
+for i in 0..7
+    spawn worker(n)
 
-```ruby
+loop match recv(ch)
+  | :done break :done 
+  | x print("got", x)
+
+# ============================================================
+# first-class testing
+# > test blocks get compiled & ran with the `--test` flag only
+# ============================================================
+
 fn add(a, b) a + b
 fn mul(a, b) a * b
 
-suite "ops" do
+test "mul works" expect_eq(add(21, 21), 42)?
+
+suite "math" do
+  const N = 20
+  const check_mul(a, b)
+    expect(mul(a + b) == a * b)
+
   test "addition" do
-    expect(add(20, 22) == 42)?
+    expect(add(N, 22) == 42)?
     expect(add(20, 22) != 22)?
   end
 
   test "multiplication" do
-    expect(mul(20, 22) == 440)?
-    expect(mul(20, 22) != 42)?
+    check_mul(6, 7)?
+    check_mul(20, 22)?
   end
+end
 ```
 
-## painless embedding
+## simple embedding api
 
 ```c
 #include "revo.h"
@@ -96,26 +134,32 @@ erevo_program_destroy(program);
 erevo_vm_destroy(vm);
 ```
 
-you'll enjoy revo so much that you'll want to **actually continue** a project!
-so please consider [installing revo](#installing) and giving it a try.
 
 # installing
+binary releases are not yet available
 
-you will need [zig `0.16.0`](https://ziglang.org/download) to build revo
+you will need [the latest **stable** version of zig](https://ziglang.org/download) to build revo (`0.16.0` at the moment)
+
+available on most package managers as `zig`
 
 ## on posix systems
 
 ```bash
 git clone https://github.com/if-not-nil/revo && cd revo
 git submodule update --init --recursive
+# or -Doptimize=ReleaseSmall for an ~700kb executable
 zig build -Doptimize=ReleaseFast
 cp ./zig-out/bin/revo ~/.local/bin/revo
 
 # verify installation
 revo --version
 ```
+you might want to set `-Drepl=[libedit|readline]` if you prefer a BSD or a GNU line editor
 
-## on windows (powershell)
+### packaging:
+- AUR: `revo-git` ([info & pkgbuild](https://aur.archlinux.org/packages/revo-git))
+
+## windows
 
 ```bash
 git clone https://github.com/if-not-nil/revo && cd revo
@@ -128,15 +172,15 @@ copy ./zig-out/bin/revo C:/tools/revo/bin
 # 1. press Win+S
 # 2. type "env" and then press enter. it should take you to the System Properties > Advanced tab
 # 3. click "Environment Variables" and then "Path" in the "System variables"
-# 4. press "new" and type "C:\tools\revo\bin", then press enter
+# 4. add new at "C:\tools\revo\bin"
+#    , or put it in one of the existing ones, if you know what you're doing
 # 5. press OK for all of the tabs you've opened
 # after that, you have to open a new CMD/Powershell window for PATH changes to take effect
 
 # verify installation
 revo --version
 ```
-
-binary releases are not yet available
+*note - the windows version does not yet have an async backend or a full-featured line editor. the latter is the easiest to add, a windows contributor might want to take a look at [./src/repl.zig](./src/repl.zig)*
 
 # usage
 
@@ -188,14 +232,15 @@ the auto-generated header is always in sync with exported functions, marked with
 ### running tests
 
 ```bash
-zig build test --summary all -Dtest_filter="some test name filter"
+zig build test --summary all 
+# opt: -Dtest_filter="some test name filter"
 ```
 
 ### contributing
 
 recommending to a friend is always greatly appreciated. any contributions are welcome!
 
-see [CONTRIBUTING.md](./CONTRIBUTING.md) for more details
+see [CONTRIBUTING.md](./CONTRIBUTING.md)
 
 ## credits
 

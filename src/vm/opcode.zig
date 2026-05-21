@@ -21,6 +21,18 @@ pub const Opcode = enum(u8) {
     div, // "R[a] <- R[b] / R[c]"
     mod, // "R[a] <- R[b] % R[c]"
     negate, // "R[a] <- -R[b]"
+    // typed unary
+    negate_int, // "R[a] <- -(int)R[b]"
+    negate_float, // "R[a] <- -(float)R[b]"
+    // typed arith
+    add_int, // "R[a] <- (int)R[b] + (int)R[c]"
+    sub_int, // "R[a] <- (int)R[b] - (int)R[c]"
+    mul_int, // "R[a] <- (int)R[b] * (int)R[c]"
+    div_int, // "R[a] <- (int)R[b] / (int)R[c]"
+    add_float, // "R[a] <- (float)R[b] + (float)R[c]"
+    sub_float, // "R[a] <- (float)R[b] - (float)R[c]"
+    mul_float, // "R[a] <- (float)R[b] * (float)R[c]"
+    div_float, // "R[a] <- (float)R[b] / (float)R[c]"
     /// "R[a] <- R[b] == R[c]"
     eq,
     neq, // "R[a] <- R[b] != R[c]"
@@ -28,6 +40,19 @@ pub const Opcode = enum(u8) {
     gt, // "R[a] <- R[b] > R[c]"
     lte, // "R[a] <- R[b] <= R[c]"
     gte, // "R[a] <- R[b] >= R[c]"
+    // typed compare
+    eq_int, // "R[a] <- (int)R[b] == (int)R[c]"
+    neq_int, // "R[a] <- (int)R[b] != (int)R[c]"
+    lt_int, // "R[a] <- (int)R[b] < (int)R[c]"
+    gt_int, // "R[a] <- (int)R[b] > (int)R[c]"
+    lte_int, // "R[a] <- (int)R[b] <= (int)R[c]"
+    gte_int, // "R[a] <- (int)R[b] >= (int)R[c]"
+    eq_float, // "R[a] <- (float)R[b] == (float)R[c]"
+    neq_float, // "R[a] <- (float)R[b] != (float)R[c]"
+    lt_float, // "R[a] <- (float)R[b] < (float)R[c]"
+    gt_float, // "R[a] <- (float)R[b] > (float)R[c]"
+    lte_float, // "R[a] <- (float)R[b] <= (float)R[c]"
+    gte_float, // "R[a] <- (float)R[b] >= (float)R[c]"
     @"and", // "R[a] <- bool(R[b] and R[c])"
     @"or", // "R[a] <- bool(R[b] or R[c])"
     not, // "R[a] <- not R[b]"
@@ -38,6 +63,8 @@ pub const Opcode = enum(u8) {
     table_get, // "R[a] <- table_get(R[b], R[c])"
     table_set_atom, // "R[a][:atom(bx)] <- R[c]"
     table_get_atom, // "R[a] <- table_get(R[b], :atom(bx))"
+    struct_get_offset, // "R[a] <- struct_field(R[b], offset=bx)" (fast fixed-offset field access)
+    struct_set_offset, // "R[a][bx] <- R[c]" (fast fixed-offset field write)
     tuple_get_const, // "R[a] <- tuple_get(R[b], bx)"
     halt, // "halt with R[a]"
     jump, // "pc <- bx"

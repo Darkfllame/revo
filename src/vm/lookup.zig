@@ -15,6 +15,12 @@ pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLooku
     switch (object) {
         .table => |table_id| {
             const t = try self.tables.get(table_id);
+            if (key == .atom) {
+                if (try t.structFieldIndex(self, key.atom)) |field_idx| {
+                    if (field_idx < t.array.items.len)
+                        return .{ .value = t.array.items[field_idx], .from_meta = false };
+                }
+            }
             if (t.getRaw(key)) |value| {
                 return .{ .value = value, .from_meta = false };
             }

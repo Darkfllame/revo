@@ -1,27 +1,27 @@
 # todos
 
-## 1.0 requirements
+## 0.1 goals
 
 these should be done before the language is considered complete:
 
-- [ ] **predictable type inference and typechecker**
+- [x] **predictable type inference and typechecker**
   - needed to optimize bytecode generation (e.g., distinguish `table_get` vs `tuple_get`)
   - needed for zerocost comptime type-checking, like picking the right loop iterator
   - then, make structs comptime and add go's interfaces
 
-- [ ] predictablw const behaviour
+- [x] predictablw const behaviour
     even i don't know how it works.
-  - [ ] either get rid of it entirely or really make it work well
+  - [x] either get rid of it entirely or really make it work well
   - [ ] document what happens and when
 
 - [ ] **comptime test system**
-  - normal tests
+  - [x] normal tests
   ```ruby
   test "test name" do
       assert!(:true)
   end
   ```
-  - doctests (like elixir)
+  - [ ] doctests (like elixir)
   ```ruby
   ## @doc 
   > double(n: positive number) -> n * 2
@@ -39,10 +39,10 @@ these should be done before the language is considered complete:
 
 - [ ] better ext interfaces
     - [ ] more functions exposed to c
-    - [ ] zig extension api
+    - [x] zig extension api
 
-- [ ] **repl**
-  - live ast checking
+- [x] **repl**
+  - [ ] live ast checking
 
 - [ ] **decorator system**
   - especially for metamethods
@@ -55,38 +55,24 @@ these should be done before the language is considered complete:
     - [x] proc macros
   - [ ] pattern matching for macros
   - [ ] importable macros with `use` statement
-    - are currently always global
+    - [ ] clearly scope them instead of having them be global
+          maybe just namespace and restrict based on current module name
 
-- [ ] established doc system
-    - [ ] doc comment system
-
-- pipes
-    - [ ] pipe dot operator
-        ```ruby
-        "asdf"
-        |> .sub(1, 2)
-
-        is "asdf":sub(1, 2)
-        ```
-    - [ ] a way to short-circuit pipes
-        ```ruby
-        user
-        |> lookup
-        |> auth
-        ```
-
+- [x] established doc system
+    - [x] doc comment system
 
 ## perf
 
 ### advanced io
+- [x] async runtime
+- [x] **poll** (any posix)
 - [ ] **kqueue** (bsd and osx)
 - [ ] **uring** (linux)
-- [ ] struct Runtime as a type
-add default presets. that means, the entirety of the lookup could be marked as inline and, eventually, just folded into an enum lookup and handled by the type system. this could also mean builds with full abscense of Runtime at runtime (and maybe as a field in vm), if comptimed the right way
-- [ ] struct Runtime figure out the who-owns-what with the vm and runtime relation. maybe entrypoint owns one runtime that is then always shared,
+- [ ] struct Runtime as a configurer
+    add default presets. that means, the entirety of the lookup could be marked as inline and, eventually, just folded into an enum lookup and handled by the type system. this could also mean builds with full abscense of Runtime at runtime (and maybe as a field in vm), if comptimed the right way
+    - [ ] struct Runtime figure out the who-owns-what with the vm and runtime relation. maybe entrypoint owns one runtime that is then always shared,
 but the runtime owns the string interner and other state theoretically shareable between vm instances?
-- [ ] move more state into the global scope
-- [ ] lua does something equivalent to moving module_cache, debug_infos, bootstrap_globals from vm to runtime here. super cool and fast 
+    - [ ] lua does something equivalent to moving module_cache, debug_infos, bootstrap_globals from vm to runtime here. super cool and fast 
     - [ ] node has a scheduler there too but i dont really get it
 
 ## std expansion
@@ -94,42 +80,129 @@ but the runtime owns the string interner and other state theoretically shareable
 ### easy
 
 - [ ] **expose zig code as stdlib**
-  - language's ast, assembly, lexer, and parser
-  - http client/server
-  - json parsing and generation
-  - simple key-value db with disk i/o
-  - regex (wrap system's engine from c or maybe take lua's match)
+  - [x] language's ast, assembly, lexer, and parser
+  - [x] http client/server
+  - [x] json parsing and generation
+  - [x] build itself
+  - [ ] simple key-value db with disk i/o
+  - [ ] regex (wrap system's engine from c or maybe take lua's match)
 
 ### lang
 
 - [ ] **bigints** - arbitrary precision arithmetic
 
-- [ ] **language features**
-  - `defer` statement (maybe not)
-  - better forloops with captures:
-    - `for {1,2,3} |el| print(el)`
-    - `for {1,2,3}, 0..10 |el, i| print(i, el)`
-    - `while i<10 : (i--) print(i)`
-
 - [ ] **zerocost**
-  - `mean` keyword (or `btw`, `meanwhile`, `also`) - pure non-functional, executes side-effects and returns nothing
+  - [ ] `mean` keyword (or `btw`, `meanwhile`, `also`) - pure non-functional, executes side-effects and returns nothing
   `1 + mean(12) "hi"  # prints "hi", then returns 1 + 12`
-  - `inspect` - print value with line number, return unchanged
+  - [ ] `inspect` - print value with line number, return unchanged
   `1 + inspect(2) == 3`
 
 ## nice-to-have
 
 ### cli
 
-- [ ] **cli polish** - match the quality/aesthetics of bun
-  - better error messages
+- [ ] **cli polish**
+  - [ ] hand-fuzz unwinding
+    - [ ] when reflection exists, pull in anything that could be of use from a recovered VM state
+  - [ ] hand-fuzz error spans
   - progress indicators
   - help text improvements
 
 ### build system
 
-- [ ] **built-in build/task system** - similar to bun, deno, or cargo
-- [ ] **package resolution and paths** - dependency management
+- [ ] **built-in build/task system**
+    - [ ] something similar to zig possibly
+
+    <details>
+
+    package manager will use a global cache
+    no lockfile for single script, only build.rv
+    it pulls via https git (unless ssh or http explicitly specified)
+    and versions based on git tags
+    the manifest is stored in that repo, either as [undecided]
+        manifest.ini or manifest.toml or a serialized revo table
+
+    ```ini
+    version = 0.0.1
+    license = GPLv2
+    author = me
+    ```
+
+    - in single file:
+    ```elixir
+    pkgs!(
+        "github.com/if-not-nil/md-tcp",
+        markdown_over_tcp "github.com/if-not-nil/md-tcp"
+    )
+
+    markdown_over_tcp:serve(6767)
+    ```
+    - in `build.rv`:
+    ```ruby
+    import!("build")
+
+    build(fn(b) do
+      b:license(:GPLv3)
+      # could also specify as
+      b:custom_license({
+        # pulling in a copyleft lib will prevent you from building it on bundle and warn
+        :copyleft,
+        "MPL-2"
+      })
+      b:version("0.1.2")
+      
+      b:packages({
+          {"@web", version: "0.1.2^"}
+          
+      })
+      b:command("run", "run the server", (:Exec, "src/main.rv"))
+      b:command("build", "build the server", (:Cmd, do
+        b:ensure_dir("out")
+        b:sync("static", "out/static")
+        b:compile({
+          whence = "src/main.rv",
+          into = "out/main.rvo",
+          # dump all compiled imports into ./out with respecting structure
+          # packages will load from global cache
+          imports = "out/" 
+        })
+      end))
+    end)
+    ```
+
+    - in `build.rv` for a library
+    ```ruby
+    import!("build")
+
+    build(fn(b) do
+      b:license(:GPLv3)
+      # could also specify as
+      b:custom_license({
+        # pulling in a copyleft lib will prevent you from building it on bundle and warn
+        :copyleft,
+        name = "MPL-2",
+        text = """
+        prod. lung notification
+
+        provided as-is, no liability, do whatever you want, must specify
+        everyone involved as "prod. alice, bob, ..." instead of "authors: ..."
+        or "contributors: ..." or whatever
+        """
+      })
+      b:version("0.1.2")
+      b:packages({
+          {"@web", version: "0.1.2^"}
+      })
+      # run this in a git hook
+      b:command("manifest", "build the manifest", (:Cmd, do
+        b:build_manifest("./manifest.ini")
+      end))
+    end)
+    ```
+
+    </details>
+- [ ] **package resolution and paths**
+    - [ ] mimic lua's system closely and document through tests (with edge cases)
 - [ ] **`use` statement** - for importing and binding to scope
   ```asm
   use "json"
@@ -140,7 +213,6 @@ but the runtime owns the string interner and other state theoretically shareable
 
 - [ ] **lisp** - parses tree nodes directly how the compiler sees them, looks just like the parser's
 print functionality. not really a lisp in a tradition sense but looks fun to implement
-- [ ] rewrite docgen.py in revo (long way to go)
 - [ ] **reconstruct syntax from ast**
 
 ## done
@@ -160,9 +232,3 @@ print functionality. not really a lisp in a tradition sense but looks fun to imp
 - [x] save bytecode to disk
 - [x] bytecode compilation flag (`-b`)
 - [x] custom bytecode output path (`-o`)
-
-## known issues
-
-### docs
-
-- [ ] document when/where `:nil`, `:undef`, and other special atoms are used
