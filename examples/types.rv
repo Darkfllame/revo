@@ -1,35 +1,54 @@
-# type system showcase
-# annotations are optional: when present, the compiler enforces them at compile time
+# revo's type system!
+#
+# annotations are optional:
+#   when present, the compiler enforces them at compile time
+#   they also help the compiler optimize your program
+#
 # untyped code defaults to dynamic (any) and works as before
+
+# scalar binds & coercion
 
 # typed bindings: int literal inferred as int
 let x: int = 42
+# let bad_int: int = "hello"      # type mismatch: expected int, got string
 
 # typed bindings: float literal inferred as float
 let y: float = 3.14
+# let bad_float: float = "world"  # type mismatch: expected float, got string
 
 # int coerces to float (allowed)
 let z: float = 10
 
+
+# functions & params
+
 # typed function params: both args must be int, result inferred
-const add = fn(a: int, b: int) a + b
+fn add(a: int, b: int) a + b
+let sum = add(3, 4)
+# add(3, "wrong")                 # type mismatch in function call
 
 # typed function with return type annotation
-const double = fn(n: int) -> int do
+fn double(n: int) -> int do
     return n * 2
 end
+let doubled = double(5)
+# double("hello")                 # ct error: type mismatch in function call
 
 # typed function with mixed params
 const scale = fn(v: float, factor: int) v * factor
+let scaled = scale(2.5, 4)
 
 # nested function with typed params
 const outer = fn(n: int) do
     const inner = fn(x: int) x * 2
     inner(n) + 1
 end
+let nested = outer(5)
 
-# typed struct: fields with type annotations get compile-time validation
+
+# structs & field validation
 # > struct fields use `number` at runtime (int/float distinction is compile-time only)
+
 struct Point {
     x: number = 0,
     y: number = 0,
@@ -39,37 +58,27 @@ struct Point {
     end,
 }
 
+# create typed struct instance & modify fields
+let p: Point = Point { x = 10, y = 20 }
+let px = p.x           # typed struct field access: emits struct_get_offset (fast)
+p.x = 100
+# p.x = "not a number" # type mismatch on struct field
+
 struct Person {
     name: string = "",
     age: number = 0,
     fn greet(self) "hello, " + self.name,
 }
 
-# create typed struct instances
-let p: Point = Point { x = 10, y = 20 }
+# create typed struct instance & modify fields
 let person: Person = Person { name = "alice", age = 30 }
-
-# typed struct field access: emits struct_get_offset (fast)
-let px = p.x
-
-# typed struct field assignment: validated at compile time
-p.x = 100
-
-# person field access
 let pname = person.name
+# person.name = 42 # type mismatch on struct field
 
-# call typed functions
-let sum = add(3, 4)
-let doubled = double(5)
-let scaled = scale(2.5, 4)
-let nested = outer(5)
 
-# untyped code still works: no annotations, dynamic as before
-let a = 10
-let b = 20
-let c = a + b
+# type inference & opcode specialization
 
-# type inference in action: these emit specialized opcodes
+# these emit specialized opcodes
 let i1: int = 5
 let i2: int = 3
 let i_sum = i1 + i2  # emits add_int
@@ -85,13 +94,12 @@ let f_diff = f1 - f2 # emits sub_float
 # mixed types fall back to generic opcodes
 let mixed = i1 + f1  # emits add (generic)
 
-# results
+
+# untyped / dynamic fallback
+
+# untyped code still works: no annotations, dynamic as before
+let a = 10
+let b = 20
+let c = a + b
+
 sum
-
-# --- type errors (uncomment to see compile-time rejection) ---
-
-# let bad_int: int = "hello"     # type mismatch: expected int, got string
-# let bad_float: float = "world" # type mismatch: expected float, got string
-# add(3, "wrong")                # type mismatch in function call
-# p.x = "not a number"           # type mismatch on struct field
-# person.name = 42               # type mismatch on struct field
