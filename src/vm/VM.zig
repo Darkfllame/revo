@@ -1210,7 +1210,14 @@ fn callFieldRegister(self: *VM, instr: Instruction) EvalError!void {
     const object = try self.readRegister(instr.a);
     const key = try self.readRegister(instr.a + 1);
     const lookup_result = (try self.resolveField(object, key)) orelse {
-        try self.setRuntimeMessage("regcalled field does not exist");
+        const key_name = switch (key) {
+            .atom => |atom| self.atomName(atom),
+            else => revo.std_lib.dataToString(key),
+        };
+        try self.setRuntimeMessageFmt("field `{s}` does not exist on {s}", .{
+            key_name,
+            revo.std_lib.typeof(object),
+        });
         return error.NotAFunction;
     };
 

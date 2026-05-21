@@ -1139,6 +1139,16 @@ test "runtime report includes not-a-function detail" {
     );
 }
 
+test "method call on missing field reports field name and object" {
+    try t.expectRuntimeFailure(
+        "1:missing()",
+        .NotAFunction,
+        1,
+        1,
+        "field `missing` does not exist on number",
+    );
+}
+
 test "runtime report includes wrong arity detail" {
     try t.expectRuntimeFailure(
         \\ const id = fn(x) x

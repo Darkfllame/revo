@@ -126,7 +126,14 @@ pub fn callField(self: *VM, argc: usize) VM.EvalError!void {
     const key = slots[key_slot];
     const lookup = (try resolveField(self, object, key)) orelse {
         self.currentFiber().slots.items.len = object_slot;
-        try self.setRuntimeMessageFmt("called field does not exist", .{});
+        const key_name = switch (key) {
+            .atom => |atom| self.atomName(atom),
+            else => revo.std_lib.dataToString(key),
+        };
+        try self.setRuntimeMessageFmt("field `{s}` does not exist on {s}", .{
+            key_name,
+            revo.std_lib.typeof(object),
+        });
         return error.NotAFunction;
     };
 
