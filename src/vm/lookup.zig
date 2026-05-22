@@ -119,13 +119,14 @@ pub fn resolveIndex(self: *VM, object: Data, key: Data, indexer: Data) VM.EvalEr
 }
 
 pub fn callField(self: *VM, argc: usize) VM.EvalError!void {
-    const slots = self.currentFiber().slots.items;
+    const fiber = self.currentFiber();
+    const slots = fiber.slots.items;
     const key_slot = slots.len - argc - 1;
     const object_slot = key_slot - 1;
     const object = slots[object_slot];
     const key = slots[key_slot];
     const lookup = (try resolveField(self, object, key)) orelse {
-        self.currentFiber().slots.items.len = object_slot;
+        fiber.slots.items.len = object_slot;
         const key_name = switch (key) {
             .atom => |atom| self.atomName(atom),
             else => revo.std_lib.dataToString(key),
@@ -138,30 +139,31 @@ pub fn callField(self: *VM, argc: usize) VM.EvalError!void {
     };
 
     if (!lookup.from_meta) {
-        self.currentFiber().slots.items[key_slot] = lookup.value;
+        fiber.slots.items[key_slot] = lookup.value;
         std.mem.copyForwards(
             Data,
-            self.currentFiber().slots.items[object_slot .. self.currentFiber().slots.items.len - 1],
-            self.currentFiber().slots.items[key_slot..self.currentFiber().slots.items.len],
+            fiber.slots.items[object_slot .. fiber.slots.items.len - 1],
+            fiber.slots.items[key_slot..fiber.slots.items.len],
         );
-        self.currentFiber().slots.items.len -= 1;
+        fiber.slots.items.len -= 1;
         try callViaStackLayout(self, object_slot, argc);
         return;
     }
 
-    self.currentFiber().slots.items[object_slot] = lookup.value;
-    self.currentFiber().slots.items[key_slot] = object;
+    fiber.slots.items[object_slot] = lookup.value;
+    fiber.slots.items[key_slot] = object;
     try callViaStackLayout(self, object_slot, argc + 1);
 }
 
 fn callViaStackLayout(self: *VM, callee_slot: usize, argc: usize) VM.EvalError!void {
+    const fiber = self.currentFiber();
     const args_start = callee_slot + 1;
     const args_end = args_start + argc;
-    const callee = self.currentFiber().slots.items[callee_slot];
-    try self.currentFiber().slots.ensureTotalCapacity(self.runtime.alloc, self.currentFiber().slots.items.len + argc + 1);
-    const result = try self.callFunction(callee, self.currentFiber().slots.items[args_start..args_end]);
-    self.currentFiber().slots.items.len = callee_slot;
-    try self.currentFiber().slots.append(self.runtime.alloc, result);
+    const callee = fiber.slots.items[callee_slot];
+    try fiber.slots.ensureTotalCapacity(self.runtime.alloc, fiber.slots.items.len + argc + 1);
+    const result = try self.callFunction(callee, fiber.slots.items[args_start..args_end]);
+    fiber.slots.items.len = callee_slot;
+    try fiber.slots.append(self.runtime.alloc, result);
 }
 
 pub fn setMetatable(self: *VM, val: Data, mt: ?mem.TableID) !void {
