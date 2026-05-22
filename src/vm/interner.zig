@@ -75,6 +75,16 @@ pub fn adopt(self: *Interner, value: []u8) !memory.StringID {
     return id;
 }
 
+pub fn adoptNoDedup(self: *Interner, value: []u8) !memory.StringID {
+    return self.insert(value);
+}
+
+pub fn ownNoDedup(self: *Interner, value: []const u8) !memory.StringID {
+    const owned = try self.alloc.dupe(u8, value);
+    errdefer self.alloc.free(owned);
+    return self.insert(owned);
+}
+
 pub fn lookup(self: *const Interner, value: []const u8) ?memory.StringID {
     return self.by_name.get(value);
 }

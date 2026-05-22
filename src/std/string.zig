@@ -104,7 +104,7 @@ fn set(args: []const Data, vm: *VM) !NativeResult {
 
     new_buf[idx] = char;
 
-    const result = try vm.adoptDataString(new_buf);
+    const result = try vm.adoptDataStringNoDedup(new_buf);
     return .{ .ok = result };
 }
 
@@ -124,7 +124,7 @@ fn index_f(args: []const Data, vm: *VM) !NativeResult {
         else => return .errType(1, "number", @tagName(args[1])),
     };
     if (idx >= str.len) return .{ .ok = revo.core_atoms.data(.missing) };
-    const result = try vm.ownDataString(str[idx .. idx + 1]);
+    const result = try vm.ownDataStringNoDedup(str[idx .. idx + 1]);
     return .{ .ok = result };
 }
 
@@ -133,8 +133,8 @@ fn index_f(args: []const Data, vm: *VM) !NativeResult {
 fn add_f(args: []const Data, vm: *VM) !NativeResult {
     const left = vm.stringValue(args[0].string);
     const right = vm.stringValue(args[1].string);
-    const concatenated = try std.mem.concat(vm.runtime.alloc, u8, &[_][]const u8{ left, right });
-    const result = try vm.adoptDataString(concatenated);
+    const concatenated = try std.mem.concat(vm.runtime.alloc, u8, &.{ left, right });
+    const result = try vm.adoptDataStringNoDedup(concatenated);
     return .{ .ok = result };
 }
 
@@ -142,16 +142,9 @@ fn add_f(args: []const Data, vm: *VM) !NativeResult {
 /// converts string to uppercase
 fn upper_f(args: []const Data, vm: *VM) !NativeResult {
     const str = vm.stringValue(args[0].string);
-
-    var buf = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, str.len);
-    defer buf.deinit(vm.runtime.alloc);
-
-    for (str) |c| {
-        try buf.append(vm.runtime.alloc, std.ascii.toUpper(c));
-    }
-
-    const upper_slice = try buf.toOwnedSlice(vm.runtime.alloc);
-    const result = try vm.adoptDataString(upper_slice);
+    const buf = try vm.runtime.alloc.dupe(u8, str);
+    for (buf) |*c| c.* = std.ascii.toUpper(c.*);
+    const result = try vm.adoptDataStringNoDedup(buf);
     return .{ .ok = result };
 }
 
@@ -159,16 +152,9 @@ fn upper_f(args: []const Data, vm: *VM) !NativeResult {
 /// converts string to lowercase
 fn lower_f(args: []const Data, vm: *VM) !NativeResult {
     const str = vm.stringValue(args[0].string);
-
-    var buf = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, str.len);
-    defer buf.deinit(vm.runtime.alloc);
-
-    for (str) |c| {
-        try buf.append(vm.runtime.alloc, std.ascii.toLower(c));
-    }
-
-    const lower_slice = try buf.toOwnedSlice(vm.runtime.alloc);
-    const result = try vm.adoptDataString(lower_slice);
+    const buf = try vm.runtime.alloc.dupe(u8, str);
+    for (buf) |*c| c.* = std.ascii.toLower(c.*);
+    const result = try vm.adoptDataStringNoDedup(buf);
     return .{ .ok = result };
 }
 
@@ -182,13 +168,12 @@ fn mul_f(args: []const Data, vm: *VM) !NativeResult {
     };
     if (times < 0) return .errType(1, "positive number", @tagName(args[1]));
 
-    var result = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, str.len * @as(usize, @intCast(times)));
-    defer result.deinit(vm.runtime.alloc);
-    for (0..@as(usize, @intCast(times))) |_| {
-        try result.appendSlice(vm.runtime.alloc, str);
+    const count = @as(usize, @intCast(times));
+    const buf = try vm.runtime.alloc.alloc(u8, str.len * count);
+    for (0..count) |i| {
+        @memcpy(buf[i * str.len ..][0..str.len], str);
     }
-    const mul_slice = try result.toOwnedSlice(vm.runtime.alloc);
-    const result_str = try vm.adoptDataString(mul_slice);
+    const result_str = try vm.adoptDataStringNoDedup(buf);
     return .{ .ok = result_str };
 }
 
@@ -218,7 +203,7 @@ fn sub_f(args: []const Data, vm: *VM) !NativeResult {
 
     const end = @min(@as(usize, @intCast(start + length)), str.len);
     const start_usize: usize = @intCast(start);
-    const result = try vm.ownDataString(str[start_usize..end]);
+    const result = try vm.ownDataStringNoDedup(str[start_usize..end]);
     return .{ .ok = result };
 }
 
@@ -243,8 +228,7 @@ fn replace_f(args: []const Data, vm: *VM) !NativeResult {
     const new = vm.stringValue(args[2].string);
 
     const res = try std.mem.replaceOwned(u8, vm.runtime.alloc, str, old, new);
-
-    const result = try vm.adoptDataString(res);
+    const result = try vm.adoptDataStringNoDedup(res);
     return .{ .ok = result };
 }
 
@@ -260,11 +244,11 @@ fn split_f(args: []const Data, vm: *VM) !NativeResult {
     var pos: usize = 0;
     while (std.mem.indexOf(u8, str[pos..], delim)) |idx| {
         const abs_idx = pos + idx;
-        const part = try vm.ownDataString(str[pos..abs_idx]);
+        const part = try vm.ownDataStringNoDedup(str[pos..abs_idx]);
         try parts.append(vm.runtime.alloc, part);
         pos = abs_idx + delim.len;
     }
-    const final_part = try vm.ownDataString(str[pos..]);
+    const final_part = try vm.ownDataStringNoDedup(str[pos..]);
     try parts.append(vm.runtime.alloc, final_part);
 
     const table_id = try vm.tables.create();
@@ -281,7 +265,7 @@ fn split_f(args: []const Data, vm: *VM) !NativeResult {
 fn trim_f(args: []const Data, vm: *VM) !NativeResult {
     const str = vm.stringValue(args[0].string);
     const trimmed = std.mem.trim(u8, str, " \t\r\n");
-    return .{ .ok = try vm.ownDataString(trimmed) };
+    return .{ .ok = try vm.ownDataStringNoDedup(trimmed) };
 }
 
 /// > string:starts_with?(prefix: string) -> bool
@@ -306,7 +290,7 @@ fn reverse_f(args: []const Data, vm: *VM) !NativeResult {
     const str = vm.stringValue(args[0].string);
     const duped = try vm.runtime.alloc.dupe(u8, str);
     std.mem.reverse(u8, duped);
-    const result = try vm.adoptDataString(duped);
+    const result = try vm.adoptDataStringNoDedup(duped);
     return .{ .ok = result };
 }
 
@@ -318,7 +302,7 @@ fn to_table(args: []const Data, vm: *VM) !NativeResult {
     const table_id = try vm.tables.create();
     const table = try vm.tables.get(table_id);
     for (str) |byte| {
-        const char_str = try vm.adoptDataString(try vm.runtime.alloc.dupe(u8, &[_]u8{byte}));
+        const char_str = try vm.adoptDataStringNoDedup(try vm.runtime.alloc.dupe(u8, &[_]u8{byte}));
         try table.array.append(vm.runtime.alloc, char_str);
     }
     return .{ .ok = Data.new.table(table_id) };
@@ -347,7 +331,7 @@ fn string_of(args: []const Data, vm: *VM) !NativeResult {
                 return .other("ASCII code out of range");
             }
             const char = try vm.runtime.alloc.dupe(u8, &[_]u8{@as(u8, @truncate(code))});
-            return .{ .ok = try vm.adoptDataString(char) };
+            return .{ .ok = try vm.adoptDataStringNoDedup(char) };
         },
         .tuple => |tuple_id| {
             const tuple = try vm.tuples.get(tuple_id);
@@ -368,7 +352,7 @@ fn string_of(args: []const Data, vm: *VM) !NativeResult {
                 }
             }
             const owned = try buf.toOwnedSlice(vm.runtime.alloc);
-            return .{ .ok = try vm.adoptDataString(owned) };
+            return .{ .ok = try vm.adoptDataStringNoDedup(owned) };
         },
         else => return .errType(0, "number or tuple", @tagName(args[0])),
     }
@@ -438,7 +422,7 @@ fn join(args: []const Data, vm: *VM) !NativeResult {
     }
 
     const owned = try buf.toOwnedSlice(vm.runtime.alloc);
-    return .{ .ok = try vm.adoptDataString(owned) };
+    return .{ .ok = try vm.adoptDataStringNoDedup(owned) };
 }
 
 test "string methods" {

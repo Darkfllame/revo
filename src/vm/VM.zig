@@ -308,6 +308,14 @@ pub fn adoptDataString(self: *VM, value: []u8) !Data {
     return Data.new.str(try self.adoptString(value));
 }
 
+pub fn adoptDataStringNoDedup(self: *VM, value: []u8) !Data {
+    return Data.new.str(try self.strings.adoptNoDedup(value));
+}
+
+pub fn ownDataStringNoDedup(self: *VM, value: []const u8) !Data {
+    return Data.new.str(try self.strings.ownNoDedup(value));
+}
+
 pub fn stringValue(self: *VM, id: mem.StringID) []const u8 {
     // SAFETY: debug helper, returns placeholder on error
     return self.strings.get(id) catch "<dead>";
@@ -1414,11 +1422,8 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             if (lhs == .string and rhs == .string) {
                 const lstr = self.stringValue(lhs.string);
                 const rstr = self.stringValue(rhs.string);
-                var buf = try std.ArrayList(u8).initCapacity(alloc, lstr.len + rstr.len);
-                errdefer buf.deinit(alloc);
-                try buf.appendSlice(alloc, lstr);
-                try buf.appendSlice(alloc, rstr);
-                const result_str = try self.adoptDataString(try buf.toOwnedSlice(alloc));
+                const concat = try std.mem.concat(alloc, u8, &.{ lstr, rstr });
+                const result_str = try self.adoptDataStringNoDedup(concat);
                 try regWriteFiber(&fiber.slots, alloc, base, instr.a, result_str);
                 return;
             }
@@ -1451,26 +1456,24 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             if (lhs == .string and rnum != null) {
                 const str = self.stringValue(lhs.string);
                 const count: usize = @intCast(std.math.clamp(@as(i64, @intFromFloat(rnum.?)), 0, std.math.maxInt(i32)));
-                const cap = std.math.mul(usize, str.len, count) catch return error.OutOfMemory;
-                var buf = try std.ArrayList(u8).initCapacity(alloc, cap);
-                errdefer buf.deinit(alloc);
-                for (0..count) |_| {
-                    try buf.appendSlice(alloc, str);
+                _ = std.math.mul(usize, str.len, count) catch return error.OutOfMemory;
+                const result = try alloc.alloc(u8, str.len * count);
+                for (0..count) |i| {
+                    @memcpy(result[i * str.len ..][0..str.len], str);
                 }
-                const result_str = try self.adoptDataString(try buf.toOwnedSlice(alloc));
+                const result_str = try self.adoptDataStringNoDedup(result);
                 try regWriteFiber(&fiber.slots, alloc, base, instr.a, result_str);
                 return;
             }
             if (rhs == .string and lnum != null) {
                 const str = self.stringValue(rhs.string);
                 const count: usize = @intCast(std.math.clamp(@as(i64, @intFromFloat(lnum.?)), 0, std.math.maxInt(i32)));
-                const cap = std.math.mul(usize, str.len, count) catch return error.OutOfMemory;
-                var buf = try std.ArrayList(u8).initCapacity(alloc, cap);
-                errdefer buf.deinit(alloc);
-                for (0..count) |_| {
-                    try buf.appendSlice(alloc, str);
+                _ = std.math.mul(usize, str.len, count) catch return error.OutOfMemory;
+                const result = try alloc.alloc(u8, str.len * count);
+                for (0..count) |i| {
+                    @memcpy(result[i * str.len ..][0..str.len], str);
                 }
-                const result_str = try self.adoptDataString(try buf.toOwnedSlice(alloc));
+                const result_str = try self.adoptDataStringNoDedup(result);
                 try regWriteFiber(&fiber.slots, alloc, base, instr.a, result_str);
                 return;
             }
