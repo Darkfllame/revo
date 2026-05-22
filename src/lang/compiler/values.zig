@@ -282,11 +282,15 @@ pub fn compileStruct(self: *Compiler, expr: *const Node, name: []const u8, items
 fn compileStructFieldTable(self: *Compiler, items: []const StructItem, kind: StructFieldTableKind) !revo.TableID {
     const table_id = try self.vm.tables.create();
     const table = self.vm.tables.get(table_id) catch unreachable;
+    var field_idx: usize = 0;
     for (items) |item| switch (item) {
         .field => |f| {
             const key = Data.new.atom(try self.vm.internAtom(f.name));
             switch (kind) {
-                .fields => table.putRaw(key, revo.core_atoms.data(.true)) catch unreachable,
+                .fields => {
+                    table.putRaw(key, Data.new.num(field_idx)) catch unreachable;
+                    field_idx += 1;
+                },
                 .defaults => if (f.default_value) |v| table.putRaw(key, try constValueFromNode(self, v)) catch unreachable,
                 .types => if (f.type_name) |tn| table.putRaw(key, Data.new.atom(try self.vm.internAtom(tn))) catch unreachable,
             }

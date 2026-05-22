@@ -220,11 +220,15 @@ pub const Table = struct {
         };
         const fields = try vm.tables.get(fields_id);
         const field_key = Data.new.atom(field_atom);
-        if (fields.getRaw(field_key) == null) return null;
-        for (fields.hash_order.items, 0..) |key, idx| {
-            if (key == .atom and field_key == .atom and key.atom == field_key.atom) return idx;
-        }
-        return null;
+        const offset_data = fields.getRaw(field_key) orelse return null;
+
+        return switch (offset_data) {
+            .number => |n| if (n >= 0 and @floor(n) == n and n <= @as(f64, @floatFromInt(std.math.maxInt(usize))))
+                @as(usize, @intFromFloat(n))
+            else
+                null,
+            else => null,
+        };
     }
 
     pub fn put(self: *Table, table_id: memory.TableID, vm: *revo.VM, key: Data, val: Data) !void {
@@ -611,7 +615,6 @@ test "computed table keys use runtime values" {
     , 9);
 }
 
-
 test "array-style table literal" {
     try testing.top_number(
         \\ const tbl = {10, 20, 30}
@@ -716,4 +719,3 @@ test "pipe: explicit placeholder index access with table" {
         \\ 1 |> t[_]
     , 6);
 }
-
