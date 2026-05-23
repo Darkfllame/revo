@@ -85,6 +85,58 @@ test "builtin table methods prebind through stdlib tables" {
     try std.testing.expect(!saw_call_field);
 }
 
+test "typed call results specialize later math" {
+    var vm = try VM.init(t.runtime());
+    defer vm.deinit();
+
+    const built = try lang.build(&vm, .{
+        .text =
+        \\ const id = fn(x: int) -> int x
+        \\ const y = id(3)
+        \\ y + 1
+        ,
+    }, .{});
+    try std.testing.expect(built == .ok);
+    defer alloc.free(built.ok.instructions);
+    defer alloc.free(built.ok.spans);
+
+    var saw_add_int = false;
+    for (built.ok.instructions) |inst| {
+        if (inst.op == .add_int) saw_add_int = true;
+    }
+    try std.testing.expect(saw_add_int);
+}
+
+test "recursive typed calls stay specialized" {
+    var vm = try VM.init(t.runtime());
+    defer vm.deinit();
+
+    const built = try lang.build(&vm, .{
+        .text =
+        \\ fn fib(n: int) -> int
+        \\   if n < 2 n
+        \\   else fib(n - 1) + fib(n - 2)
+        \\ print(fib(5))
+        ,
+    }, .{});
+    try std.testing.expect(built == .ok);
+    defer alloc.free(built.ok.instructions);
+    defer alloc.free(built.ok.spans);
+
+    var saw_lt_int = false;
+    var saw_sub_int = false;
+    var saw_add_int = false;
+    for (built.ok.instructions) |inst| {
+        if (inst.op == .lt_int) saw_lt_int = true;
+        if (inst.op == .sub_int) saw_sub_int = true;
+        if (inst.op == .add_int) saw_add_int = true;
+    }
+
+    try std.testing.expect(saw_lt_int);
+    try std.testing.expect(saw_sub_int);
+    try std.testing.expect(saw_add_int);
+}
+
 test {
     _ = @import("expander.zig").testing;
     _ = std.testing.refAllDecls(@import("compiler/root.zig"));

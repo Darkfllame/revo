@@ -108,17 +108,32 @@ pub const Table = struct {
     const KeyContext = struct {
         pub fn hash(_: @This(), key: Data) u64 {
             var h = std.hash.Wyhash.init(0);
-            h.update(&[_]u8{@intCast(@intFromEnum(std.meta.activeTag(key)))});
-            switch (key) {
-                .number => |n| {
-                    const bits: u64 = @bitCast(n);
+            h.update(&[_]u8{@intCast(@intFromEnum(key.tag()))});
+            switch (key.tag()) {
+                .number => {
+                    const bits: u64 = key.rawBits();
                     h.update(std.mem.asBytes(&bits));
                 },
-                .string => |id| h.update(std.mem.asBytes(&id)),
-                .atom => |id| h.update(std.mem.asBytes(&id)),
-                .function => |id| h.update(std.mem.asBytes(&id)),
-                .table => |id| h.update(std.mem.asBytes(&id)),
-                .tuple => |id| h.update(std.mem.asBytes(&id)),
+                .string => {
+                    const id = key.asString().?;
+                    h.update(std.mem.asBytes(&id));
+                },
+                .atom => {
+                    const id = key.asAtom().?;
+                    h.update(std.mem.asBytes(&id));
+                },
+                .function => {
+                    const id = key.asFunction().?;
+                    h.update(std.mem.asBytes(&id));
+                },
+                .table => {
+                    const id = key.asTable().?;
+                    h.update(std.mem.asBytes(&id));
+                },
+                .tuple => {
+                    const id = key.asTuple().?;
+                    h.update(std.mem.asBytes(&id));
+                },
             }
             return h.final();
         }
@@ -135,6 +150,7 @@ pub const Table = struct {
     hash_entries: HashEntries,
     hash_order: std.ArrayList(Data),
     metatable: ?memory.TableID = null,
+    ic_version: usize = 0,
 
     pub fn init(alloc: std.mem.Allocator) !Table {
         return .{
@@ -152,22 +168,20 @@ pub const Table = struct {
     }
 
     fn keyEq(a: Data, b: Data) bool {
-        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
-        return switch (a) {
-            .number => |n| @as(u64, @bitCast(n)) == @as(u64, @bitCast(b.number)),
-            .string => |id| b.string == id,
-            .atom => |id| b.atom == id,
-            .function => |id| b.function == id,
-            .table => |id| b.table == id,
-            .tuple => |id| b.tuple == id,
+        if (a.tag() != b.tag()) return false;
+        return switch (a.tag()) {
+            .number => a.rawBits() == b.rawBits(),
+            .string => a.asString().? == b.asString().?,
+            .atom => a.asAtom().? == b.asAtom().?,
+            .function => a.asFunction().? == b.asFunction().?,
+            .table => a.asTable().? == b.asTable().?,
+            .tuple => a.asTuple().? == b.asTuple().?,
         };
     }
 
     fn integerArrayIndex(key: Data) ?usize {
-        return switch (key) {
-            .number => |n| if (n < 0 or !std.math.isFinite(n) or @floor(n) != n) null else @as(usize, @intFromFloat(n)),
-            else => null,
-        };
+        const n = key.asNumber() orelse return null;
+        return if (n < 0 or !std.math.isFinite(n) or @floor(n) != n) null else @as(usize, @intFromFloat(n));
     }
 
     inline fn canonicalKey(key: Data) Data {
@@ -179,8 +193,8 @@ pub const Table = struct {
     }
 
     fn valueTypeName(value: Data) []const u8 {
-        return switch (value) {
-            .atom => |a| if (a == revo.core_atoms.atom_id(.nil)) "nil" else "atom",
+        return switch (value.tag()) {
+            .atom => if (value.asAtom().? == revo.core_atoms.atom_id(.nil)) "nil" else "atom",
             .number => "number",
             .string => "string",
             .function => "function",
@@ -190,48 +204,40 @@ pub const Table = struct {
     }
 
     fn structFieldTypeMatches(expected: Data, value: Data, vm: *revo.VM) bool {
-        const expected_atom = switch (expected) {
-            .atom => |atom| atom,
-            else => return true,
-        };
+        const expected_atom = expected.asAtom() orelse return true;
         const expected_name = vm.atomName(expected_atom);
         if (std.mem.eql(u8, expected_name, "bool")) {
-            return value == .atom and isBoolAtom(value.atom);
+            return value.asAtom() != null and isBoolAtom(value.asAtom().?);
         }
-        if (std.mem.eql(u8, expected_name, "integer")) return value == .number;
-        if (std.mem.eql(u8, expected_name, "float")) return value == .number;
+        if (std.mem.eql(u8, expected_name, "integer")) return value.isNumber();
+        if (std.mem.eql(u8, expected_name, "float")) return value.isNumber();
         return std.mem.eql(u8, expected_name, valueTypeName(value));
     }
 
     fn structName(mt: *Table, vm: *revo.VM) ![]const u8 {
-        return switch (mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__name) }) orelse revo.core_atoms.data(.nil)) {
-            .string => |id| vm.stringValue(id),
-            else => "<struct>",
-        };
+        const name = mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__name))) orelse revo.core_atoms.data(.nil);
+        return if (name.asString()) |id| vm.stringValue(id) else "<struct>";
     }
 
     pub fn structFieldIndex(self: *const Table, vm: *revo.VM, field_atom: memory.AtomID) !?usize {
         const mt_id = self.metatable orelse return null;
         const mt = try vm.tables.get(mt_id);
-        const fields_data = mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__fields) }) orelse return null;
-        const fields_id = switch (fields_data) {
-            .table => |id| id,
-            else => return null,
-        };
+        const fields_data = mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields))) orelse return null;
+        const fields_id = fields_data.asTable() orelse return null;
         const fields = try vm.tables.get(fields_id);
         const field_key = Data.new.atom(field_atom);
         const offset_data = fields.getRaw(field_key) orelse return null;
 
-        return switch (offset_data) {
-            .number => |n| if (n >= 0 and @floor(n) == n and n <= @as(f64, @floatFromInt(std.math.maxInt(usize))))
-                @as(usize, @intFromFloat(n))
-            else
-                null,
-            else => null,
-        };
+        if (offset_data.asNumber()) |n| {
+            if (n >= 0 and @floor(n) == n and n <= @as(f64, @floatFromInt(std.math.maxInt(usize)))) {
+                return @as(usize, @intFromFloat(n));
+            }
+        }
+        return null;
     }
 
     pub fn put(self: *Table, table_id: memory.TableID, vm: *revo.VM, key: Data, val: Data) !void {
+        self.ic_version +%= 1;
         if (self.metatable == null) {
             return self.putRaw(key, val);
         }
@@ -240,19 +246,13 @@ pub const Table = struct {
         const mt = try vm.tables.get(mt_id);
 
         // struct instances are table backed with descriptor as mt
-        if (mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__fields) })) |fields_data| {
-            const fields_id = switch (fields_data) {
-                .table => |id| id,
-                else => return error.TypeError,
-            };
+        if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields)))) |fields_data| {
+            const fields_id = fields_data.asTable() orelse return error.TypeError;
             const fields = try vm.tables.get(fields_id);
-            const key_atom = switch (key) {
-                .atom => |a| a,
-                else => {
-                    const struct_name = try structName(mt, vm);
-                    try vm.setRuntimeMessageFmt("unknown field `{s}` for struct `{s}`", .{ valueTypeName(key), struct_name });
-                    return error.Panic;
-                },
+            const key_atom = key.asAtom() orelse {
+                const struct_name = try structName(mt, vm);
+                try vm.setRuntimeMessageFmt("unknown field `{s}` for struct `{s}`", .{ valueTypeName(key), struct_name });
+                return error.Panic;
             };
             const field_key = Data.new.atom(key_atom);
             _ = fields.getRaw(field_key) orelse {
@@ -261,19 +261,16 @@ pub const Table = struct {
                 return error.Panic;
             };
 
-            if (mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__types) })) |types_data| {
-                if (types_data == .table) {
-                    const types = try vm.tables.get(types_data.table);
+            if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__types)))) |types_data| {
+                if (types_data.asTable()) |types_id| {
+                    const types = try vm.tables.get(types_id);
                     if (types.getRaw(field_key)) |expected| {
                         if (!structFieldTypeMatches(expected, val, vm)) {
                             const struct_name = try structName(mt, vm);
                             try vm.setRuntimeMessageFmt("field `{s}` on `{s}` expected {s}, got {s}", .{
                                 vm.atomName(key_atom),
                                 struct_name,
-                                switch (expected) {
-                                    .atom => |atom| vm.atomName(atom),
-                                    else => valueTypeName(expected),
-                                },
+                                if (expected.asAtom()) |atom| vm.atomName(atom) else valueTypeName(expected),
                                 valueTypeName(val),
                             });
                             return error.Panic;
@@ -295,14 +292,11 @@ pub const Table = struct {
             return;
         }
 
-        if (mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__newindex) })) |newindex_method| {
-            switch (newindex_method) {
-                .function => |f| {
-                    const table_data = Data{ .table = table_id };
-                    _ = try vm.callFunction(Data{ .function = f }, &[_]Data{ table_data, key, val });
-                    return;
-                },
-                else => {},
+        if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__newindex)))) |newindex_method| {
+            if (newindex_method.asFunction()) |f| {
+                const table_data = Data.new.table(table_id);
+                _ = try vm.callFunction(Data.new.function(f), &[_]Data{ table_data, key, val });
+                return;
             }
         }
 
@@ -310,6 +304,7 @@ pub const Table = struct {
     }
 
     pub fn putRaw(self: *Table, key: Data, val: Data) !void {
+        self.ic_version +%= 1;
         const canon = canonicalKey(key);
         if (integerArrayIndex(canon)) |idx| {
             if (idx < self.array.items.len) {
@@ -347,15 +342,12 @@ pub const Table = struct {
         if (self.getRaw(key)) |value| return value;
         if (self.metatable) |mt_id| {
             const mt = try vm.tables.get(mt_id);
-            if (mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__index) })) |index_method| {
-                switch (index_method) {
-                    .table => |table_id| {
-                        const index_table = try vm.tables.get(table_id);
-                        return try index_table.get(key, vm);
-                    },
-                    .function => return null,
-                    else => {},
+            if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__index)))) |index_method| {
+                if (index_method.asTable()) |table_id| {
+                    const index_table = try vm.tables.get(table_id);
+                    return try index_table.get(key, vm);
                 }
+                if (index_method.asFunction() != null) return null;
             }
         }
         return null;
@@ -388,7 +380,7 @@ pub const Table = struct {
         try writer.writeAll("{ ");
         const has_struct_fields = if (self.metatable) |mt_id| blk: {
             const mt = try vm.tables.get(mt_id);
-            break :blk mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__fields) }) != null;
+            break :blk mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields))) != null;
         } else false;
         const should_write_idx = self.hash_entries.count() != 0 and !has_struct_fields;
         for (self.array.items, 0..) |val, idx| {

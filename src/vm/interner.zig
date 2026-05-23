@@ -154,8 +154,8 @@ test "string literals survive source free" {
     try vm.run();
 
     const value = try vm.pop();
-    try std.testing.expect(value == .string);
-    try std.testing.expectEqualStrings("hello", vm.stringValue(value.string));
+    try std.testing.expect(value.isString());
+    try std.testing.expectEqualStrings("hello", vm.stringValue(value.asString().?));
 }
 
 test "interner deduplicates and reuses freed slot ids" {

@@ -51,11 +51,10 @@ fn setSocketNonBlocking(handle: std.posix.fd_t) !void {
 // wake a fiber with a (tag, payload) tuple
 fn wakeFiber(vm: *VM, fiber_id: VM.FiberID, tag: revo.core_atoms, payload: Data) !void {
     const items = [_]Data{
-        .{ .atom = @intFromEnum(tag) },
+        Data.new.atom(@intFromEnum(tag)),
         payload,
     };
     try vm.sched.wakeFiber(
-        vm.runtime.alloc,
         fiber_id,
         Data.new.tuple(try vm.tuples.create(&items)),
     );
@@ -370,15 +369,15 @@ pub fn wrapSocket(vm: *VM, entry_ptr: *SocketEntry, is_server: bool) !Data {
         socket_module_data,
     );
 
-    const mt_array = [_]Data{ Data{ .table = sock_table }, Data{ .table = metatable } };
+    const mt_array = [_]Data{ Data.new.table(sock_table), Data.new.table(metatable) };
     const set_result = try meta.set_metatable_(&mt_array, vm);
     if (set_result != .ok) return error.SetMetatableFailed;
 
-    return Data{ .table = sock_table };
+    return Data.new.table(sock_table);
 }
 
 fn isServer(socket_data: Data, vm: *VM) !bool {
-    const table = try vm.tables.get(socket_data.table);
+    const table = try vm.tables.get(socket_data.asTable().?);
     const d = table.getRaw(Data.new.atom(try vm.internAtom("__is_server"))) orelse
         return error.InvalidSocket;
     return !revo.isFalse(d);
@@ -386,10 +385,10 @@ fn isServer(socket_data: Data, vm: *VM) !bool {
 
 /// ret always live ptr or SocketClosed
 fn getEntryPtr(socket_data: Data, vm: *VM) !*SocketEntry {
-    const table = try vm.tables.get(socket_data.table);
+    const table = try vm.tables.get(socket_data.asTable().?);
     const d = table.getRaw(Data.new.atom(try vm.internAtom("__entry_ptr"))) orelse
         return error.InvalidSocket;
-    const addr: usize = @intFromFloat(d.number);
+    const addr: usize = @intFromFloat(d.asNumber().?);
     if (addr == 0) return error.SocketClosed;
     return @as(*SocketEntry, @ptrFromInt(addr));
 }
@@ -412,7 +411,7 @@ fn closeEntry(socket_data: Data, vm: *VM) !void {
     vm.runtime.alloc.destroy(entry_ptr);
 
     // zeroise so double close is nop rather than use-after-free
-    var tbl = try vm.tables.get(socket_data.table);
+    var tbl = try vm.tables.get(socket_data.asTable().?);
     try tbl.putRaw(
         Data.new.atom(try vm.internAtom("__entry_ptr")),
         Data.new.num(0),
@@ -422,8 +421,8 @@ fn closeEntry(socket_data: Data, vm: *VM) !void {
 /// > net:connect(host: string, port: number) -> socket
 /// connects to a remote host and port, returns a socket handle
 fn connect_fn(args: []const Data, vm: *VM) !NativeResult {
-    const host = vm.stringValue(args[0].string);
-    const port: u16 = @intFromFloat(args[1].number);
+    const host = vm.stringValue(args[0].asString().?);
+    const port: u16 = @intFromFloat(args[1].asNumber().?);
 
     const host_to_use = if (std.mem.eql(u8, host, "localhost")) "127.0.0.1" else host;
     const addr = std.Io.net.IpAddress.parseIp4(host_to_use, port) catch |err| {
@@ -447,8 +446,8 @@ fn connect_fn(args: []const Data, vm: *VM) !NativeResult {
 /// > net:listen(port: number [, backlog: number]) -> socket
 /// listens for incoming connections on the given port, returns server socket
 fn listen_fn(args: []const Data, vm: *VM) !NativeResult {
-    const port: u16 = @intFromFloat(args[0].number);
-    const backlog: u31 = if (args.len > 1) @intFromFloat(args[1].number) else 128;
+    const port: u16 = @intFromFloat(args[0].asNumber().?);
+    const backlog: u31 = if (args.len > 1) @intFromFloat(args[1].asNumber().?) else 128;
 
     const addr = std.Io.net.IpAddress.parseIp4("0.0.0.0", port) catch |err| {
         return try root.resultTuple(vm, .err, try vm.dataAtom(@errorName(err)));
@@ -475,7 +474,7 @@ fn listen_fn(args: []const Data, vm: *VM) !NativeResult {
 /// accepts an incoming client connection on a server socket
 fn accept_fn(args: []const Data, vm: *VM) !NativeResult {
     if (builtin.target.os.tag == .windows) return error.OsNotSupported;
-    const socket_data = Data{ .table = args[0].table };
+    const socket_data = Data.new.table(args[0].asTable().?);
 
     if (!try isServer(socket_data, vm)) return try root.resultTuple(vm, .err, revo.core_atoms.data(.NotServerSocket));
 
@@ -508,7 +507,6 @@ fn accept_fn(args: []const Data, vm: *VM) !NativeResult {
     switch (std.posix.errno(rc)) {
         .AGAIN => {
             try vm.sched.parkCurrentForIo(
-                vm.runtime.alloc,
                 @intCast(server.socket.handle),
                 .read,
                 0,
@@ -541,8 +539,8 @@ fn accept_fn(args: []const Data, vm: *VM) !NativeResult {
 /// sends data over the socket, returns number of bytes sent
 fn send_fn(args: []const Data, vm: *VM) !NativeResult {
     if (builtin.target.os.tag == .windows) return error.OsNotSupported;
-    const socket_data = Data{ .table = args[0].table };
-    const message = vm.stringValue(args[1].string);
+    const socket_data = Data.new.table(args[0].asTable().?);
+    const message = vm.stringValue(args[1].asString().?);
 
     if (try isServer(socket_data, vm)) return try root.resultTuple(vm, .err, revo.core_atoms.data(.CannotSendOnServer));
 
@@ -561,7 +559,7 @@ fn send_fn(args: []const Data, vm: *VM) !NativeResult {
             .fiber_id = vm.sched.current_fiber,
             .kind = revo.async_backend.AsyncJobKind.socket_send,
             .handle = handle,
-            .message_id = args[1].string, // store StringID as usize
+            .message_id = args[1].asString().?, // store StringID as usize
             .offset = 0,
             .buffer = null,
             .max_bytes = 0,
@@ -576,9 +574,8 @@ fn send_fn(args: []const Data, vm: *VM) !NativeResult {
     switch (std.posix.errno(rc)) {
         .AGAIN => {
             const token_ptr = try vm.runtime.alloc.create(SendWaitToken);
-            token_ptr.* = .{ .message = args[1].string, .offset = 0 };
+            token_ptr.* = .{ .message = args[1].asString().?, .offset = 0 };
             try vm.sched.parkCurrentForIo(
-                vm.runtime.alloc,
                 @intCast(handle),
                 .write,
                 @intFromPtr(token_ptr),
@@ -593,9 +590,8 @@ fn send_fn(args: []const Data, vm: *VM) !NativeResult {
     const sent: usize = @intCast(rc);
     if (sent >= message.len) return try .Ok(vm, Data.new.num(sent));
     const token_ptr = try vm.runtime.alloc.create(SendWaitToken);
-    token_ptr.* = .{ .message = args[1].string, .offset = sent };
+    token_ptr.* = .{ .message = args[1].asString().?, .offset = sent };
     try vm.sched.parkCurrentForIo(
-        vm.runtime.alloc,
         @intCast(handle),
         .write,
         @intFromPtr(token_ptr),
@@ -607,24 +603,24 @@ fn send_fn(args: []const Data, vm: *VM) !NativeResult {
 
 fn parseRecvOptions(opts_data: Data, vm: *VM) !RecvWaitToken {
     var token: RecvWaitToken = .{};
-    const opts = try vm.tables.get(opts_data.table);
+    const opts = try vm.tables.get(opts_data.asTable().?);
 
     if (opts.getRaw(Data.new.atom(try vm.internAtom("max_bytes")))) |max_d| {
-        if (max_d != .number) return error.TypeError;
-        token.max_bytes = @as(usize, @intFromFloat(max_d.number));
+        if (!max_d.isNumber()) return error.TypeError;
+        token.max_bytes = @as(usize, @intFromFloat(max_d.asNumber().?));
     }
     if (token.max_bytes == 0) token.max_bytes = 1;
 
     if (opts.getRaw(Data.new.atom(try vm.internAtom("delimiter")))) |delim_d| {
-        if (delim_d != .string) return error.TypeError;
-        const s = vm.stringValue(delim_d.string);
+        if (!delim_d.isString()) return error.TypeError;
+        const s = vm.stringValue(delim_d.asString().?);
         if (s.len == 0) return error.TypeError;
         token.delimiter = s[0];
     }
 
     if (opts.getRaw(Data.new.atom(try vm.internAtom("mode")))) |mode_d| {
-        if (mode_d != .atom) return error.TypeError;
-        const a = mode_d.atom;
+        if (!mode_d.isAtom()) return error.TypeError;
+        const a = mode_d.asAtom().?;
         if (a == try vm.internAtom("read_some")) {
             token.mode = .read_some;
         } else if (a == try vm.internAtom("read_all")) {
@@ -643,7 +639,7 @@ fn parseRecvOptions(opts_data: Data, vm: *VM) !RecvWaitToken {
 /// receives data according to opts.mode (:read_some | :read_all | :read_line)
 fn recv(args: []const Data, vm: *VM) !NativeResult {
     if (builtin.target.os.tag == .windows) return error.OsNotSupported;
-    const socket_data = Data{ .table = args[0].table };
+    const socket_data = Data.new.table(args[0].asTable().?);
     const opts_data = args[1];
 
     if (try isServer(socket_data, vm)) return try root.resultTuple(vm, .err, revo.core_atoms.data(.CannotRecvOnServer));
@@ -654,7 +650,7 @@ fn recv(args: []const Data, vm: *VM) !NativeResult {
         .server => return try root.resultTuple(vm, .err, revo.core_atoms.data(.CannotRecvOnServer)),
     };
 
-    var parsed = parseRecvOptions(opts_data, vm) catch return .errType(1, "recv opts table", @tagName(opts_data));
+    var parsed = parseRecvOptions(opts_data, vm) catch return .errType(1, "recv opts table", root.dataToString(opts_data));
     parsed.entry_ptr = entry_ptr;
 
     const handle = stream.socket.socket.handle;
@@ -741,7 +737,6 @@ fn recv(args: []const Data, vm: *VM) !NativeResult {
     const token_ptr = try vm.runtime.alloc.create(RecvWaitToken);
     token_ptr.* = parsed;
     try vm.sched.parkCurrentForIo(
-        vm.runtime.alloc,
         @intCast(handle),
         .read,
         @intFromPtr(token_ptr),
@@ -754,7 +749,7 @@ fn recv(args: []const Data, vm: *VM) !NativeResult {
 /// > socket:close() -> atom
 /// closes the socket
 fn socket_close_fn(args: []const Data, vm: *VM) !NativeResult {
-    const socket_data = Data{ .table = args[0].table };
+    const socket_data = Data.new.table(args[0].asTable().?);
     try closeEntry(socket_data, vm);
     return try .Ok(vm, revo.core_atoms.data(.nil));
 }

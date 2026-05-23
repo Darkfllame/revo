@@ -128,14 +128,13 @@ pub fn parkCurrentWithResult(self: *@This(), wait: Fiber.WaitKind, result_slot: 
 // park current fiber waiting for io with generic token/callback
 pub fn parkCurrentForIo(
     self: *@This(),
-    alloc: std.mem.Allocator,
     wait_id: u64,
     intent: IoIntent,
     token: usize,
     on_ready: IoReadyFn,
     on_deinit: ?IoDeinitFn,
 ) !void {
-    try self.io_waiters.append(alloc, .{
+    try self.io_waiters.append(self.alloc, .{
         .fiber_id = self.current_fiber,
         .wait_id = wait_id,
         .intent = intent,
@@ -147,7 +146,7 @@ pub fn parkCurrentForIo(
 }
 
 // wake fiber with optional result, if a result slot exists you fill it
-pub fn wakeFiber(self: *@This(), alloc: std.mem.Allocator, fid: FiberID, result: ?Data) !void {
+pub fn wakeFiber(self: *@This(), fid: FiberID, result: ?Data) !void {
     if (fid >= self.fibers.items.len) return;
     var fiber = &self.fibers.items[fid];
     if (fiber.state != .waiting) return;
@@ -155,20 +154,23 @@ pub fn wakeFiber(self: *@This(), alloc: std.mem.Allocator, fid: FiberID, result:
     if (fiber.parked_result_slot) |slot| {
         if (result) |value| fiber.slots.items[slot] = value;
     } else if (result) |value| {
-        try fiber.slots.append(alloc, value);
+        try fiber.slots.append(self.alloc, value);
     }
 
     self.setFiberState(fid, .ready);
     fiber.running = false;
     fiber.wait = .none;
     fiber.parked_result_slot = null;
-    try self.enqueueRunnable(alloc, fid);
+    try self.enqueueRunnable(fid);
 }
 
 current_fiber: FiberID,
+alloc: std.mem.Allocator,
 fibers: std.ArrayList(Fiber),
-runq: std.ArrayList(FiberID),
-runq_head: usize,
+ring_buf: []FiberID,
+ring_head: usize,
+ring_tail: usize,
+ring_mask: usize,
 sleepers: std.ArrayList(SleepWaiter),
 io_waiters: std.ArrayList(WaitEntry),
 channels: std.AutoHashMap(ChannelID, ChannelState),
@@ -176,11 +178,15 @@ io_poll: ?*const fn (*VM, i32) anyerror!bool,
 waiting_cnt: usize,
 
 pub fn init(alloc: std.mem.Allocator) !@This() {
+    const ring_cap = 64;
     return .{
         .current_fiber = 0,
+        .alloc = alloc,
         .fibers = try std.ArrayList(Fiber).initCapacity(alloc, 1),
-        .runq = try std.ArrayList(FiberID).initCapacity(alloc, 4),
-        .runq_head = 0,
+        .ring_buf = try alloc.alloc(FiberID, ring_cap),
+        .ring_head = 0,
+        .ring_tail = 0,
+        .ring_mask = ring_cap - 1,
         .sleepers = try std.ArrayList(SleepWaiter).initCapacity(alloc, 4),
         .io_waiters = try std.ArrayList(WaitEntry).initCapacity(alloc, 4),
         .channels = std.AutoHashMap(ChannelID, ChannelState).init(alloc),
@@ -189,17 +195,17 @@ pub fn init(alloc: std.mem.Allocator) !@This() {
     };
 }
 
-pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
-    for (self.fibers.items) |*fiber| fiber.deinit(alloc);
-    self.fibers.deinit(alloc);
-    self.runq.deinit(alloc);
-    self.sleepers.deinit(alloc);
+pub fn deinit(self: *@This()) void {
+    for (self.fibers.items) |*fiber| fiber.deinit(self.alloc);
+    self.fibers.deinit(self.alloc);
+    self.alloc.free(self.ring_buf);
+    self.sleepers.deinit(self.alloc);
     for (self.io_waiters.items) |waiter|
-        if (waiter.on_deinit) |deinit_fn| deinit_fn(alloc, waiter.token);
+        if (waiter.on_deinit) |deinit_fn| deinit_fn(self.alloc, waiter.token);
 
-    self.io_waiters.deinit(alloc);
+    self.io_waiters.deinit(self.alloc);
     var channel_it = self.channels.valueIterator();
-    while (channel_it.next()) |channel| channel.deinit(alloc);
+    while (channel_it.next()) |channel| channel.deinit(self.alloc);
     self.channels.deinit();
 }
 
@@ -211,7 +217,7 @@ pub inline fn mainFiber(self: *@This()) *Fiber {
     return &self.fibers.items[0];
 }
 
-pub fn setFiberState(self: *@This(), fid: FiberID, new_state: Fiber.State) void {
+pub inline fn setFiberState(self: *@This(), fid: FiberID, new_state: Fiber.State) void {
     if (fid >= self.fibers.items.len) return;
     const fiber = &self.fibers.items[fid];
     const old_state = fiber.state;
@@ -221,52 +227,70 @@ pub fn setFiberState(self: *@This(), fid: FiberID, new_state: Fiber.State) void 
     fiber.state = new_state;
 }
 
-pub fn enqueueRunnable(self: *@This(), alloc: std.mem.Allocator, fid: FiberID) !void {
+pub inline fn enqueueRunnable(self: *@This(), fid: FiberID) !void {
     if (fid >= self.fibers.items.len) return;
     const fiber = &self.fibers.items[fid];
     if (fiber.in_runq or fiber.state != .ready) return;
-    try self.runq.append(alloc, fid);
+    const new_tail = (self.ring_tail + 1) & self.ring_mask;
+    if (new_tail == self.ring_head) {
+        // ring full; grow
+        const old_cap = self.ring_buf.len;
+        const new_cap = old_cap * 2;
+        const new_buf = try self.alloc.alloc(FiberID, new_cap);
+        const count = self.ring_tail - self.ring_head;
+        if (self.ring_head + count <= old_cap) {
+            @memcpy(new_buf[0..count], self.ring_buf[self.ring_head..][0..count]);
+        } else {
+            const first = old_cap - self.ring_head;
+            @memcpy(new_buf[0..first], self.ring_buf[self.ring_head..]);
+            @memcpy(new_buf[first..][0..(count - first)], self.ring_buf[0..(count - first)]);
+        }
+        self.alloc.free(self.ring_buf);
+        self.ring_buf = new_buf;
+        self.ring_head = 0;
+        self.ring_tail = count;
+        self.ring_mask = new_cap - 1;
+        self.ring_buf[self.ring_tail] = fid;
+        self.ring_tail = (self.ring_tail + 1) & self.ring_mask;
+    } else {
+        self.ring_buf[self.ring_tail] = fid;
+        self.ring_tail = new_tail;
+    }
     fiber.in_runq = true;
 }
 
-pub fn dequeueRunnable(self: *@This()) ?FiberID {
-    while (self.runq_head < self.runq.items.len) {
-        const fid = self.runq.items[self.runq_head];
-        self.runq_head += 1;
-        self.fibers.items[fid].in_runq = false;
-        return fid;
-    }
-    if (self.runq_head > 0) {
-        self.runq.items.len = 0;
-        self.runq_head = 0;
-    }
-    return null;
+pub inline fn dequeueRunnable(self: *@This()) ?FiberID {
+    if (self.ring_head == self.ring_tail) return null;
+    const fid = self.ring_buf[self.ring_head];
+    self.ring_head = (self.ring_head + 1) & self.ring_mask;
+    self.fibers.items[fid].in_runq = false;
+    return fid;
 }
 
-pub fn finishFiber(self: *@This(), alloc: std.mem.Allocator, fid: FiberID, result: Data) !void {
+pub fn finishFiber(self: *@This(), fid: FiberID, result: Data) !void {
     var fiber = &self.fibers.items[fid];
     fiber.result = result;
     fiber.running = false;
     self.setFiberState(fid, .dead);
     fiber.wait = .none;
     for (fiber.waiters.items) |waiter_id|
-        try self.wakeFiber(alloc, waiter_id, fiber.result);
+        try self.wakeFiber(waiter_id, fiber.result);
     fiber.waiters.items.len = 0;
 }
 
-pub fn parkCurrentForSleepMS(self: *@This(), alloc: std.mem.Allocator, ms: u64, now_ns: u64) !void {
+pub fn parkCurrentForSleepMS(self: *@This(), ms: u64, now_ns: u64) !void {
     const wake_at = now_ns + (ms * std.time.ns_per_ms);
-    try self.sleepers.append(alloc, .{ .fiber_id = self.current_fiber, .wake_at_ns = wake_at });
+    try self.sleepers.append(self.alloc, .{ .fiber_id = self.current_fiber, .wake_at_ns = wake_at });
     self.parkCurrent(.sleep);
 }
 
-pub fn wakeDueSleepers(self: *@This(), alloc: std.mem.Allocator, now_ns: u64) !void {
+pub fn wakeDueSleepers(self: *@This(), now_ns: u64) !void {
     var i: usize = 0;
     while (i < self.sleepers.items.len) {
         const sleeper = self.sleepers.items[i];
         if (sleeper.wake_at_ns <= now_ns) {
             _ = self.sleepers.swapRemove(i);
-            try self.wakeFiber(alloc, sleeper.fiber_id, null);
+            try self.wakeFiber(sleeper.fiber_id, null);
             continue;
         }
         i += 1;
@@ -285,20 +309,18 @@ pub fn nextSleepDelayNs(self: *@This(), now_ns: u64) ?u64 {
 
 pub fn channelCreate(
     self: *@This(),
-    alloc: std.mem.Allocator,
     tables: anytype,
     cap: usize,
 ) !ChannelID {
     const id = try tables.create();
-    var state = try ChannelState.init(alloc, cap);
-    errdefer state.deinit(alloc);
+    var state = try ChannelState.init(self.alloc, cap);
+    errdefer state.deinit(self.alloc);
     try self.channels.put(id, state);
     return id;
 }
 
 pub fn channelSend(
     self: *@This(),
-    alloc: std.mem.Allocator,
     channel_id: ChannelID,
     value: Data,
 ) !void {
@@ -316,23 +338,23 @@ pub fn channelSend(
             else => false,
         };
         if (!waiting_on_recv) continue;
-        try self.wakeFiber(alloc, waiter.fiber_id, value);
+        try self.wakeFiber(waiter.fiber_id, value);
         return;
     }
 
     if (channel.cap > 0 and channel.queueLen() < channel.cap) {
-        try channel.pushQueue(alloc, value);
+        try channel.pushQueue(self.alloc, value);
         return;
     }
 
-    try channel.send_waiters.append(alloc, .{ .fiber_id = self.current_fiber, .value = value });
+    try channel.send_waiters.append(self.alloc, .{ .fiber_id = self.current_fiber, .value = value });
     const fiber = self.currentFiber();
     self.setFiberState(self.current_fiber, .waiting);
     fiber.running = false;
     fiber.wait = .{ .send = channel_id };
 }
 
-pub fn channelRecv(self: *@This(), alloc: std.mem.Allocator, channel_id: ChannelID) !?Data {
+pub fn channelRecv(self: *@This(), channel_id: ChannelID) !?Data {
     var channel = self.channels.getPtr(channel_id) orelse return error.InvalidChannel;
 
     if (channel.queueLen() > 0) {
@@ -349,8 +371,8 @@ pub fn channelRecv(self: *@This(), alloc: std.mem.Allocator, channel_id: Channel
                 else => false,
             };
             if (!waiting_on_send) continue;
-            try channel.pushQueue(alloc, sender.value orelse unreachable);
-            try self.wakeFiber(alloc, sender.fiber_id, null);
+            try channel.pushQueue(self.alloc, sender.value orelse unreachable);
+            try self.wakeFiber(sender.fiber_id, null);
             break;
         }
         return value;
@@ -366,11 +388,11 @@ pub fn channelRecv(self: *@This(), alloc: std.mem.Allocator, channel_id: Channel
             else => false,
         };
         if (!waiting_on_send) continue;
-        try self.wakeFiber(alloc, sender.fiber_id, null);
+        try self.wakeFiber(sender.fiber_id, null);
         return sender.value.?;
     }
 
-    try channel.recv_waiters.append(alloc, .{ .fiber_id = self.current_fiber });
+    try channel.recv_waiters.append(self.alloc, .{ .fiber_id = self.current_fiber });
     const fiber = self.currentFiber();
     self.setFiberState(self.current_fiber, .waiting);
     fiber.running = false;

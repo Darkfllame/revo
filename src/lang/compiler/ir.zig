@@ -163,7 +163,7 @@ pub fn verifyIrBytecode(ctx: *IrContext, emitted: []const Instruction, alloc: st
     while (idx < lowered.len) : (idx += 1) {
         const ir_bc = lowered[idx];
         const em_bc = emitted[idx];
-        const call_parity = (ir_bc.op == .call) and (em_bc.op == .call or em_bc.op == .call_field);
+        const call_parity = (ir_bc.op == .call) and (em_bc.op == .call or em_bc.op == .call_field or em_bc.op == .call_closure);
         if (!call_parity and ir_bc.op != em_bc.op) {
             std.debug.print("opcode mismatch at {d}:\n\tir={any}\n\temit={any}\n", .{ idx, ir_bc.op, em_bc.op });
             return false;

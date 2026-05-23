@@ -17,8 +17,9 @@ pub fn toRegister(n: usize) !Register {
 }
 
 pub fn @"const"(self: *Compiler, v: Data) !void {
-    if (v == .number and v.number >= 0 and v.number <= 65535 and @trunc(v.number) == v.number)
-        return smi(self, @intFromFloat(v.number));
+    if (v.asNumber()) |n| {
+        if (n >= 0 and n <= 65535 and @trunc(n) == n) return smi(self, @intFromFloat(n));
+    }
     const idx = try self.vm.addConstant(v);
     const dst = try state.pushRegister(self);
     const i: Instruction = .{ .op = .load_const, .a = dst, .bx = idx };
@@ -27,10 +28,10 @@ pub fn @"const"(self: *Compiler, v: Data) !void {
     try self.spans.append(self.alloc, self.active_span);
 
     if (self.ir_ctx) |*ctx| {
-        const m: ?revo.lang.compiler.ir.IrInst.IrMetadata = switch (v) {
-            .number => .{ .float_value = v.number },
-            .string => .{ .string_value = self.vm.stringValue(v.string) },
-            .atom => .{ .int_value = @intCast(v.atom) },
+        const m: ?revo.lang.compiler.ir.IrInst.IrMetadata = switch (v.tag()) {
+            .number => .{ .float_value = v.asNumber().? },
+            .string => .{ .string_value = self.vm.stringValue(v.asString().?) },
+            .atom => .{ .int_value = @intCast(v.asAtom().?) },
             else => .none,
         };
         try ctx.recordLoad(.load_const, .any, i, m);
@@ -102,7 +103,7 @@ fn stackEffect(op: Opcode) struct { pop: usize, push: usize } {
         .table_set_atom, .struct_set_offset => .{ .pop = 2, .push = 0 },
         .table_get_atom, .tuple_get_const, .struct_get_offset => .{ .pop = 1, .push = 1 },
         .join, .ret, .halt => .{ .pop = 1, .push = 0 },
-        .yield, .jump, .unwrap_result, .call, .call_field, .spawn, .tuple_new, .range_init, .range_next, .range_for, .move => .{ .pop = 0, .push = 0 },
+        .yield, .jump, .unwrap_result, .call, .call_closure, .call_field, .spawn, .tuple_new, .range_init, .range_next, .range_for, .move => .{ .pop = 0, .push = 0 },
     };
 }
 
@@ -113,7 +114,7 @@ fn resultType(op: Opcode) revo.lang.compiler.types.TypeInfo {
         .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float, .@"and", .@"or", .not => .bool,
         .load_nil => .void,
         .load_small_int => .int,
-        .load_const, .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .table_get, .table_get_atom, .tuple_get, .tuple_get_const, .struct_get_offset, .call, .call_field, .spawn, .join, .range_next, .unwrap_result, .move => .any,
+        .load_const, .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .table_get, .table_get_atom, .tuple_get, .tuple_get_const, .struct_get_offset, .call, .call_closure, .call_field, .spawn, .join, .range_next, .unwrap_result, .move => .any,
         else => .any,
     };
 }
@@ -142,7 +143,7 @@ fn toIrOp(op: Opcode) revo.lang.compiler.ir.IrOp {
         .table_get => .table_get,
         .table_set => .table_set,
         .table_new => .table_new,
-        .call => .call,
+        .call, .call_closure => .call,
         .struct_get_offset => .struct_get_offset,
         .struct_set_offset => .struct_set_offset,
         else => .load_nil,
@@ -164,7 +165,7 @@ fn recordIr(self: *Compiler, op: Opcode, i: Instruction, op_arg: Operand) !void 
         .table_set => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 3, 0, null),
         .table_set_atom, .struct_set_offset => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 2, 0, null),
         .tuple_new => try ctx.recordStackOp(toIrOp(op), resultType(op), i, op_arg, 1, null),
-        .call => try ctx.recordStackOp(toIrOp(op), resultType(op), i, op_arg + 1, 1, null),
+        .call, .call_closure => try ctx.recordStackOp(toIrOp(.call), resultType(op), i, op_arg + 1, 1, null),
         .call_field => {
             const argc = op_arg & ~@as(Operand, 1 << 15);
             try ctx.recordStackOp(toIrOp(.call), resultType(op), i, argc + 2, 1, null);
@@ -277,7 +278,7 @@ pub fn emit(self: *Compiler, op: Opcode, op_arg: Operand) !void {
             i = .{ .op = op, .a = try toRegister(d - 1), .b = try toRegister(d - 1), .bx = op_arg };
         },
         // calls
-        .call, .spawn => {
+        .call, .call_closure, .spawn => {
             std.debug.assert(d >= op_arg + 1);
             const base = d - op_arg - 1;
             i = .{ .op = op, .a = try toRegister(base), .b = try toRegister(op_arg), .c = try toRegister(base) };
@@ -355,7 +356,7 @@ pub fn fail(self: *Compiler, kind: anytype, expr: *const Node, msg: []const u8) 
 
 pub fn appendRecorded(self: *Compiler, instr: Instruction) !void {
     const op_arg: Operand = switch (instr.op) {
-        .call, .call_field, .spawn => @intCast(instr.b),
+        .call, .call_closure, .call_field, .spawn => @intCast(instr.b),
         else => instr.bx,
     };
     if (self.ir_ctx != null) try recordIr(self, instr.op, instr, op_arg);

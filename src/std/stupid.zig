@@ -24,8 +24,8 @@ pub fn register(vm: *VM) !void {
 pub fn eval(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 1) return .errArity(args.len, 1);
 
-    const source = switch (args[0]) {
-        .string => |id| vm.stringValue(id),
+    const source = switch (args[0].tag()) {
+        .string => vm.stringValue(args[0].asString().?),
         else => return .errType(0, "string", dataToString(args[0])),
     };
 
@@ -47,7 +47,7 @@ pub fn eval(args: []const Data, vm: *VM) !NativeResult {
 /// builds it as a module, gives you back its' bytecode in a string
 /// the string is only useful for writing to a file or executing
 pub fn build(args: []const Data, vm: *VM) !NativeResult {
-    const source = vm.stringValue(args[0].string);
+    const source = vm.stringValue(args[0].asString().?);
 
     const result = try revo.lang.build(vm, .{ .text = source, .name = "<anon>" }, .{});
 
@@ -60,7 +60,7 @@ pub fn build(args: []const Data, vm: *VM) !NativeResult {
             defer vm.runtime.alloc.free(bc);
             // super slow
             const sid = try vm.strings.own(bc);
-            return root.resultTuple(vm, .ok, .{ .string = sid });
+            return root.resultTuple(vm, .ok, Data.new.str(sid));
         },
         .err => |err| switch (err) {
             .lower => |e| {

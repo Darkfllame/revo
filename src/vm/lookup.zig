@@ -12,11 +12,12 @@ pub const FieldLookup = struct {
 };
 
 pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLookup {
-    switch (object) {
-        .table => |table_id| {
+    switch (object.tag()) {
+        .table => {
+            const table_id = object.asTable().?;
             const t = try self.tables.get(table_id);
-            if (key == .atom) {
-                if (try t.structFieldIndex(self, key.atom)) |field_idx| {
+            if (key.asAtom()) |atom| {
+                if (try t.structFieldIndex(self, atom)) |field_idx| {
                     if (field_idx < t.array.items.len)
                         return .{ .value = t.array.items[field_idx], .from_meta = false };
                 }
@@ -29,10 +30,11 @@ pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLooku
                     return resolved;
                 }
             }
-            const type_mt_id = self.metatables[@intFromEnum(std.meta.Tag(Data).table)] orelse return null;
+            const type_mt_id = self.metatables[@intFromEnum(mem.Type.table)] orelse return null;
             return resolveViaMetatable(self, object, key, type_mt_id);
         },
-        .tuple => |tuple_id| {
+        .tuple => {
+            const tuple_id = object.asTuple().?;
             var instance_mt_id: ?@TypeOf(self.metatables[0].?) = null;
             var tuple_ref: ?*revo.tuple.Tuple = null;
             if (self.tuples.get(tuple_id)) |t| {
@@ -42,10 +44,10 @@ pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLooku
 
             // fast path::: tuple numeric indexing should not require mm lookup
             if (tuple_ref) |t| {
-                const idx_opt: ?usize = switch (key) {
-                    .number => |n| if (n >= 0 and @floor(n) == n and n <= @as(f64, @floatFromInt(std.math.maxInt(usize)))) @as(usize, @intFromFloat(n)) else null,
-                    else => null,
-                };
+                const idx_opt: ?usize = if (key.asNumber()) |n|
+                    if (n >= 0 and @floor(n) == n and n <= @as(f64, @floatFromInt(std.math.maxInt(usize)))) @as(usize, @intFromFloat(n)) else null
+                else
+                    null;
                 if (idx_opt) |idx| {
                     if (idx < t.items.len) {
                         return .{ .value = t.items[idx], .from_meta = false };
@@ -60,7 +62,7 @@ pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLooku
                 }
             }
 
-            const type_mt_id = self.metatables[@intFromEnum(std.meta.Tag(Data).tuple)] orelse return null;
+            const type_mt_id = self.metatables[@intFromEnum(mem.Type.tuple)] orelse return null;
             if (instance_mt_id != null and instance_mt_id.? == type_mt_id) return null;
             return resolveViaMetatable(self, object, key, type_mt_id);
         },
@@ -76,16 +78,16 @@ fn resolveViaMetatable(self: *VM, object: Data, key: Data, mt_id: @TypeOf(self.m
     if (mt.getRaw(key)) |value| {
         return .{ .value = value, .from_meta = true };
     }
-    if (mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__index) })) |indexer| {
-        self.perf.meta_index_fallbacks += 1;
+    if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__index)))) |indexer| {
         return resolveIndex(self, object, key, indexer);
     }
     return null;
 }
 
 pub fn resolveIndex(self: *VM, object: Data, key: Data, indexer: Data) VM.EvalError!?FieldLookup {
-    switch (indexer) {
-        .function => |fn_id| {
+    switch (indexer.tag()) {
+        .function => {
+            const fn_id = indexer.asFunction().?;
             const func = try self.functions.get(fn_id);
             const value = switch (func.*) {
                 .closure => |closure| switch (closure.arity) {
@@ -97,7 +99,8 @@ pub fn resolveIndex(self: *VM, object: Data, key: Data, indexer: Data) VM.EvalEr
             };
             return .{ .value = value, .from_meta = true };
         },
-        .table => |table_id| {
+        .table => {
+            const table_id = indexer.asTable().?;
             const index_table = try self.tables.get(table_id);
             if (index_table.getRaw(key)) |value| {
                 return .{ .value = value, .from_meta = true };
@@ -107,9 +110,8 @@ pub fn resolveIndex(self: *VM, object: Data, key: Data, indexer: Data) VM.EvalEr
                 if (mt.getRaw(key)) |value| {
                     return .{ .value = value, .from_meta = true };
                 }
-                if (mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__index) })) |next_indexer| {
-                    self.perf.meta_index_fallbacks += 1;
-                    return resolveIndex(self, .{ .table = table_id }, key, next_indexer);
+                if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__index)))) |next_indexer| {
+                    return resolveIndex(self, Data.new.table(table_id), key, next_indexer);
                 }
             }
             return null;
@@ -127,10 +129,7 @@ pub fn callField(self: *VM, argc: usize) VM.EvalError!void {
     const key = slots[key_slot];
     const lookup = (try resolveField(self, object, key)) orelse {
         fiber.slots.items.len = object_slot;
-        const key_name = switch (key) {
-            .atom => |atom| self.atomName(atom),
-            else => revo.std_lib.dataToString(key),
-        };
+        const key_name = if (key.asAtom()) |atom| self.atomName(atom) else revo.std_lib.dataToString(key);
         try self.setRuntimeMessageFmt("field `{s}` does not exist on {s}", .{
             key_name,
             revo.std_lib.typeof(object),
@@ -167,19 +166,18 @@ fn callViaStackLayout(self: *VM, callee_slot: usize, argc: usize) VM.EvalError!v
 }
 
 pub fn setMetatable(self: *VM, val: Data, mt: ?mem.TableID) !void {
-    switch (val) {
-        .table => |id| {
-            try self.setTableMetatable(id, mt);
-        },
-        .tuple => |id| {
+    switch (val.tag()) {
+        .table => try self.setTableMetatable(val.asTable().?, mt),
+        .tuple => {
+            const id = val.asTuple().?;
             if (self.tuples.get(id)) |tuple_ref| {
                 tuple_ref.metatable = mt;
             } else |_| {
-                self.metatables[@intFromEnum(std.meta.Tag(Data).tuple)] = mt;
+                self.metatables[@intFromEnum(mem.Type.tuple)] = mt;
             }
         },
-        .number => self.metatables[@intFromEnum(std.meta.Tag(Data).number)] = mt,
-        else => self.metatables[@intFromEnum(std.meta.activeTag(val))] = mt,
+        .number => self.metatables[@intFromEnum(mem.Type.number)] = mt,
+        else => self.metatables[@intFromEnum(val.tag())] = mt,
     }
 }
 
@@ -188,7 +186,7 @@ pub fn setTableMetatable(self: *VM, id: mem.TableID, mt: ?mem.TableID) !void {
         const tbl_ref = try self.tables.get(id);
         tbl_ref.metatable = mt;
     } else {
-        self.metatables[@intFromEnum(std.meta.Tag(Data).table)] = mt;
+        self.metatables[@intFromEnum(mem.Type.table)] = mt;
     }
 }
 

@@ -76,27 +76,24 @@ pub fn register(vm: *VM) !void {
 /// replaces character at index with given char or byte
 /// index is 0-based
 fn set(args: []const Data, vm: *VM) !NativeResult {
-    const str_handle = args[0].string;
+    const str_handle = args[0].asString().?;
 
-    const idx: usize = switch (args[1]) {
-        .number => |n| try revo.asIndex(n),
-        else => return .errType(1, "number", @tagName(args[1])),
-    };
+    const idx: usize = if (args[1].asNumber()) |n| try revo.asIndex(n) else return .errType(1, "number", root.dataToString(args[1]));
 
     const existing_str = vm.stringValue(str_handle);
     if (idx >= existing_str.len) return .{ .ok = revo.core_atoms.data(.missing) };
 
-    const char: u8 = blk: switch (args[2]) {
-        .string => |s| {
+    const char: u8 = blk: {
+        if (args[2].asString()) |s| {
             const s_val = vm.stringValue(s);
-            if (s_val.len == 0) return .errType(2, "non-empty string", @tagName(args[2]));
+            if (s_val.len == 0) return .errType(2, "non-empty string", root.dataToString(args[2]));
             break :blk s_val[0];
-        },
-        .number => |val| {
-            if (!std.math.isFinite(val)) return .errType(2, "string or byte", @tagName(args[2]));
+        } else if (args[2].asNumber()) |val| {
+            if (!std.math.isFinite(val)) return .errType(2, "string or byte", root.dataToString(args[2]));
             break :blk @intFromFloat(std.math.clamp(@round(val), 0, 255));
-        },
-        else => return .errType(2, "string or byte", @tagName(args[2])),
+        } else {
+            return .errType(2, "string or byte", root.dataToString(args[2]));
+        }
     };
 
     var new_buf = try vm.runtime.alloc.dupe(u8, existing_str);
@@ -111,18 +108,15 @@ fn set(args: []const Data, vm: *VM) !NativeResult {
 /// > string:len() -> number
 /// returns length of string
 fn len_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
+    const str = vm.stringValue(args[0].asString().?);
     return .{ .ok = Data.new.num(str.len) };
 }
 
 /// > string[idx: number] -> string
 /// returns character at index as single-char string
 fn index_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
-    const idx = switch (args[1]) {
-        .number => |n| revo.asIndex(n) catch return .{ .ok = revo.core_atoms.data(.missing) },
-        else => return .errType(1, "number", @tagName(args[1])),
-    };
+    const str = vm.stringValue(args[0].asString().?);
+    const idx = if (args[1].asNumber()) |n| revo.asIndex(n) catch return .{ .ok = revo.core_atoms.data(.missing) } else return .errType(1, "number", root.dataToString(args[1]));
     if (idx >= str.len) return .{ .ok = revo.core_atoms.data(.missing) };
     const result = try vm.ownDataStringNoDedup(str[idx .. idx + 1]);
     return .{ .ok = result };
@@ -131,8 +125,8 @@ fn index_f(args: []const Data, vm: *VM) !NativeResult {
 /// > string + other: string -> string
 /// concatenates two strings
 fn add_f(args: []const Data, vm: *VM) !NativeResult {
-    const left = vm.stringValue(args[0].string);
-    const right = vm.stringValue(args[1].string);
+    const left = vm.stringValue(args[0].asString().?);
+    const right = vm.stringValue(args[1].asString().?);
     const concatenated = try std.mem.concat(vm.runtime.alloc, u8, &.{ left, right });
     const result = try vm.adoptDataStringNoDedup(concatenated);
     return .{ .ok = result };
@@ -141,7 +135,7 @@ fn add_f(args: []const Data, vm: *VM) !NativeResult {
 /// > string:upper() -> string
 /// converts string to uppercase
 fn upper_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
+    const str = vm.stringValue(args[0].asString().?);
     const buf = try vm.runtime.alloc.dupe(u8, str);
     for (buf) |*c| c.* = std.ascii.toUpper(c.*);
     const result = try vm.adoptDataStringNoDedup(buf);
@@ -151,7 +145,7 @@ fn upper_f(args: []const Data, vm: *VM) !NativeResult {
 /// > string:lower() -> string
 /// converts string to lowercase
 fn lower_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
+    const str = vm.stringValue(args[0].asString().?);
     const buf = try vm.runtime.alloc.dupe(u8, str);
     for (buf) |*c| c.* = std.ascii.toLower(c.*);
     const result = try vm.adoptDataStringNoDedup(buf);
@@ -161,12 +155,9 @@ fn lower_f(args: []const Data, vm: *VM) !NativeResult {
 /// > string * n: number -> string
 /// repeats string n times
 fn mul_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
-    const times = switch (args[1]) {
-        .number => |n| @as(i64, @intFromFloat(n)),
-        else => return .errType(1, "number", @tagName(args[1])),
-    };
-    if (times < 0) return .errType(1, "positive number", @tagName(args[1]));
+    const str = vm.stringValue(args[0].asString().?);
+    const times = if (args[1].asNumber()) |n| @as(i64, @intFromFloat(n)) else return .errType(1, "number", root.dataToString(args[1]));
+    if (times < 0) return .errType(1, "positive number", root.dataToString(args[1]));
 
     const count = @as(usize, @intCast(times));
     const buf = try vm.runtime.alloc.alloc(u8, str.len * count);
@@ -186,15 +177,9 @@ fn tostring_f(args: []const Data, _: *VM) !NativeResult {
 /// > string:sub(start: number, length: number) -> string
 /// extracts substring from start with given length
 fn sub_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
-    const start = switch (args[1]) {
-        .number => |n| @as(i64, @intFromFloat(n)),
-        else => return .errType(1, "number", @tagName(args[1])),
-    };
-    const length = switch (args[2]) {
-        .number => |n| @as(i64, @intFromFloat(n)),
-        else => return .errType(2, "number", @tagName(args[2])),
-    };
+    const str = vm.stringValue(args[0].asString().?);
+    const start = if (args[1].asNumber()) |n| @as(i64, @intFromFloat(n)) else return .errType(1, "number", root.dataToString(args[1]));
+    const length = if (args[2].asNumber()) |n| @as(i64, @intFromFloat(n)) else return .errType(2, "number", root.dataToString(args[2]));
 
     if (start < 0 or length < 0 or start >= str.len) {
         const empty = try vm.ownDataString("");
@@ -211,8 +196,8 @@ fn sub_f(args: []const Data, vm: *VM) !NativeResult {
 /// finds first occurrence of needle in string
 /// returns index or :missing if not found
 fn find_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
-    const needle = vm.stringValue(args[1].string);
+    const str = vm.stringValue(args[0].asString().?);
+    const needle = vm.stringValue(args[1].asString().?);
 
     if (std.mem.indexOf(u8, str, needle)) |pos| {
         return .{ .ok = Data.new.num(pos) };
@@ -223,9 +208,9 @@ fn find_f(args: []const Data, vm: *VM) !NativeResult {
 /// > string:replace(old: string, new: string) -> string
 /// replaces all occurrences of old with new
 fn replace_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
-    const old = vm.stringValue(args[1].string);
-    const new = vm.stringValue(args[2].string);
+    const str = vm.stringValue(args[0].asString().?);
+    const old = vm.stringValue(args[1].asString().?);
+    const new = vm.stringValue(args[2].asString().?);
 
     const res = try std.mem.replaceOwned(u8, vm.runtime.alloc, str, old, new);
     const result = try vm.adoptDataStringNoDedup(res);
@@ -235,8 +220,8 @@ fn replace_f(args: []const Data, vm: *VM) !NativeResult {
 /// > string:split(delim: string) -> table
 /// splits string by delimiter into table
 fn split_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
-    const delim = vm.stringValue(args[1].string);
+    const str = vm.stringValue(args[0].asString().?);
+    const delim = vm.stringValue(args[1].asString().?);
 
     var parts = try std.ArrayList(Data).initCapacity(vm.runtime.alloc, 10);
     defer parts.deinit(vm.runtime.alloc);
@@ -257,13 +242,13 @@ fn split_f(args: []const Data, vm: *VM) !NativeResult {
         try table.putRaw(Data.new.num(idx), part);
     }
 
-    return .{ .ok = .{ .table = table_id } };
+    return .{ .ok = Data.new.table(table_id) };
 }
 
 /// > string:trim() -> string
 /// trims whitespace from both ends
 fn trim_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
+    const str = vm.stringValue(args[0].asString().?);
     const trimmed = std.mem.trim(u8, str, " \t\r\n");
     return .{ .ok = try vm.ownDataStringNoDedup(trimmed) };
 }
@@ -271,23 +256,23 @@ fn trim_f(args: []const Data, vm: *VM) !NativeResult {
 /// > string:starts_with?(prefix: string) -> bool
 /// checks if string starts with prefix
 fn starts_with_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
-    const prefix = vm.stringValue(args[1].string);
+    const str = vm.stringValue(args[0].asString().?);
+    const prefix = vm.stringValue(args[1].asString().?);
     return .{ .ok = root.boolData(std.mem.startsWith(u8, str, prefix)) };
 }
 
 /// > string:ends_with?(suffix: string) -> bool
 /// checks if string ends with suffix
 fn ends_with_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
-    const suffix = vm.stringValue(args[1].string);
+    const str = vm.stringValue(args[0].asString().?);
+    const suffix = vm.stringValue(args[1].asString().?);
     return .{ .ok = root.boolData(std.mem.endsWith(u8, str, suffix)) };
 }
 
 /// > string:reverse() -> string
 /// reverses the string
 fn reverse_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
+    const str = vm.stringValue(args[0].asString().?);
     const duped = try vm.runtime.alloc.dupe(u8, str);
     std.mem.reverse(u8, duped);
     const result = try vm.adoptDataStringNoDedup(duped);
@@ -298,7 +283,7 @@ fn reverse_f(args: []const Data, vm: *VM) !NativeResult {
 /// converts string to table of characters
 /// "asdf":table() => {"a", "s", "d", "f"}
 fn to_table(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
+    const str = vm.stringValue(args[0].asString().?);
     const table_id = try vm.tables.create();
     const table = try vm.tables.get(table_id);
     for (str) |byte| {
@@ -312,7 +297,7 @@ fn to_table(args: []const Data, vm: *VM) !NativeResult {
 /// returns ASCII code of first character
 /// "a":ascii() => 97
 fn ascii_f(args: []const Data, vm: *VM) !NativeResult {
-    const str = vm.stringValue(args[0].string);
+    const str = vm.stringValue(args[0].asString().?);
     if (str.len == 0) {
         return .errType(0, "non-empty string", "empty string");
     }
@@ -324,38 +309,33 @@ fn ascii_f(args: []const Data, vm: *VM) !NativeResult {
 /// string_of(97) => "a"
 /// string_of({97, 98}) => "ab"
 fn string_of(args: []const Data, vm: *VM) !NativeResult {
-    switch (args[0]) {
-        .number => |n| {
-            const code: u32 = @intFromFloat(n);
-            if (code > 127) {
-                return .other("ASCII code out of range");
-            }
-            const char = try vm.runtime.alloc.dupe(u8, &[_]u8{@as(u8, @truncate(code))});
-            return .{ .ok = try vm.adoptDataStringNoDedup(char) };
-        },
-        .tuple => |tuple_id| {
-            const tuple = try vm.tuples.get(tuple_id);
-            var buf = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, tuple.len());
-            defer buf.deinit(vm.runtime.alloc);
-            for (tuple.items) |val| {
-                switch (val) {
-                    .number => |n| {
-                        const code: u32 = @intFromFloat(n);
-                        if (code > 127) {
-                            return .other("ASCII code out of range");
-                        }
-                        try buf.append(vm.runtime.alloc, @as(u8, @truncate(code)));
-                    },
-                    else => {
-                        return .errType(0, "number", @tagName(val));
-                    },
-                }
-            }
-            const owned = try buf.toOwnedSlice(vm.runtime.alloc);
-            return .{ .ok = try vm.adoptDataStringNoDedup(owned) };
-        },
-        else => return .errType(0, "number or tuple", @tagName(args[0])),
+    if (args[0].asNumber()) |n| {
+        const code: u32 = @intFromFloat(n);
+        if (code > 127) {
+            return .other("ASCII code out of range");
+        }
+        const char = try vm.runtime.alloc.dupe(u8, &[_]u8{@as(u8, @truncate(code))});
+        return .{ .ok = try vm.adoptDataStringNoDedup(char) };
     }
+    if (args[0].asTuple()) |tuple_id| {
+        const tuple = try vm.tuples.get(tuple_id);
+        var buf = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, tuple.len());
+        defer buf.deinit(vm.runtime.alloc);
+        for (tuple.items) |val| {
+            if (val.asNumber()) |n| {
+                const code: u32 = @intFromFloat(n);
+                if (code > 127) {
+                    return .other("ASCII code out of range");
+                }
+                try buf.append(vm.runtime.alloc, @as(u8, @truncate(code)));
+            } else {
+                return .errType(0, "number", root.dataToString(val));
+            }
+        }
+        const owned = try buf.toOwnedSlice(vm.runtime.alloc);
+        return .{ .ok = try vm.adoptDataStringNoDedup(owned) };
+    }
+    return .errType(0, "number or tuple", root.dataToString(args[0]));
 }
 
 test "string metatable" {
@@ -373,8 +353,8 @@ test "string metatable" {
 /// > string:contains?(substr: string) -> bool
 /// checks if string contains substring
 fn contains(args: []const Data, vm: *VM) !NativeResult {
-    const str_id = args[0].string;
-    const search_id = args[1].string;
+    const str_id = args[0].asString().?;
+    const search_id = args[1].asString().?;
 
     const str = vm.stringValue(str_id);
     const search = vm.stringValue(search_id);
@@ -385,8 +365,8 @@ fn contains(args: []const Data, vm: *VM) !NativeResult {
 /// > string:index_of(substr: string) -> number | nil
 /// ret 0-based index of substring or nil
 fn index_of(args: []const Data, vm: *VM) !NativeResult {
-    const str_id = args[0].string;
-    const search_id = args[1].string;
+    const str_id = args[0].asString().?;
+    const search_id = args[1].asString().?;
 
     const str = vm.stringValue(str_id);
     const search = vm.stringValue(search_id);
@@ -400,8 +380,8 @@ fn index_of(args: []const Data, vm: *VM) !NativeResult {
 /// > string.join(table: table, sep: string) -> string
 /// joins table elements into string with separator
 fn join(args: []const Data, vm: *VM) !NativeResult {
-    const tbl_id = args[0].table;
-    const sep_id = args[1].string;
+    const tbl_id = args[0].asTable().?;
+    const sep_id = args[1].asString().?;
 
     const tbl = try vm.tables.get(tbl_id);
     const sep = vm.stringValue(sep_id);
@@ -410,11 +390,12 @@ fn join(args: []const Data, vm: *VM) !NativeResult {
     defer buf.deinit(vm.runtime.alloc);
 
     for (tbl.array.items, 0..) |item, i| {
-        const item_str = switch (item) {
-            .string => |sid| vm.stringValue(sid),
-            .number => |n| try std.fmt.allocPrint(vm.runtime.alloc, "{}", .{n}),
-            else => "?",
-        };
+        const item_str = if (item.asString()) |sid|
+            vm.stringValue(sid)
+        else if (item.asNumber()) |n|
+            try std.fmt.allocPrint(vm.runtime.alloc, "{}", .{n})
+        else
+            "?";
         try buf.appendSlice(vm.runtime.alloc, item_str);
         if (i < tbl.array.items.len - 1 and tbl.array.items.len >= i) {
             try buf.appendSlice(vm.runtime.alloc, sep);

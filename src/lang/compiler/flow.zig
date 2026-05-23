@@ -95,15 +95,18 @@ pub fn compileRangeLoopBody(
     state_reg: Register,
     needs_index: bool,
 ) !void {
+    var value_slot: ?LocalSlot = null;
+    var index_slot: ?LocalSlot = null;
+
     if (params.len >= 1 and !ast.isDiscardName(params[0].name)) {
-        if (state.currentFunctionState(self)) |fn_state| {
-            try fn_state.var_types.put(params[0].name, "int");
-        }
+        value_slot = try state.declareLocal(self, params[0].name, false);
+        state.setLocalType(self, value_slot.?, "int");
+        if (state.currentFunctionState(self)) |fn_state| try fn_state.var_types.put(params[0].name, "int");
     }
     if (params.len == 2 and !ast.isDiscardName(params[1].name)) {
-        if (state.currentFunctionState(self)) |fn_state| {
-            try fn_state.var_types.put(params[1].name, "int");
-        }
+        index_slot = try state.declareLocal(self, params[1].name, false);
+        state.setLocalType(self, index_slot.?, "int");
+        if (state.currentFunctionState(self)) |fn_state| try fn_state.var_types.put(params[1].name, "int");
     }
 
     const loop_check: ProgramCounter = @intCast(self.instructions.items.len);
@@ -124,7 +127,7 @@ pub fn compileRangeLoopBody(
 
     const end_jump = try emit.jump(self, .jump_if_false);
 
-    if (params.len >= 1 and !ast.isDiscardName(params[0].name)) {
+    if (value_slot) |slot| {
         const temp_reg = try toRegister(self.active_registers);
         const move_val: Instruction = .{
             .op = .move,
@@ -133,10 +136,11 @@ pub fn compileRangeLoopBody(
         };
         try emit.appendRecorded(self, move_val);
         self.active_registers += 1;
-        try emit.emit(self, .store_global, try self.vm.internAtom(params[0].name));
+        state.markLocalInitialized(self, slot);
+        try emit.emit(self, .bind_local, slot);
     }
 
-    if (params.len == 2 and !ast.isDiscardName(params[1].name)) {
+    if (index_slot) |slot| {
         const temp_reg = try toRegister(self.active_registers);
         const move_idx: Instruction = .{
             .op = .move,
@@ -145,7 +149,8 @@ pub fn compileRangeLoopBody(
         };
         try emit.appendRecorded(self, move_idx);
         self.active_registers += 1;
-        try emit.emit(self, .store_global, try self.vm.internAtom(params[1].name));
+        state.markLocalInitialized(self, slot);
+        try emit.emit(self, .bind_local, slot);
     }
 
     if (needs_index) try emit.regRelease(self);
@@ -217,6 +222,20 @@ pub fn compileFor(
     self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
     const idx_storage: VarStorage = .{ .local = idx_slot };
 
+    // Pre-declare loop variables as locals before loop starts
+    var value_storage: VarStorage = undefined;
+    var index_storage: VarStorage = undefined;
+    if (!ast.isDiscardName(params[0].name)) {
+        const value_slot: Operand = @intCast(self.slot_allocators.items[self.slot_allocators.items.len - 1]);
+        self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
+        value_storage = .{ .local = value_slot };
+    }
+    if (params.len == 2 and !ast.isDiscardName(params[1].name)) {
+        const index_slot: Operand = @intCast(self.slot_allocators.items[self.slot_allocators.items.len - 1]);
+        self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
+        index_storage = .{ .local = index_slot };
+    }
+
     try self.compile(iter, true);
     try emitStorageStore(self, iter_storage, false);
     try emit.@"const"(self, Data.new.num(0));
@@ -225,24 +244,22 @@ pub fn compileFor(
     const loop_check: ProgramCounter = @intCast(self.instructions.items.len);
 
     try emitStorageLoad(self, idx_storage);
-    try emit.emit(self, .load_global, try self.vm.internAtom("len"));
     try emitStorageLoad(self, iter_storage);
-    try emit.emit(self, .call, 1);
+    try emit.@"const"(self, Data.new.atom(try self.vm.internAtom("len")));
+    try emit.emit(self, .call_field, 0);
     try emit.emit(self, .lt, 0);
     const end_jump = try emit.jump(self, .jump_if_false);
 
     try emitForValueLoad(self, iter_storage, idx_storage);
     if (!ast.isDiscardName(params[0].name)) {
-        try emit.regDupe(self);
-        try emit.emit(self, .store_global, try self.vm.internAtom(params[0].name));
+        try emitStorageStore(self, value_storage, false);
     }
     try emit.regRelease(self);
 
     if (params.len == 2) {
         try emitStorageLoad(self, idx_storage);
         if (!ast.isDiscardName(params[1].name)) {
-            try emit.regDupe(self);
-            try emit.emit(self, .store_global, try self.vm.internAtom(params[1].name));
+            try emitStorageStore(self, index_storage, false);
         }
         try emit.regRelease(self);
     }
@@ -331,7 +348,7 @@ pub fn emitForValueLoad(
     self.active_registers = base_depth;
     emit.patchJump(self, table_check);
     try emitStorageLoad(self, iter_storage);
-    try emit.@"const"(self, Data{ .atom = try self.vm.internAtom("__iter") });
+    try emit.@"const"(self, Data.new.atom(try self.vm.internAtom("__iter")));
     try emitStorageLoad(self, idx_storage);
     try emit.emit(self, .call_field, 1);
 

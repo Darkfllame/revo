@@ -73,6 +73,7 @@ pub const Opcode = enum(u8) {
     jump_if_false, // "if falsey(R[a]) pc <- bx"
     jump_if_true, // "if truthy(R[a]) pc <- bx"
     call, // "call R[a] argc=b -> R[c]"
+    call_closure, // "call known closure R[a] argc=b -> R[c]"
     call_field, // "call_field from R[a] argc=b -> R[c]"
     ret, // "return R[a]"
     spawn, // "spawn R[a] argc=b -> R[c]"

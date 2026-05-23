@@ -18,6 +18,8 @@ pub const LocalVar = struct {
     mutable: bool,
     initialized: bool,
     kind: LocalValueKind = .unknown,
+    type_name: ?[]const u8 = null,
+    table_fields: ?[]const []const u8 = null,
 };
 
 pub const FunctionState = struct {
@@ -216,6 +218,55 @@ pub fn markLocalValueKind(self: *Compiler, slot: LocalSlot, kind: LocalValueKind
     }
 }
 
+pub fn setLocalType(self: *Compiler, slot: LocalSlot, type_name: ?[]const u8) void {
+    const state = currentFunctionState(self) orelse return;
+    var i = state.locals.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (state.locals.items[i].slot == slot) {
+            state.locals.items[i].type_name = type_name;
+            break;
+        }
+    }
+    i = state.all_locals.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (state.all_locals.items[i].slot == slot) {
+            state.all_locals.items[i].type_name = type_name;
+            break;
+        }
+    }
+}
+
+pub fn setLocalTableFields(self: *Compiler, slot: LocalSlot, fields: ?[]const []const u8) void {
+    const state = currentFunctionState(self) orelse return;
+    var i = state.locals.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (state.locals.items[i].slot == slot) {
+            state.locals.items[i].table_fields = fields;
+            break;
+        }
+    }
+    i = state.all_locals.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (state.all_locals.items[i].slot == slot) {
+            state.all_locals.items[i].table_fields = fields;
+            break;
+        }
+    }
+}
+
+pub fn localHasTableField(self: *const Compiler, name: []const u8, field_name: []const u8) bool {
+    const local = resolveLocalVar(self, name) orelse return false;
+    const fields = local.table_fields orelse return false;
+    for (fields) |f| {
+        if (std.mem.eql(u8, f, field_name)) return true;
+    }
+    return false;
+}
+
 pub fn predeclareFunctionBindings(self: *Compiler, exprs: []const *Node) !void {
     for (exprs) |expr| switch (expr.expr) {
         .con_expr, .let_expr => |binding| {
@@ -223,6 +274,7 @@ pub fn predeclareFunctionBindings(self: *Compiler, exprs: []const *Node) !void {
             const name = binding.target.expr.ident;
             if (ast.isDiscardName(name)) continue;
             _ = try reuseOrDeclareLocal(self, name, expr.expr == .let_expr);
+            try declareFnSignature(self, name, binding.value.expr.fn_expr.params, binding.value.expr.fn_expr.return_type);
         },
         else => {},
     };
@@ -250,7 +302,7 @@ pub fn resolveLocalVar(self: *const Compiler, name: []const u8) ?LocalVar {
 
 pub fn constTupleIndex(self: *const Compiler, index: anytype) ?usize {
     const key_num = switch (index.key.expr) {
-        .number => |n| n,
+        .number => |n| n.value,
         else => return null,
     };
     if (!std.math.isFinite(key_num) or @floor(key_num) != key_num or key_num < 0 or key_num > @as(f64, @floatFromInt(std.math.maxInt(usize)))) return null;
@@ -297,4 +349,40 @@ pub fn collectConstLocals(self: *Compiler, locals: []const LocalVar) ![]LocalSlo
     defer out.deinit(self.alloc);
     for (locals) |local| if (!local.mutable) try out.append(self.alloc, local.slot);
     return out.toOwnedSlice(self.alloc);
+}
+
+pub fn allocFnSig(self: *Compiler, params: []const ast.FnParam, return_type: ?[]const u8) !*const FunctionState.FnSig {
+    const sig = try self.alloc.create(FunctionState.FnSig);
+    errdefer self.alloc.destroy(sig);
+
+    var param_types = try std.ArrayList(?[]const u8).initCapacity(self.alloc, params.len);
+    errdefer param_types.deinit(self.alloc);
+    for (params) |p| try param_types.append(self.alloc, p.type_name);
+
+    sig.* = .{
+        .param_types = try param_types.toOwnedSlice(self.alloc),
+        .return_type = return_type,
+    };
+    return sig;
+}
+
+pub fn declareFnSignature(self: *Compiler, name: []const u8, params: []const ast.FnParam, return_type: ?[]const u8) !void {
+    const state = currentFunctionState(self) orelse return;
+    if (ast.isDiscardName(name)) return;
+    if (state.fn_signatures.get(name) != null) return;
+    const sig = try allocFnSig(self, params, return_type);
+    errdefer {
+        self.alloc.free(sig.param_types);
+        self.alloc.destroy(sig);
+    }
+    try state.fn_signatures.put(name, sig);
+}
+
+pub fn findFnSignature(self: *const Compiler, name: []const u8) ?*const FunctionState.FnSig {
+    var i = self.functions.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (self.functions.items[i].fn_signatures.get(name)) |sig| return sig;
+    }
+    return null;
 }

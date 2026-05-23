@@ -8,6 +8,7 @@ const types_mod = @import("types.zig");
 
 const ast = @import("../ast.zig");
 const Node = ast.Node;
+const TableEntry = ast.TableEntry;
 const Binding = ast.Binding;
 const StructItem = ast.StructItem;
 const emit = @import("emit.zig");
@@ -20,13 +21,6 @@ pub const BindingKind = enum { global, let, con };
 pub const StructFieldTableKind = enum { fields, defaults, types };
 
 pub fn compileLocalBinding(self: *Compiler, name: []const u8, value: *const Node, mutable: bool, type_name: ?[]const u8) !void {
-    var effective_type_name = type_name;
-
-    if (effective_type_name == null) effective_type_name = inferTypeFromLiteral(value);
-    if (effective_type_name) |tn| {
-        if (state.currentFunctionState(self)) |fn_state| try fn_state.var_types.put(name, tn);
-    }
-
     if (type_name) |tn| {
         type_check.validateBindingType(self, tn, value) catch |err| switch (err) {
             error.TypeError => {
@@ -56,19 +50,16 @@ pub fn compileLocalBinding(self: *Compiler, name: []const u8, value: *const Node
 
     state.markLocalInitialized(self, slot);
     state.markLocalValueKind(self, slot, if (value.expr == .tuple) .tuple_literal else .unknown);
+    try syncLocalTableFields(self, slot, value);
+
+    const inferred_type = if (type_name) |tn| type_check.typeInfoFromName(tn) else type_check.inferExprType(self, value);
+    if (type_check.storedTypeName(inferred_type)) |stored_name| {
+        state.setLocalType(self, slot, stored_name);
+        if (state.currentFunctionState(self)) |fn_state| try fn_state.var_types.put(name, stored_name);
+    }
+
     try emit.regDupe(self);
     try emit.emit(self, .bind_local, slot);
-}
-
-fn inferTypeFromLiteral(value: *const Node) ?[]const u8 {
-    return switch (value.expr) {
-        .number => |n| if (n == @as(f64, @trunc(n))) "int" else "float",
-        .string, .multiline_string => "string",
-        .nil => "nil",
-        .table => "table",
-        .tuple => "tuple",
-        else => null,
-    };
 }
 
 pub fn bindPattern(self: *Compiler, pattern: *const Node, source_idx: usize, kind: BindingKind) !void {
@@ -136,6 +127,12 @@ fn compileAssignSimple(self: *Compiler, target: *const Node, value: *const Node)
             if (state.resolveLocal(self, name)) |slot| {
                 try emit.emit(self, .store_local, slot);
                 state.markLocalValueKind(self, slot, .unknown);
+                try syncLocalTableFields(self, slot, value);
+                const inferred_type = type_check.inferExprType(self, value);
+                if (type_check.storedTypeName(inferred_type)) |stored_name| {
+                    state.setLocalType(self, slot, stored_name);
+                    if (state.currentFunctionState(self)) |fn_state| try fn_state.var_types.put(name, stored_name);
+                }
             } else if (try state.resolveUpvalue(self, name)) |slot| {
                 try emit.emit(self, .store_upval, slot);
             } else {
@@ -148,27 +145,37 @@ fn compileAssignSimple(self: *Compiler, target: *const Node, value: *const Node)
             }
         },
         .field => |field| {
-            if (self.resolveTypedStructFieldOffset(field.object, field.name)) |field_offset| {
-                type_check.validateAssignmentType(self, target, value) catch |err| switch (err) {
-                    error.TypeError => {
-                        const actual = type_check.inferExprType(self, value);
-                        const fn_state = state.currentFunctionState(self) orelse unreachable;
-                        const type_name = fn_state.var_types.get(field.object.expr.ident) orelse unreachable;
-                        const layout = self.struct_layouter.getLayout(type_name orelse unreachable) orelse unreachable;
-                        const expected = layout.fields[field_offset].field_type;
-                        const msg = try std.fmt.allocPrint(
-                            self.alloc,
-                            "field `{s}` on `{s}` expects {s}, got {s}",
-                            .{ field.name, type_name.?, types_mod.typeName(expected), types_mod.typeName(actual) },
-                        );
-                        return self.fail(.ParseError, value, msg);
-                    },
-                };
-                try self.compile(field.object, true);
-                try compileAssignIntoStructOffset(self, field_offset, value);
-            } else {
-                try self.compile(field.object, true);
-                try compileAssignIntoTableAtom(self, try self.vm.internAtom(field.name), value);
+            const object_type = type_check.inferExprType(self, field.object);
+            switch (object_type) {
+                .struct_type => |type_name| if (self.struct_layouter.getLayout(type_name)) |layout| {
+                    const field_offset = self.resolveTypedStructFieldOffset(field.object, field.name) orelse blk: {
+                        for (layout.fields, 0..) |f, idx| {
+                            if (std.mem.eql(u8, f.name, field.name)) break :blk idx;
+                        }
+                        unreachable;
+                    };
+                    type_check.validateAssignmentType(self, target, value) catch |err| switch (err) {
+                        error.TypeError => {
+                            const actual = type_check.inferExprType(self, value);
+                            const expected = layout.fields[field_offset].field_type;
+                            const msg = try std.fmt.allocPrint(
+                                self.alloc,
+                                "field `{s}` on `{s}` expects {s}, got {s}",
+                                .{ field.name, type_name, types_mod.typeName(expected), types_mod.typeName(actual) },
+                            );
+                            return self.fail(.ParseError, value, msg);
+                        },
+                    };
+                    try self.compile(field.object, true);
+                    try compileAssignIntoStructOffset(self, field_offset, value);
+                } else {
+                    try self.compile(field.object, true);
+                    try compileAssignIntoTableAtom(self, try self.vm.internAtom(field.name), value);
+                },
+                else => {
+                    try self.compile(field.object, true);
+                    try compileAssignIntoTableAtom(self, try self.vm.internAtom(field.name), value);
+                },
             }
         },
         .index => |index| {
@@ -184,6 +191,41 @@ fn compileAssignSimple(self: *Compiler, target: *const Node, value: *const Node)
             const msg = try std.fmt.allocPrint(self.alloc, "invalid assignment target: {}", .{target.*});
             return self.fail(.InvalidAssignmentTarget, target, msg);
         },
+    }
+}
+
+fn applyLocalTableFields(self: *Compiler, slot: revo.LocalSlot, entries: []const TableEntry) !void {
+    var fields = try std.ArrayList([]const u8).initCapacity(self.alloc, entries.len);
+    defer fields.deinit(self.alloc);
+
+    for (entries) |entry| {
+        if (entry.computed or entry.key == null) continue;
+        if (entry.key) |key| switch (key.expr) {
+            .ident => |name| try fields.append(self.alloc, name),
+            .hash => |name| try fields.append(self.alloc, name),
+            else => {},
+        };
+    }
+
+    if (fields.items.len == 0) {
+        state.setLocalTableFields(self, slot, null);
+        return;
+    }
+
+    state.setLocalTableFields(self, slot, try fields.toOwnedSlice(self.alloc));
+}
+
+fn syncLocalTableFields(self: *Compiler, slot: revo.LocalSlot, value: *const Node) !void {
+    switch (value.expr) {
+        .table => try applyLocalTableFields(self, slot, value.expr.table),
+        .ident => |name| {
+            const source = state.resolveLocalVar(self, name) orelse {
+                state.setLocalTableFields(self, slot, null);
+                return;
+            };
+            state.setLocalTableFields(self, slot, source.table_fields);
+        },
+        else => state.setLocalTableFields(self, slot, null),
     }
 }
 
@@ -303,11 +345,12 @@ fn compileStructFieldTable(self: *Compiler, items: []const StructItem, kind: Str
 fn constValueFromNode(self: *Compiler, node: *const Node) !Data {
     return switch (node.expr) {
         .number => |n| blk: {
-            if (std.math.isFinite(n) and @floor(n) == n and
-                n >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
-                n <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
-                break :blk Data.new.num(@as(i64, @intFromFloat(n)));
-            break :blk Data.new.num(n);
+            const value = n.value;
+            if (!n.is_float and std.math.isFinite(value) and @floor(value) == value and
+                value >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
+                value <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+                break :blk Data.new.num(@as(i64, @intFromFloat(value)));
+            break :blk Data.new.num(value);
         },
         .string, .multiline_string => |s| try self.vm.ownDataString(s),
         .hash => |s| Data.new.atom(try self.vm.internAtom(s)),
@@ -321,12 +364,22 @@ pub fn compileTable(self: *Compiler, entries: []const ast.TableEntry) !void {
     for (entries) |entry| {
         try emit.regDupe(self);
         if (entry.key) |key| {
-            if (entry.computed)
-                try self.compile(key, true)
-            else switch (key.expr) {
-                .ident => |name| try emit.@"const"(self, Data{ .atom = try self.vm.internAtom(name) }),
-                else => try self.compile(key, true),
-            }
+            if (!entry.computed) switch (key.expr) {
+                .ident => |name| {
+                    try self.compile(entry.value, true);
+                    try emit.emit(self, .table_set_atom, try self.vm.internAtom(name));
+                    try emit.regRelease(self);
+                    continue;
+                },
+                .hash => |name| {
+                    try self.compile(entry.value, true);
+                    try emit.emit(self, .table_set_atom, try self.vm.internAtom(name));
+                    try emit.regRelease(self);
+                    continue;
+                },
+                else => {},
+            };
+            try self.compile(key, true);
         } else {
             try emit.@"const"(self, Data.new.num(array_index));
             array_index += 1;

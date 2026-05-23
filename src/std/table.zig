@@ -87,13 +87,14 @@ pub fn register(vm: *VM) !void {
 /// > unwrap(result: tuple) -> any
 /// unwraps result tuple, panics if not :ok
 pub fn @"try"(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const table = try vm.tables.get(table_id);
     if (table.array.items.len < 2) return .errType(0, "table with at least 2 elements", "table with less than 2 elements");
     const tag = table.array.items[0];
 
-    return switch (tag) {
-        .atom => |atom| blk: {
+    return switch (tag.tag()) {
+        .atom => blk: {
+            const atom = tag.asAtom().?;
             const ok_id = revo.core_atoms.atom_id(.ok);
             if (atom != ok_id) return root.panic_(&[1]Data{table.array.items[1]}, vm);
             break :blk .{ .ok = table.array.items[1] };
@@ -105,7 +106,7 @@ pub fn @"try"(args: []const Data, vm: *VM) !NativeResult {
 /// > table:as_tuple() -> tuple
 /// converts table array part to tuple
 fn as_tuple(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
 
     const table = try vm.tables.get(table_id);
 
@@ -128,14 +129,9 @@ fn as_tuple(args: []const Data, vm: *VM) !NativeResult {
 /// inserts value at position, shifting elements right
 fn insert(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 3) return .errArity(args.len, 3);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
-    const pos = switch (args[1]) {
-        .number => |n| @as(i64, @intFromFloat(n)),
-        else => return .errType(1, "number", dataToString(args[1])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
+    const pos_num = args[1].asNumber() orelse return .errType(1, "number", dataToString(args[1]));
+    const pos = @as(i64, @intFromFloat(pos_num));
     const val = args[2];
 
     const table = vm.tables.get(table_id) catch return .errType(0, "table", dataToString(args[0]));
@@ -155,14 +151,9 @@ fn insert(args: []const Data, vm: *VM) !NativeResult {
 /// removes element at position, returns removed value
 fn remove(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 2) return .errArity(args.len, 2);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
-    const pos = switch (args[1]) {
-        .number => |n| @as(i64, @intFromFloat(n)),
-        else => return .errType(1, "number", dataToString(args[1])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
+    const pos_num = args[1].asNumber() orelse return .errType(1, "number", dataToString(args[1]));
+    const pos = @as(i64, @intFromFloat(pos_num));
 
     const table = vm.tables.get(table_id) catch return .errType(0, "table", dataToString(args[0]));
     if (pos < 0 or pos >= table.array.items.len) return .errType(1, "valid index", dataToString(args[1]));
@@ -175,27 +166,22 @@ fn remove(args: []const Data, vm: *VM) !NativeResult {
 /// > table:push(value: any) -> table
 /// inserts element as last
 fn push(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
 
     const table = vm.tables.get(table_id) catch return .errType(0, "table", dataToString(args[0]));
 
     try table.array.appendSlice(vm.runtime.alloc, args[1..]);
 
-    return .{ .ok = .{ .table = table_id } };
+    return .okData(Data.new.table(table_id));
 }
 
 /// > table:concat(delim: string) -> string
 /// concatenates array elements with delimiter
 fn concat(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 2) return .errArity(args.len, 2);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
-    const delim = switch (args[1]) {
-        .string => |id| vm.stringValue(id),
-        else => return .errType(1, "string", dataToString(args[1])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
+    const delim_id = args[1].asString() orelse return .errType(1, "string", dataToString(args[1]));
+    const delim = vm.stringValue(delim_id);
 
     const table = vm.tables.get(table_id) catch return .errType(0, "table", dataToString(args[0]));
     var buf = std.Io.Writer.Allocating.init(vm.runtime.alloc);
@@ -218,10 +204,7 @@ fn concat(args: []const Data, vm: *VM) !NativeResult {
 /// returns all keys as table (array indices + hash keys)
 fn keys(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 1) return .errArity(args.len, 1);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
 
     const table = vm.tables.get(table_id) catch return .errType(0, "table", dataToString(args[0]));
     var keys_list = try std.ArrayList(Data).initCapacity(vm.runtime.alloc, table.array.items.len + 10);
@@ -241,17 +224,14 @@ fn keys(args: []const Data, vm: *VM) !NativeResult {
         try result.putRaw(Data.new.num(idx), key);
     }
 
-    return .{ .ok = .{ .table = result_table } };
+    return .okData(Data.new.table(result_table));
 }
 
 /// > table:values() -> table
 /// returns all values as table
 fn values(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 1) return .errArity(args.len, 1);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
 
     const table = try vm.tables.get(table_id);
     var values_list = try std.ArrayList(Data).initCapacity(vm.runtime.alloc, table.array.items.len + 10);
@@ -272,13 +252,13 @@ fn values(args: []const Data, vm: *VM) !NativeResult {
         try result.putRaw(Data.new.num(idx), val);
     }
 
-    return .{ .ok = .{ .table = result_table } };
+    return .okData(Data.new.table(result_table));
 }
 
 /// > table:len() -> number
 /// returns length of table array part
 fn len(args: []const Data, vm: *VM) !NativeResult {
-    const table = try vm.tables.get(args[0].table);
+    const table = try vm.tables.get(args[0].asTable().?);
     return .okData(Data.new.num(table.array.items.len));
 }
 
@@ -286,10 +266,7 @@ fn len(args: []const Data, vm: *VM) !NativeResult {
 /// checks if key exists in table
 fn has(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 2) return .errArity(args.len, 2);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
 
     const table = try vm.tables.get(table_id);
     const exists = try table.get(args[1], vm);
@@ -300,10 +277,7 @@ fn has(args: []const Data, vm: *VM) !NativeResult {
 /// creates shallow copy of table
 fn copy(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 1) return .errArity(args.len, 1);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
 
     const table = vm.tables.get(table_id) catch return .errType(0, "table", dataToString(args[0]));
     const new_table = try vm.tables.create();
@@ -317,7 +291,7 @@ fn copy(args: []const Data, vm: *VM) !NativeResult {
     }
     try new_t.hash_order.appendSlice(vm.runtime.alloc, table.hash_order.items);
 
-    return .{ .ok = .{ .table = new_table } };
+    return .okData(Data.new.table(new_table));
 }
 
 /// > table:merge(other: table) -> table
@@ -325,14 +299,8 @@ fn copy(args: []const Data, vm: *VM) !NativeResult {
 /// later values overwrite earlier ones
 fn merge(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 2) return .errArity(args.len, 2);
-    const table1_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
-    const table2_id = switch (args[1]) {
-        .table => |id| id,
-        else => return .errType(1, "table", dataToString(args[1])),
-    };
+    const table1_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
+    const table2_id = args[1].asTable() orelse return .errType(1, "table", dataToString(args[1]));
 
     const table1 = vm.tables.get(table1_id) catch return .errType(0, "table", dataToString(args[0]));
     const table2 = vm.tables.get(table2_id) catch return .errType(1, "table", dataToString(args[1]));
@@ -354,7 +322,7 @@ fn merge(args: []const Data, vm: *VM) !NativeResult {
     try result.hash_order.appendSlice(vm.runtime.alloc, table1.hash_order.items);
     try result.hash_order.appendSlice(vm.runtime.alloc, table2.hash_order.items);
 
-    return .okData(.{ .table = result_table });
+    return .okData(Data.new.table(result_table));
 }
 
 /// > rawget(table: table, key: any) -> any
@@ -362,10 +330,7 @@ fn merge(args: []const Data, vm: *VM) !NativeResult {
 /// returns :undef if key missing
 fn rawget(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 2) return .errArity(args.len, 2);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
     const t = try vm.tables.get(table_id);
     return .okData(t.getRaw(args[1]) orelse revo.core_atoms.data(.undef));
 }
@@ -374,10 +339,7 @@ fn rawget(args: []const Data, vm: *VM) !NativeResult {
 /// sets value without metamethods
 fn rawset(args: []const Data, vm: *VM) !NativeResult {
     if (args.len != 3) return .errArity(args.len, 3);
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
     const t = try vm.tables.get(table_id);
     try t.putRaw(args[1], args[2]);
     return .okData(args[0]);
@@ -390,14 +352,8 @@ test "table library" {
 /// > table + other: table -> table
 /// merges two tables (union)
 fn tableAdd(args: []const Data, vm: *VM) !NativeResult {
-    const left_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
-    const right_id = switch (args[1]) {
-        .table => |id| id,
-        else => return .errType(1, "table", dataToString(args[1])),
-    };
+    const left_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
+    const right_id = args[1].asTable() orelse return .errType(1, "table", dataToString(args[1]));
     const left = try vm.tables.get(left_id);
     const right = try vm.tables.get(right_id);
 
@@ -412,16 +368,13 @@ fn tableAdd(args: []const Data, vm: *VM) !NativeResult {
     while (hash_iter.next()) |entry| {
         try new_t.putRaw(entry.key_ptr.*, entry.value_ptr.*);
     }
-    return .okData(.{ .table = new_id });
+    return .okData(Data.new.table(new_id));
 }
 
 /// > table:tostring() -> string
 /// converts table to display string
 fn tostring(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
     const tbl = try vm.tables.get(table_id);
     var buf = std.Io.Writer.Allocating.init(vm.runtime.alloc);
     defer buf.deinit();
@@ -434,10 +387,7 @@ fn tostring(args: []const Data, vm: *VM) !NativeResult {
 /// > table:__debug() -> string
 /// converts table to debug string
 fn debug(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", dataToString(args[0])),
-    };
+    const table_id = args[0].asTable() orelse return .errType(0, "table", dataToString(args[0]));
     const tbl = try vm.tables.get(table_id);
     var buf = std.Io.Writer.Allocating.init(vm.runtime.alloc);
     defer buf.deinit();
@@ -450,28 +400,26 @@ fn debug(args: []const Data, vm: *VM) !NativeResult {
 /// > table:sort() -> table
 /// sorts table array part in ascending order (numbers < strings)
 fn sort(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const tbl = try vm.tables.get(table_id);
 
     const Context = struct {
         vm: *VM,
         pub fn compare(ctx: @This(), a: Data, b: Data) bool {
-            switch (a) {
-                .number => |an| switch (b) {
-                    .number => |bn| return an < bn,
-                    else => return true,
-                },
-                .string => |as| switch (b) {
-                    .string => |bs| {
-                        const astr = ctx.vm.stringValue(as);
-                        const bstr = ctx.vm.stringValue(bs);
-                        return std.mem.order(u8, astr, bstr) == .lt;
-                    },
-                    .number => return false,
-                    else => return true,
-                },
-                else => return false,
+            if (a.asNumber()) |an| {
+                if (b.asNumber()) |bn| return an < bn;
+                return true;
             }
+            if (a.asString()) |as| {
+                if (b.asString()) |bs| {
+                    const astr = ctx.vm.stringValue(as);
+                    const bstr = ctx.vm.stringValue(bs);
+                    return std.mem.order(u8, astr, bstr) == .lt;
+                }
+                if (b.isNumber()) return false;
+                return true;
+            }
+            return false;
         }
     };
 
@@ -483,7 +431,7 @@ fn sort(args: []const Data, vm: *VM) !NativeResult {
 /// > table:sort_by(fn) -> table
 /// sorts table array part using comparison function fn(a, b) -> bool (true if a < b)
 fn sort_by(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const compare_fn = args[1];
     const tbl = try vm.tables.get(table_id);
 
@@ -504,7 +452,7 @@ fn sort_by(args: []const Data, vm: *VM) !NativeResult {
 /// > table:first() -> any
 /// returns first element or nil
 fn first(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const tbl = try vm.tables.get(table_id);
     if (tbl.array.items.len == 0) {
         return .{ .ok = revo.core_atoms.data(.nil) };
@@ -515,7 +463,7 @@ fn first(args: []const Data, vm: *VM) !NativeResult {
 /// > table:last() -> any
 /// returns last element or nil
 fn last(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const tbl = try vm.tables.get(table_id);
     if (tbl.array.items.len == 0) {
         return .{ .ok = revo.core_atoms.data(.nil) };
@@ -526,7 +474,7 @@ fn last(args: []const Data, vm: *VM) !NativeResult {
 /// > table:reverse() -> table
 /// reverses table array part in place
 fn reverse(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const tbl = try vm.tables.get(table_id);
     std.mem.reverse(Data, tbl.array.items);
     return .{ .ok = args[0] };
@@ -535,15 +483,14 @@ fn reverse(args: []const Data, vm: *VM) !NativeResult {
 /// > table:flatten() -> table
 /// flattens nested tables into single array
 fn flatten(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const src = try vm.tables.get(table_id);
 
     const result_id = try vm.tables.create();
     const result = try vm.tables.get(result_id);
 
     for (src.array.items) |item| {
-        if (item == .table) {
-            const nested_id = item.table;
+        if (item.asTable()) |nested_id| {
             const nested = try vm.tables.get(nested_id);
             for (nested.array.items) |maybe_nested| {
                 try result.array.append(vm.runtime.alloc, maybe_nested);
@@ -559,7 +506,7 @@ fn flatten(args: []const Data, vm: *VM) !NativeResult {
 /// > table:index_of(value) -> number | nil
 /// ret 0-based index of value or nil if not found
 fn index_of(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const search_val = args[1];
     const tbl = try vm.tables.get(table_id);
 
@@ -574,7 +521,7 @@ fn index_of(args: []const Data, vm: *VM) !NativeResult {
 /// > table:contains?(value) -> bool
 /// checks if table contains value
 fn contains(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const search_val = args[1];
     const tbl = try vm.tables.get(table_id);
 
@@ -589,7 +536,7 @@ fn contains(args: []const Data, vm: *VM) !NativeResult {
 /// > table:unique() -> table
 /// removes duplicate elements
 fn unique(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const src = try vm.tables.get(table_id);
 
     const result_id = try vm.tables.create();
@@ -615,25 +562,22 @@ fn unique(args: []const Data, vm: *VM) !NativeResult {
 /// > table:sum() -> number
 /// sums numeric elements
 fn sum(args: []const Data, vm: *VM) !NativeResult {
-    const table_id = args[0].table;
+    const table_id = args[0].asTable().?;
     const tbl = try vm.tables.get(table_id);
 
     var total: f64 = 0;
     for (tbl.array.items) |item| {
-        if (item == .number)
-            total += item.number;
+        if (item.asNumber()) |n| total += n;
     }
 
     return .{ .ok = Data.new.num(total) };
 }
 
 fn dataEq(a: Data, b: Data) bool {
-    switch (a) {
-        .number => |an| return b == .number and an == b.number,
-        .string => |as| return b == .string and as == b.string,
-        .atom => |aa| return b == .atom and aa == b.atom,
-        else => return false,
-    }
+    if (a.asNumber()) |an| return if (b.asNumber()) |bn| an == bn else false;
+    if (a.asString()) |as| return if (b.asString()) |bs| as == bs else false;
+    if (a.asAtom()) |aa| return if (b.asAtom()) |ba| aa == ba else false;
+    return false;
 }
 
 test "table methods" {

@@ -2,16 +2,16 @@ const std = @import("std");
 
 const opcode = @import("revo").opcode;
 const Opcode = opcode.Opcode;
+const types_mod = @import("types.zig");
 
-// bridges string api to enum matching
 const TypeTag = enum { int, float, any };
 
-fn toTag(t: ?[]const u8) TypeTag {
-    return if (t) |s| blk: {
-        if (std.mem.eql(u8, s, "int")) break :blk .int;
-        if (std.mem.eql(u8, s, "float")) break :blk .float;
-        break :blk .any;
-    } else .any;
+fn toTagInfo(t: types_mod.TypeInfo) TypeTag {
+    return switch (t) {
+        .int => .int,
+        .float => .float,
+        else => .any,
+    };
 }
 
 // single source of truth; declarative specs for all specializations
@@ -50,7 +50,7 @@ fn select(op: Opcode, t: TypeTag) Opcode {
     return op;
 }
 
-pub fn selectBinaryOpcode(op: Opcode, left: ?[]const u8, right: ?[]const u8) Opcode {
+pub fn selectBinaryOpcode(op: Opcode, left: types_mod.TypeInfo, right: types_mod.TypeInfo) Opcode {
     const g = switch (op) {
         .add_int, .add_float => .add,
         .sub_int, .sub_float => .sub,
@@ -59,13 +59,13 @@ pub fn selectBinaryOpcode(op: Opcode, left: ?[]const u8, right: ?[]const u8) Opc
         .mod_int => .mod,
         else => op,
     };
-    const lt = toTag(left);
-    const rt = toTag(right);
+    const lt = toTagInfo(left);
+    const rt = toTagInfo(right);
     if (lt != rt or lt == .any) return g;
     return select(g, lt);
 }
 
-pub fn selectComparisonOpcode(op: Opcode, left: ?[]const u8, right: ?[]const u8) Opcode {
+pub fn selectComparisonOpcode(op: Opcode, left: types_mod.TypeInfo, right: types_mod.TypeInfo) Opcode {
     const g = switch (op) {
         .eq_int, .eq_float => .eq,
         .neq_int, .neq_float => .neq,
@@ -75,35 +75,35 @@ pub fn selectComparisonOpcode(op: Opcode, left: ?[]const u8, right: ?[]const u8)
         .gte_int, .gte_float => .gte,
         else => op,
     };
-    const lt = toTag(left);
-    const rt = toTag(right);
+    const lt = toTagInfo(left);
+    const rt = toTagInfo(right);
     if (lt != rt or lt == .any) return g;
     return select(g, lt);
 }
 
-pub fn selectUnaryOpcode(op: Opcode, operand: ?[]const u8) Opcode {
+pub fn selectUnaryOpcode(op: Opcode, operand: types_mod.TypeInfo) Opcode {
     const g = switch (op) {
         .negate_int, .negate_float => .negate,
         else => op,
     };
-    const t = toTag(operand);
+    const t = toTagInfo(operand);
     if (t == .any) return g;
     return select(g, t);
 }
 
 test "selects properly" {
-    try std.testing.expectEqual(.add_int, selectBinaryOpcode(.add, "int", "int"));
-    try std.testing.expectEqual(.mul_int, selectBinaryOpcode(.mul, "int", "int"));
-    try std.testing.expectEqual(.add_float, selectBinaryOpcode(.add, "float", "float"));
-    try std.testing.expectEqual(.div_float, selectBinaryOpcode(.div, "float", "float"));
-    try std.testing.expectEqual(.mod_int, selectBinaryOpcode(.mod, "int", "int"));
-    try std.testing.expectEqual(.add, selectBinaryOpcode(.add, "int", "float"));
-    try std.testing.expectEqual(.add, selectBinaryOpcode(.add, null, "int"));
-    try std.testing.expectEqual(.eq_int, selectComparisonOpcode(.eq, "int", "int"));
-    try std.testing.expectEqual(.lt_int, selectComparisonOpcode(.lt, "int", "int"));
-    try std.testing.expectEqual(.eq_float, selectComparisonOpcode(.eq, "float", "float"));
-    try std.testing.expectEqual(.gte_float, selectComparisonOpcode(.gte, "float", "float"));
-    try std.testing.expectEqual(.negate_int, selectUnaryOpcode(.negate, "int"));
-    try std.testing.expectEqual(.negate_float, selectUnaryOpcode(.negate, "float"));
-    try std.testing.expectEqual(.negate, selectUnaryOpcode(.negate, null));
+    try std.testing.expectEqual(.add_int, selectBinaryOpcode(.add, .int, .int));
+    try std.testing.expectEqual(.mul_int, selectBinaryOpcode(.mul, .int, .int));
+    try std.testing.expectEqual(.add_float, selectBinaryOpcode(.add, .float, .float));
+    try std.testing.expectEqual(.div_float, selectBinaryOpcode(.div, .float, .float));
+    try std.testing.expectEqual(.mod_int, selectBinaryOpcode(.mod, .int, .int));
+    try std.testing.expectEqual(.add, selectBinaryOpcode(.add, .int, .float));
+    try std.testing.expectEqual(.add, selectBinaryOpcode(.add, .any, .int));
+    try std.testing.expectEqual(.eq_int, selectComparisonOpcode(.eq, .int, .int));
+    try std.testing.expectEqual(.lt_int, selectComparisonOpcode(.lt, .int, .int));
+    try std.testing.expectEqual(.eq_float, selectComparisonOpcode(.eq, .float, .float));
+    try std.testing.expectEqual(.gte_float, selectComparisonOpcode(.gte, .float, .float));
+    try std.testing.expectEqual(.negate_int, selectUnaryOpcode(.negate, .int));
+    try std.testing.expectEqual(.negate_float, selectUnaryOpcode(.negate, .float));
+    try std.testing.expectEqual(.negate, selectUnaryOpcode(.negate, .any));
 }

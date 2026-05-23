@@ -8,107 +8,178 @@ pub const FunctionID = usize;
 pub const TableID = usize;
 pub const TupleID = usize;
 
+// nanbox layout: numbers stored as raw f64; boxed values set BOX_MASK and hold tag+payload
+// canonicalize NaN to CANONICAL_NAN for stable bitwise checks
 pub const Type = enum(u4) { number = 0, string = 1, atom = 2, function = 3, table = 4, tuple = 5 };
 
-pub const Data = union(Type) {
-    number: f64,
-    string: StringID,
-    atom: AtomID,
-    function: FunctionID, // id into FunctionPool
-    table: TableID, // id into TablePool
-    tuple: TupleID, // id into TuplePool
+const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+pub const BOX_MASK: u64 = 0x7FF0_0000_0000_0000;
+const TAG_SHIFT: u6 = 48;
+const TAG_MASK: u64 = 0x000F;
+const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
+
+pub const Data = struct {
+    bits: u64,
 
     pub const new = struct {
-        pub inline fn num(val: anytype) Data {
-            return .{ .number = switch (@typeInfo(@TypeOf(val))) {
+        pub fn num(val: anytype) Data {
+            const n: f64 = switch (@typeInfo(@TypeOf(val))) {
                 .comptime_int, .int => @as(f64, @floatFromInt(val)),
                 .comptime_float, .float => val,
                 else => @compileError("new.num expects int or float"),
-            } };
+            };
+            return Data.numberRaw(n);
         }
-        pub inline fn nil() Data {
+        pub fn nil() Data {
             return revo.core_atoms.data(.nil);
         }
-        pub inline fn str(id: StringID) Data {
-            return .{ .string = id };
+        pub fn str(id: StringID) Data {
+            return Data.boxed(.string, id);
         }
-        pub inline fn atom(id: AtomID) Data {
-            return .{ .atom = id };
+        pub fn atom(id: AtomID) Data {
+            return Data.boxed(.atom, id);
         }
-        pub inline fn boolean(val: bool) Data {
+        pub fn function(id: FunctionID) Data {
+            return Data.boxed(.function, id);
+        }
+        pub fn boolean(val: bool) Data {
             return if (val) revo.core_atoms.data(.true) else revo.core_atoms.data(.false);
         }
-        pub inline fn table(id: TableID) Data {
-            return .{ .table = id };
+        pub fn table(id: TableID) Data {
+            return Data.boxed(.table, id);
         }
-        pub inline fn tuple(id: TupleID) Data {
-            return .{ .tuple = id };
+        pub fn tuple(id: TupleID) Data {
+            return Data.boxed(.tuple, id);
         }
     };
 
     pub const RenderMode = enum(u1) { display, debug };
 
+    // canonicalize NaN to a stable quiet-NaN bit pattern
+    pub inline fn numberRaw(n: f64) Data {
+        var bits: u64 = @bitCast(n);
+        if (std.math.isNan(n)) bits = CANONICAL_NAN;
+        return .{ .bits = bits };
+    }
+
+    // pack type+payload into nanbox. debug-assert payload fits PAYLOAD_MASK
+    fn boxed(t: Type, val: usize) Data {
+        if (val != std.math.maxInt(usize)) std.debug.assert(val <= PAYLOAD_MASK);
+        const pl = @as(u64, @intCast(val)) & PAYLOAD_MASK;
+        return .{ .bits = BOX_MASK | (@as(u64, @intFromEnum(t)) << TAG_SHIFT) | pl };
+    }
+
+    pub inline fn tag(self: Data) Type {
+        if ((self.bits & BOX_MASK) != BOX_MASK) return .number;
+        const raw = (self.bits >> TAG_SHIFT) & TAG_MASK;
+        if (raw > @intFromEnum(Type.tuple)) return .number;
+        return @enumFromInt(raw);
+    }
+
+    pub inline fn is(self: Data, t: Type) bool {
+        return self.tag() == t;
+    }
+    pub inline fn isNumber(self: Data) bool {
+        return self.tag() == .number;
+    }
+    pub inline fn isString(self: Data) bool {
+        return self.tag() == .string;
+    }
+    pub inline fn isAtom(self: Data) bool {
+        return self.tag() == .atom;
+    }
+    pub inline fn isFunction(self: Data) bool {
+        return self.tag() == .function;
+    }
+    pub inline fn isTable(self: Data) bool {
+        return self.tag() == .table;
+    }
+    pub inline fn isTuple(self: Data) bool {
+        return self.tag() == .tuple;
+    }
+
+    pub inline fn asStr(self: Data) ?StringID {
+        if ((self.bits & BOX_MASK) == BOX_MASK and ((self.bits >> TAG_SHIFT) & TAG_MASK) == @intFromEnum(Type.string))
+            return @intCast(self.bits & PAYLOAD_MASK);
+        return null;
+    }
+
+    // inline numeric accessors used in hot paths
+    // asNum -> ?f64, as_number -> error-union
+    pub inline fn asNum(self: Data) ?f64 {
+        return if (self.tag() == .number) @bitCast(self.bits) else null;
+    }
+
+    pub inline fn as_number(self: Data) !f64 {
+        if (!self.isNumber()) return error.TypeError;
+        return @bitCast(self.bits);
+    }
+
+    /// TODO: remove this
+    pub inline fn asNumber(self: Data) ?f64 {
+        return self.asNum();
+    }
+    pub fn asString(self: Data) ?StringID {
+        return if (self.isString()) @intCast(self.bits & PAYLOAD_MASK) else null;
+    }
+    pub fn asAtom(self: Data) ?AtomID {
+        return if (self.isAtom()) @intCast(self.bits & PAYLOAD_MASK) else null;
+    }
+    pub fn asFunction(self: Data) ?FunctionID {
+        return if (self.isFunction()) @intCast(self.bits & PAYLOAD_MASK) else null;
+    }
+    pub fn asTable(self: Data) ?TableID {
+        return if (self.isTable()) @intCast(self.bits & PAYLOAD_MASK) else null;
+    }
+    pub fn asTuple(self: Data) ?TupleID {
+        return if (self.isTuple()) @intCast(self.bits & PAYLOAD_MASK) else null;
+    }
+
+    pub inline fn rawBits(self: Data) u64 {
+        return self.bits;
+    }
+
     pub fn write(self: Data, writer: *std.Io.Writer, vm: *revo.VM, mode: RenderMode) anyerror!void {
         if (mode == .debug) {
             if (try vm.getMetamethod(self, "__debug")) |mm| {
-                const result = switch (mm) {
-                    .function => try vm.callFunction(mm, &.{self}),
-                    else => return error.TypeError,
-                };
-                switch (result) {
-                    .string => |id| {
-                        try writer.writeAll(vm.stringValue(id));
-                        return;
-                    },
-                    else => return error.TypeError,
+                const result = if (mm.isFunction()) try vm.callFunction(mm, &.{self}) else return error.TypeError;
+                if (result.asString()) |id| {
+                    try writer.writeAll(vm.stringValue(id));
+                    return;
                 }
+                return error.TypeError;
             }
         }
 
-        switch (self) {
-            .number => |n| {
-                try writer.print("{}", .{n});
+        switch (self.tag()) {
+            .number => try writer.print("{}", .{self.asNumber().?}),
+            .string => switch (mode) {
+                .display => try writer.writeAll(vm.stringValue(self.asString().?)),
+                .debug => try writer.print("\"{s}\"", .{vm.stringValue(self.asString().?)}),
             },
-            .string => |id| switch (mode) {
-                .display => try writer.writeAll(vm.stringValue(id)),
-                .debug => {
-                    try writer.print("\"{s}\"", .{vm.stringValue(id)});
-                },
-            },
-            .atom => |id| {
-                try writer.print(":{s}", .{vm.atomName(id)});
-            },
-            .function => |id| {
+            .atom => try writer.print(":{s}", .{vm.atomName(self.asAtom().?)}),
+            .function => {
+                const id = self.asFunction().?;
                 const f = try vm.functions.get(id);
                 switch (f.*) {
-                    .native => {
-                        try writer.print("#fn(){}/{}", .{ id, f.arity() });
-                    },
-                    .c_function => |cf| {
-                        try writer.print("${s}@{}()/{}", .{ cf.name, id, f.arity() });
-                    },
-                    .closure => {
-                        try writer.print("{s}()/{d}", .{ f.name(), f.arity() });
-                    },
+                    .native => try writer.print("#fn(){}/{}", .{ id, f.arity() }),
+                    .c_function => |cf| try writer.print("${s}@{}()/{}", .{ cf.name, id, f.arity() }),
+                    .closure => try writer.print("{s}()/{d}", .{ f.name(), f.arity() }),
                 }
             },
-            .table => |id| {
-                const table = vm.tables.get(id) catch {
+            .table => {
+                const table = vm.tables.get(self.asTable().?) catch {
                     try writer.writeAll("<dead-table>");
                     return;
                 };
-                table.write(writer, vm, mode) catch {
-                    try writer.writeAll("<table-unprintable>");
-                };
+                table.write(writer, vm, mode) catch try writer.writeAll("<table-unprintable>");
             },
-            .tuple => |id| {
-                const tuple = vm.tuples.get(id) catch {
+            .tuple => {
+                const tuple = vm.tuples.get(self.asTuple().?) catch {
                     try writer.writeAll("<dead-tuple>");
                     return;
                 };
-                tuple.write(writer, vm, mode) catch {
-                    try writer.writeAll("<tuple-unprintable>");
-                };
+                tuple.write(writer, vm, mode) catch try writer.writeAll("<tuple-unprintable>");
             },
         }
     }
@@ -119,13 +190,6 @@ pub const Data = union(Type) {
         self.write(&stdout.interface, vm, .debug) catch {
             std.debug.print("<print-error>", .{});
             return;
-        };
-    }
-
-    pub fn as_number(self: Data) !f64 {
-        return switch (self) {
-            .number => |v| v,
-            else => error.TypeError,
         };
     }
 };

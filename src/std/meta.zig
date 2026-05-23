@@ -9,8 +9,8 @@ const NativeResult = std_lib.NativeResult;
 
 // debug flags
 pub fn set_debug(args: []const Data, vm: *VM) !NativeResult {
-    if (args[0] != .table) return .errType(0, "table", @tagName(args[0]));
-    const table = try vm.tables.get(args[0].table);
+    const table_id = args[0].asTable() orelse return .errType(0, "table", std_lib.dataToString(args[0]));
+    const table = try vm.tables.get(table_id);
     vm.debug.dump = try check_field("dump", table, vm);
     vm.debug.each_instr = try check_field("instr", table, vm);
     vm.debug.each_stack = try check_field("stack", table, vm);
@@ -21,7 +21,7 @@ pub fn set_debug(args: []const Data, vm: *VM) !NativeResult {
 // get metatable
 pub fn get_metatable_(args: []const Data, vm: *VM) !NativeResult {
     const mt = try vm.getMetatableId(args[0]);
-    return if (mt) |id| .{ .ok = .{ .table = id } } else .{ .ok = revo.core_atoms.data(.missing) };
+    return if (mt) |id| .{ .ok = Data.new.table(id) } else .{ .ok = revo.core_atoms.data(.missing) };
 }
 
 /// > set_metatable(tbl: table, meta: table) -> table
@@ -30,15 +30,12 @@ pub fn get_metatable_(args: []const Data, vm: *VM) !NativeResult {
 ///     mt = {get_val = fn() 42}
 ///     set_metatable(t, mt)
 pub fn set_metatable_(args: []const Data, vm: *VM) !NativeResult {
-    const mt = switch (args[1]) {
-        .atom => |a| if (a == revo.core_atoms.atom_id(.nil)) null else return .errType(
-            1,
-            "nil atom or table",
-            "atom",
-        ),
-        .table => |id| id,
-        else => return .errType(1, "nil atom or table", @tagName(args[1])),
-    };
+    const mt = if (args[1].asAtom()) |a|
+        if (a == revo.core_atoms.atom_id(.nil)) null else return .errType(1, "nil atom or table", "atom")
+    else if (args[1].asTable()) |id|
+        id
+    else
+        return .errType(1, "nil atom or table", std_lib.dataToString(args[1]));
     try vm.setMetatable(args[0], mt);
     return .{ .ok = args[0] };
 }

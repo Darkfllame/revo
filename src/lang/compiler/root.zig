@@ -87,6 +87,7 @@ pub const Compiler = struct {
     struct_layouter: struct_layout.StructLayouter,
     ir_ctx: ?ir.IrContext = null,
     use_ir_first: bool = false,
+    upvalue_cache: std.AutoHashMap(usize, usize) = undefined,
 
     pub fn init(vm: *VM, test_mode: bool, arena: std.mem.Allocator, runtime_alloc: std.mem.Allocator) !Compiler {
         return .{
@@ -105,6 +106,7 @@ pub const Compiler = struct {
             .test_suite_names = try std.ArrayList([]const u8).initCapacity(arena, 4),
             .struct_layouter = struct_layout.StructLayouter.init(arena),
             .ir_ctx = try ir.IrContext.init(arena),
+            .upvalue_cache = std.AutoHashMap(usize, usize).init(arena),
         };
     }
 
@@ -148,7 +150,7 @@ pub const Compiler = struct {
 
     pub fn compileRoot(self: *Compiler, expr: *const Node) InternalLowerError!void {
         try self.compileFn(&.{}, null, expr, "__main", null);
-        try emit.emit(self, .call, 0);
+        try emit.emit(self, .call_closure, 0);
         try emit.emit(self, .halt, 0);
     }
 
@@ -172,32 +174,41 @@ pub const Compiler = struct {
     pub fn compileValue(self: *Compiler, expr: *const Node) InternalLowerError!void {
         switch (expr.expr) {
             .number => |n| {
-                if (std.math.isFinite(n) and @floor(n) == n and n >= @as(f64, @floatFromInt(std.math.minInt(i64))) and n <= @as(f64, @floatFromInt(std.math.maxInt(i64)))) {
-                    try emit.@"const"(self, Data.new.num(@as(i64, @intFromFloat(n))));
-                } else try emit.@"const"(self, Data.new.num(n));
+                const value = n.value;
+                if (std.math.isFinite(value) and @floor(value) == value and value >= @as(f64, @floatFromInt(std.math.minInt(i64))) and value <= @as(f64, @floatFromInt(std.math.maxInt(i64))) and !n.is_float) {
+                    try emit.@"const"(self, Data.new.num(@as(i64, @intFromFloat(value))));
+                } else try emit.@"const"(self, Data.new.num(value));
             },
             .string => |s| try emit.@"const"(self, try self.vm.ownDataString(s)),
             .multiline_string => |s| try emit.@"const"(self, try self.vm.ownDataString(s)),
-            .hash => |name| try emit.@"const"(self, Data{ .atom = try self.vm.internAtom(name) }),
-            .nil => try emit.@"const"(self, Data{ .atom = try self.vm.internAtom("nil") }),
+            .hash => |name| try emit.@"const"(self, Data.new.atom(try self.vm.internAtom(name))),
+            .nil => try emit.@"const"(self, Data.new.atom(try self.vm.internAtom("nil"))),
             .ident => |name| {
                 if (state_mod.resolveLocal(self, name)) |slot| {
                     try emit.emit(self, .load_local, slot);
-                } else if (try state_mod.resolveUpvalue(self, name)) |slot| {
-                    try emit.emit(self, .load_upval, slot);
+                } else if (try state_mod.resolveUpvalue(self, name)) |upval_id| {
+                    if (self.upvalue_cache.get(upval_id)) |cached_reg| {
+                        if (cached_reg < self.active_registers - 1) {
+                            const dst = try state.pushRegister(self);
+                            const i: Instruction = .{ .op = .move, .a = dst, .b = try state.toRegister(cached_reg) };
+                            try self.instructions.append(self.alloc, i);
+                            try self.spans.append(self.alloc, self.active_span);
+                        } else {
+                            try emit.emit(self, .load_upval, upval_id);
+                            try self.upvalue_cache.put(upval_id, self.active_registers - 1);
+                        }
+                    } else {
+                        try emit.emit(self, .load_upval, upval_id);
+                        try self.upvalue_cache.put(upval_id, self.active_registers - 1);
+                    }
                 } else try emit.emit(self, .load_global, try self.vm.internAtom(name));
             },
             .unary => |u| switch (u.op) {
                 .negate => {
                     try self.compile(u.expr, true);
-                    var operand_type: ?[]const u8 = null;
-                    if (state_mod.currentFunctionState(self)) |fn_state| {
-                        if (u.expr.expr == .ident)
-                            operand_type = fn_state.var_types.get(u.expr.expr.ident) orelse null;
-                    }
+                    const operand_type = type_check.inferExprType(self, u.expr);
                     const specialized_op = opcode_select.selectUnaryOpcode(.negate, operand_type);
                     try emit.emit(self, specialized_op, 0);
-                    propagateUnaryType(self, u);
                 },
                 .not => {
                     try self.compile(u.expr, true);
@@ -232,12 +243,8 @@ pub const Compiler = struct {
                 if (try fold.maybeFoldConstBinary(self, b)) return;
                 try self.compile(b.left, true);
                 try self.compile(b.right, true);
-                var left_type: ?[]const u8 = null;
-                var right_type: ?[]const u8 = null;
-                if (state_mod.currentFunctionState(self)) |fn_state| {
-                    if (b.left.expr == .ident) left_type = fn_state.var_types.get(b.left.expr.ident) orelse null;
-                    if (b.right.expr == .ident) right_type = fn_state.var_types.get(b.right.expr.ident) orelse null;
-                }
+                const left_type = type_check.inferExprType(self, b.left);
+                const right_type = type_check.inferExprType(self, b.right);
                 const generic_op = switch (b.op) {
                     inline else => |tag| @field(Opcode, @tagName(tag)),
                 };
@@ -246,7 +253,6 @@ pub const Compiler = struct {
                     else => opcode_select.selectBinaryOpcode(generic_op, left_type, right_type),
                 };
                 try emit.emit(self, specialized_op, 0);
-                propagateBinaryType(self, b);
             },
             .and_expr => |v| try flow.compileAnd(self, v.left, v.right),
             .or_expr => |v| try flow.compileOr(self, v.left, v.right),
@@ -351,7 +357,7 @@ pub const Compiler = struct {
                 } else {
                     if (try self.tryCompileBoundMethodCall(field, call.args)) return;
                     try self.compile(field.object, true);
-                    try emit.@"const"(self, Data{ .atom = try self.vm.internAtom(field.name) });
+                    try emit.@"const"(self, Data.new.atom(try self.vm.internAtom(field.name)));
                     for (call.args) |arg| try self.compile(arg, true);
                     const argc = call.args.len | (@as(usize, @intFromBool(call.implicit_self)) << 15);
                     try emit.emit(self, .call_field, @intCast(argc));
@@ -368,7 +374,17 @@ pub const Compiler = struct {
                 try validateCallArgs(self, fn_name, call.args);
                 try self.compile(call.callee, true);
                 for (call.args) |arg| try self.compile(arg, true);
-                try emit.emit(self, .call, @intCast(call.args.len + @intFromBool(call.implicit_self)));
+                // emit call_closure when callee has a known signature; enables a direct-closure fast-path
+                if (state_mod.findFnSignature(self, fn_name) != null) {
+                    try emit.emit(self, .call_closure, @intCast(call.args.len + @intFromBool(call.implicit_self)));
+                } else {
+                    try emit.emit(self, .call, @intCast(call.args.len + @intFromBool(call.implicit_self)));
+                }
+            },
+            .fn_expr => {
+                try self.compile(call.callee, true);
+                for (call.args) |arg| try self.compile(arg, true);
+                try emit.emit(self, .call_closure, @intCast(call.args.len + @intFromBool(call.implicit_self)));
             },
             else => {
                 try self.compile(call.callee, true);
@@ -386,16 +402,19 @@ pub const Compiler = struct {
             else => return false,
         };
 
+        if (std.mem.eql(u8, module_name, "table") and std.mem.eql(u8, field.name, "add")) return false;
+
+        if (std.mem.eql(u8, module_name, "table") and field.object.expr == .ident) {
+            if (state_mod.localHasTableField(self, field.object.expr.ident, field.name)) return false;
+        }
+
         const module_atom = try self.vm.internAtom(module_name);
         const module = self.vm.stdlib_globals.get(module_atom) orelse return false;
-        const module_table_id = switch (module) {
-            .table => |id| id,
-            else => return false,
-        };
+        const module_table_id = module.asTable() orelse return false;
         const module_table = self.vm.tables.get(module_table_id) catch return false;
         const method_atom = try self.vm.internAtom(field.name);
-        const method = module_table.getRaw(.{ .atom = method_atom }) orelse return false;
-        if (method != .function) return false;
+        const method = module_table.getRaw(Data.new.atom(method_atom)) orelse return false;
+        if (!method.isFunction()) return false;
 
         try emit.emit(self, .load_stdlib_global, module_atom);
         try emit.emit(self, .table_get_atom, method_atom);
@@ -496,6 +515,7 @@ pub const Compiler = struct {
             try state_mod.predeclareFunctionBindings(self, exprs);
         }
         for (exprs, 0..) |expr, idx| {
+            self.upvalue_cache.clearRetainingCapacity();
             try self.compile(expr, true);
             if (idx + 1 < exprs.len) try emit.regRelease(self);
         }
@@ -504,20 +524,31 @@ pub const Compiler = struct {
 
     const BindingKind = values.BindingKind;
     pub fn compileBinding(self: *Compiler, binding: Binding, kind: BindingKind) InternalLowerError!void {
-        if (binding.target.expr == .ident and kind != .global) return values.compileLocalBinding(self, binding.target.expr.ident, binding.value, kind != .con, binding.type_name);
+        if (binding.target.expr == .ident and kind != .global)
+            return values.compileLocalBinding(
+                self,
+                binding.target.expr.ident,
+                binding.value,
+                kind != .con,
+                binding.type_name,
+            );
+
         if (binding.target.expr == .ident) {
             const name = binding.target.expr.ident;
             if (binding.value.expr == .fn_expr) {
                 try self.compileFn(binding.value.expr.fn_expr.params, binding.value.expr.fn_expr.return_type, binding.value.expr.fn_expr.body, name, null);
             } else try self.compile(binding.value, true);
+
             if (ast.isDiscardName(name)) return;
             try emit.regDupe(self);
             try emit.emit(self, if (kind != .con) .store_global else .store_global_const, try self.vm.internAtom(name));
             return;
         }
+
         if (binding.target.expr == .tuple_pattern) {
             try values.validateTuplePatternShape(self, binding.target.expr.tuple_pattern, binding.value, "binding");
         }
+
         try self.compile(binding.value, true);
         const src_idx = self.active_registers - 1;
         try values.bindPattern(self, binding.target, src_idx, kind);
@@ -533,23 +564,13 @@ pub const Compiler = struct {
             self.max_registers = caller_max_registers;
         }
 
-        var param_types = try std.ArrayList(?[]const u8).initCapacity(self.alloc, params.len);
-        defer param_types.deinit(self.alloc);
-        for (params) |p| param_types.append(self.alloc, p.type_name) catch return error.OutOfMemory;
-        const sig = try self.alloc.create(FunctionState.FnSig);
-        errdefer {
-            self.alloc.free(sig.param_types);
-            self.alloc.destroy(sig);
-        }
-        sig.* = .{
-            .param_types = try param_types.toOwnedSlice(self.alloc),
-            .return_type = return_type,
-        };
+        const own_sig = !(ast.isDiscardName(name) or std.mem.eql(u8, name, "<fn>"));
+        const sig = try state_mod.allocFnSig(self, params, return_type);
 
         var s = try FunctionState.init(self.alloc);
         s.return_type = return_type;
         for (params, 0..) |param, idx| {
-            const local: LocalVar = .{ .name = param.name, .slot = @intCast(idx), .mutable = true, .initialized = true };
+            const local: LocalVar = .{ .name = param.name, .slot = @intCast(idx), .mutable = true, .initialized = true, .type_name = param.type_name };
             s.locals.append(self.alloc, local) catch |err| {
                 s.deinit(self.alloc);
                 return err;
@@ -584,6 +605,8 @@ pub const Compiler = struct {
 
         self.active_registers = params.len;
         self.max_registers = params.len;
+        self.upvalue_cache.clearRetainingCapacity();
+        if (own_sig) try s.fn_signatures.put(name, sig);
         try self.compile(body, true);
         if (return_type) |rt| {
             try validateImplicitReturnType(self, body, rt);
@@ -605,51 +628,12 @@ pub const Compiler = struct {
         const proto_id = try self.vm.functions.createPrototype(.{ .addr = body_addr, .arity = @intCast(params.len), .register_count = @intCast(fn_register_count), .name = name, .upvalue_specs = finished.upvalues.items, .const_locals = const_locals, .const_local_bits = &.{} });
         try emit.emit(self, .closure, proto_id);
 
-        if (state_mod.currentFunctionState(self)) |enclosing| {
-            try enclosing.fn_signatures.put(name, sig);
-        } else {
+        if (!own_sig) {
             self.alloc.free(sig.param_types);
             self.alloc.destroy(sig);
         }
 
         state_pushed = false;
-    }
-
-    fn propagateBinaryType(self: *Compiler, b: anytype) void {
-        const left_type = type_check.inferExprType(self, b.left);
-        const right_type = type_check.inferExprType(self, b.right);
-
-        const result_type = types.inferBinaryOp(
-            switch (b.op) {
-                inline else => |tag| @field(types.BinaryOp, @tagName(tag)),
-            },
-            left_type,
-            right_type,
-        );
-        if (result_type != .any) {
-            const type_str = typeStr(result_type);
-            if (state_mod.currentFunctionState(self)) |fn_state| {
-                _ = fn_state.var_types.put("__result", type_str) catch {};
-            }
-        }
-    }
-
-    fn propagateUnaryType(self: *Compiler, u: anytype) void {
-        const operand_type = type_check.inferExprType(self, u.expr);
-        const result_type = types.inferUnaryOp(
-            switch (u.op) {
-                .negate => types.UnaryOp.negate,
-                .not => types.UnaryOp.not,
-                .spawn, .join, .yield => return,
-            },
-            operand_type,
-        );
-        if (result_type != .any) {
-            const type_str = typeStr(result_type);
-            if (state_mod.currentFunctionState(self)) |fn_state| {
-                _ = fn_state.var_types.put("__result", type_str) catch {};
-            }
-        }
     }
 
     fn typeStr(t: types.TypeInfo) []const u8 {

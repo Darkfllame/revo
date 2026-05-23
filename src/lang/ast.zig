@@ -154,7 +154,7 @@ pub const Binding = struct {
 };
 
 pub const Expr = union(enum) {
-    number: f64, // (:number, 123)
+    number: NumberLiteral, // (:number, 123) or (:number, 123.0)
     string: []const u8, // (:string, "asdf")
     multiline_string: []const u8,
     hash: []const u8,
@@ -229,10 +229,10 @@ pub const Node = struct {
         switch (self.expr) {
             // atoms are same in both modes
             .number => |n| {
-                if (std.math.isFinite(n) and @floor(n) == n and n >= @as(f64, @floatFromInt(std.math.minInt(i64))) and n <= @as(f64, @floatFromInt(std.math.maxInt(i64)))) {
-                    try writer.print("{d}", .{@as(i64, @intFromFloat(n))});
+                if (std.math.isFinite(n.value) and @floor(n.value) == n.value and n.value >= @as(f64, @floatFromInt(std.math.minInt(i64))) and n.value <= @as(f64, @floatFromInt(std.math.maxInt(i64))) and !n.is_float) {
+                    try writer.print("{d}", .{@as(i64, @intFromFloat(n.value))});
                 } else {
-                    try writer.print("{}", .{n});
+                    try writer.print("{}", .{n.value});
                 }
             },
             .string => |s| try writer.print("\"{s}\"", .{s}),
@@ -595,10 +595,10 @@ test "prints nested expression trees" {
     const span: Span = .{ .start = 0, .end = 0, .line = 1, .column = 1 };
 
     const one = try arena.allocator().create(Node);
-    one.* = .{ .span = span, .expr = .{ .number = 1 } };
+    one.* = .{ .span = span, .expr = .{ .number = .{ .value = 1 } } };
 
     const zero = try arena.allocator().create(Node);
-    zero.* = .{ .span = span, .expr = .{ .number = 0 } };
+    zero.* = .{ .span = span, .expr = .{ .number = .{ .value = 0 } } };
 
     const call_ident = try arena.allocator().create(Node);
     call_ident.* = .{ .span = span, .expr = .{ .ident = "@foo" } };
@@ -632,10 +632,10 @@ test "pretty prints nested expression trees" {
     const span: Span = .{ .start = 0, .end = 0, .line = 1, .column = 1 };
 
     const one = try arena.allocator().create(Node);
-    one.* = .{ .span = span, .expr = .{ .number = 1 } };
+    one.* = .{ .span = span, .expr = .{ .number = .{ .value = 1 } } };
 
     const zero = try arena.allocator().create(Node);
-    zero.* = .{ .span = span, .expr = .{ .number = 0 } };
+    zero.* = .{ .span = span, .expr = .{ .number = .{ .value = 0 } } };
 
     const call_ident = try arena.allocator().create(Node);
     call_ident.* = .{ .span = span, .expr = .{ .ident = "@foo" } };
@@ -694,7 +694,7 @@ test "prints break and return empty and valued forms" {
 
     const span: Span = .{ .start = 0, .end = 0, .line = 1, .column = 1 };
     const one = try arena.allocator().create(Node);
-    one.* = .{ .span = span, .expr = .{ .number = 1 } };
+    one.* = .{ .span = span, .expr = .{ .number = .{ .value = 1 } } };
 
     const break_empty = Node{ .span = span, .expr = .{ .break_expr = null } };
     const break_value = Node{ .span = span, .expr = .{ .break_expr = one } };
@@ -839,3 +839,7 @@ test "hasUnderscore" {
     res = (try lang.parse(arena, .{ .text = "_ + 42", .name = "<>" }, .{})).ok;
     try std.testing.expect(hasUnderscore(res.root));
 }
+pub const NumberLiteral = struct {
+    value: f64,
+    is_float: bool = false,
+};

@@ -47,22 +47,19 @@ fn wrapFile(vm: *VM, path: []const u8) !Data {
     const file_module = vm.globals.get(try vm.internAtom("file")) orelse return error.FileModuleNotFound;
     try mt.putRaw(try vm.dataAtom("__index"), file_module);
 
-    const set_result = try meta.set_metatable_(&.{ Data{ .table = file_table }, Data{ .table = metatable } }, vm);
+    const set_result = try meta.set_metatable_(&.{ Data.new.table(file_table), Data.new.table(metatable) }, vm);
     if (set_result != .ok) return error.SetMetatableFailed;
-    return Data{ .table = file_table };
+    return Data.new.table(file_table);
 }
 
 fn parseFileHandle(value: Data, vm: *VM) !FileHandle {
-    if (value != .table) return error.InvalidFile;
-    const table = try vm.tables.get(value.table);
+    if (!value.isTable()) return error.InvalidFile;
+    const table = try vm.tables.get(value.asTable().?);
 
     const path_data = table.getRaw(try vm.dataAtom(path_key)) orelse return error.InvalidFile;
 
     return .{
-        .path = switch (path_data) {
-            .string => |id| vm.stringValue(id),
-            else => return error.InvalidFile,
-        },
+        .path = if (path_data.asString()) |id| vm.stringValue(id) else return error.InvalidFile,
     };
 }
 
@@ -76,13 +73,15 @@ fn kindName(kind: File.Kind) []const u8 {
 }
 
 fn parsePermissions(vm: *VM, value: Data) !File.Permissions {
-    switch (value) {
-        .number => |n| {
+    switch (value.tag()) {
+        .number => {
+            const n = value.asNumber().?;
             if (!std.math.isFinite(n) or @floor(n) != n) return error.InvalidPermissions;
             const raw: PermTag = @intFromFloat(n);
             return @as(File.Permissions, @enumFromInt(raw));
         },
-        .atom => |id| {
+        .atom => {
+            const id = value.asAtom().?;
             const name = vm.atomName(id);
             inline for (@typeInfo(File.Permissions).@"enum".fields) |field| {
                 if (std.mem.eql(u8, field.name, name)) {
@@ -106,7 +105,7 @@ fn makeStatTable(vm: *VM, stat: File.Stat) !Data {
     try t.putRaw(try vm.dataAtom("atime"), Data.new.num((stat.atime orelse stat.mtime).toSeconds()));
     try t.putRaw(try vm.dataAtom("ctime"), Data.new.num(stat.ctime.toSeconds()));
 
-    return Data{ .table = table };
+    return Data.new.table(table);
 }
 
 fn mapIOError(err: anyerror) []const u8 {
@@ -131,7 +130,7 @@ fn mapIOError(err: anyerror) []const u8 {
 /// wraps a path in a file handle table
 /// use `file.close()` when you're done with the handle
 fn open_fn(args: []const Data, vm: *VM) !NativeResult {
-    const path = vm.stringValue(args[0].string);
+    const path = vm.stringValue(args[0].asString().?);
     return try NativeResult.Ok(vm, try wrapFile(vm, path));
 }
 
@@ -159,10 +158,10 @@ fn read_fn(args: []const Data, vm: *VM) !NativeResult {
 /// optional permissions default to the platform file default
 fn write_fn(args: []const Data, vm: *VM) !NativeResult {
     const handle = parseFileHandle(args[0], vm) catch return try NativeResult.Err(vm, "InvalidFile");
-    if (args[1] != .string) return try NativeResult.Err(vm, "InvalidArguments");
+    if (!args[1].isString()) return try NativeResult.Err(vm, "InvalidArguments");
     const permissions = if (args.len > 2) parsePermissions(vm, args[2]) catch return try NativeResult.Err(vm, "InvalidPermissions") else .default_file;
 
-    const data = vm.stringValue(args[1].string);
+    const data = vm.stringValue(args[1].asString().?);
     Dir.cwd().writeFile(vm.runtime.io, .{
         .sub_path = handle.path,
         .data = data,
@@ -179,10 +178,10 @@ fn write_fn(args: []const Data, vm: *VM) !NativeResult {
 /// optional permissions default to the platform file default
 fn append_fn(args: []const Data, vm: *VM) !NativeResult {
     const handle = parseFileHandle(args[0], vm) catch return try NativeResult.Err(vm, "InvalidFile");
-    if (args[1] != .string) return try NativeResult.Err(vm, "InvalidArguments");
+    if (!args[1].isString()) return try NativeResult.Err(vm, "InvalidArguments");
     const permissions = if (args.len > 2) parsePermissions(vm, args[2]) catch return try NativeResult.Err(vm, "InvalidPermissions") else .default_file;
 
-    const data = vm.stringValue(args[1].string);
+    const data = vm.stringValue(args[1].asString().?);
     const file = Dir.cwd().createFile(vm.runtime.io, handle.path, .{
         .truncate = false,
         .permissions = permissions,
@@ -219,7 +218,7 @@ fn close_fn(args: []const Data, vm: *VM) !NativeResult {
 /// > fs.exists?(path: string) -> !atom
 /// does path exist?
 fn exists_fn(args: []const Data, vm: *VM) !NativeResult {
-    const path = vm.stringValue(args[0].string);
+    const path = vm.stringValue(args[0].asString().?);
     const file = if (std.fs.path.isAbsolute(path))
         Dir.openFileAbsolute(vm.runtime.io, path, .{
             .allow_directory = true,
@@ -243,7 +242,7 @@ fn exists_fn(args: []const Data, vm: *VM) !NativeResult {
 /// > fs.mkdir(path: string, ?permissions: atom|number) -> !atom
 /// creates a directory, using default permissions when omitted
 fn mkdir_fn(args: []const Data, vm: *VM) !NativeResult {
-    const path = vm.stringValue(args[0].string);
+    const path = vm.stringValue(args[0].asString().?);
     const permissions: File.Permissions = if (args.len > 1)
         parsePermissions(vm, args[1]) catch return try NativeResult.Err(vm, "InvalidPermissions")
     else if (builtin.target.os.tag == .windows)
@@ -261,7 +260,7 @@ fn mkdir_fn(args: []const Data, vm: *VM) !NativeResult {
 /// > fs.remove(path: string) -> !atom
 /// removes a file or empty directory at path
 fn remove_fn(args: []const Data, vm: *VM) !NativeResult {
-    const path = vm.stringValue(args[0].string);
+    const path = vm.stringValue(args[0].asString().?);
     Dir.cwd().deleteFile(vm.runtime.io, path) catch |file_err| switch (file_err) {
         error.IsDir => {
             Dir.cwd().deleteDir(vm.runtime.io, path) catch |err| {
@@ -278,7 +277,7 @@ fn remove_fn(args: []const Data, vm: *VM) !NativeResult {
 /// > fs.readdir(path: string) -> !table
 /// ret: table of directory entries
 fn readdir_fn(args: []const Data, vm: *VM) !NativeResult {
-    const path = vm.stringValue(args[0].string);
+    const path = vm.stringValue(args[0].asString().?);
 
     const open_dir = Dir.cwd().openDir(vm.runtime.io, path, .{}) catch |err| {
         return try NativeResult.Err(vm, mapIOError(err));
@@ -294,7 +293,7 @@ fn readdir_fn(args: []const Data, vm: *VM) !NativeResult {
         var t = try vm.tables.get(entry_table);
         try t.putRaw(try vm.dataAtom("name"), try vm.ownDataString(ent.name));
         try t.putRaw(try vm.dataAtom("kind"), try vm.ownDataString(kindName(ent.kind)));
-        try entries.append(vm.runtime.alloc, Data{ .table = entry_table });
+        try entries.append(vm.runtime.alloc, Data.new.table(entry_table));
     }
 
     const result_table = try vm.tables.create();
@@ -303,14 +302,14 @@ fn readdir_fn(args: []const Data, vm: *VM) !NativeResult {
         try t.putRaw(Data.new.num(i), entry);
     }
 
-    return try NativeResult.Ok(vm, Data{ .table = result_table });
+    return try NativeResult.Ok(vm, Data.new.table(result_table));
 }
 
 /// > fs.rename(old_path: string, new_path: string) -> !atom
 /// renames a file or directory
 fn rename_fn(args: []const Data, vm: *VM) !NativeResult {
-    const old_path = vm.stringValue(args[0].string);
-    const new_path = vm.stringValue(args[1].string);
+    const old_path = vm.stringValue(args[0].asString().?);
+    const new_path = vm.stringValue(args[1].asString().?);
     Dir.cwd().rename(old_path, Dir.cwd(), new_path, vm.runtime.io) catch |err| {
         return try NativeResult.Err(vm, mapIOError(err));
     };

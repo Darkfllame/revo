@@ -132,7 +132,7 @@ pub fn topResultMode(source: []const u8, module_dir: ?[]const u8, test_mode: boo
 
 fn expectTopNumber(result: *TopResult, expected: f64) !void {
     const actual = result.value.as_number() catch {
-        std.debug.print("result was not a number, it was {s}\n", .{@tagName(result.value)});
+        std.debug.print("result was not a number, it was {s}\n", .{revo.std_lib.typeof(result.value)});
         return error.TypeMismatch;
     };
     if (@abs(expected - actual) > 0.000000001) {
@@ -142,27 +142,23 @@ fn expectTopNumber(result: *TopResult, expected: f64) !void {
 }
 
 fn expectTopAtom(result: *TopResult, expected: []const u8) !void {
-    switch (result.value) {
-        .atom => |s| {
-            std.testing.expectEqualStrings(result.vm.atomName(s), expected) catch {
-                std.debug.print("wanted :{s}, got :{s}\n", .{ expected, result.vm.atomName(s) });
-                return error.AtomsDontMatch;
-            };
-        },
-        else => {
-            std.debug.print("result was not a atom, it was {s}\n", .{@tagName(result.value)});
-            return error.TypeMismatch;
-        },
-    }
+    const s = result.value.asAtom() orelse {
+        std.debug.print("result was not a atom, it was {s}\n", .{revo.std_lib.typeof(result.value)});
+        return error.TypeMismatch;
+    };
+    std.testing.expectEqualStrings(result.vm.atomName(s), expected) catch {
+        std.debug.print("wanted :{s}, got :{s}\n", .{ expected, result.vm.atomName(s) });
+        return error.AtomsDontMatch;
+    };
 }
 
 fn expectTopString(result: *TopResult, expected: []const u8) !void {
-    try std.testing.expect(result.value == .string);
-    try std.testing.expectEqualStrings(expected, result.vm.stringValue(result.value.string));
+    try std.testing.expect(result.value.isString());
+    try std.testing.expectEqualStrings(expected, result.vm.stringValue(result.value.asString().?));
 }
 
 fn expectTopTypeValue(result: *TopResult, expected: revo.memory.Type) !void {
-    try std.testing.expect(result.value == expected);
+    try std.testing.expect(result.value.tag() == expected);
 }
 
 pub fn top_number(source: []const u8, expected: f64) !void {

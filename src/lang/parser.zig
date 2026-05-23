@@ -221,7 +221,7 @@ const Parser = struct {
                     step_node = step_or_end;
                     end_node = try self.parseExpression(BP.range);
                 } else {
-                    step_node = try self.allocExpr(step_or_end.span, .{ .number = 1 });
+                    step_node = try self.allocExpr(step_or_end.span, .{ .number = .{ .value = 1, .is_float = false } });
                     end_node = step_or_end;
                 }
                 left = try self.buildRangeExpr(left, end_node, step_node);
@@ -313,7 +313,7 @@ const Parser = struct {
     fn parsePrefix(self: *Parser) anyerror!*Node {
         const token = self.advance();
         return switch (token.type) {
-            .number => self.allocExpr(token.span(), .{ .number = try std.fmt.parseFloat(f64, token.text) }),
+            .number => self.allocExpr(token.span(), .{ .number = .{ .value = try std.fmt.parseFloat(f64, token.text), .is_float = std.mem.indexOfAny(u8, token.text, ".eE") != null } }),
             .string => self.allocExpr(token.span(), .{ .string = token.text }),
             .multiline_string => self.allocExpr(token.span(), .{ .multiline_string = token.text }),
             .hash => self.allocExpr(token.span(), .{ .hash = token.text[1..] }),

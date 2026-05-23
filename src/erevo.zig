@@ -156,15 +156,19 @@ fn runProgram(vm: *VM, program: *Program, out_value: ?*ErevoData) bool {
         .ok => blk: {
             if (out_value) |out| {
                 const cr = runtime_vm.currentResult();
-                const tag = @intFromEnum(std.meta.activeTag(cr));
-                const value = switch (cr) {
-                    .number => |n| @as(u64, @bitCast(n)),
-                    .string => |v| @as(u64, @intCast(v)),
-                    .atom => |v| @as(u64, @intCast(v)),
-                    .function => |v| @as(u64, @intCast(v)),
-                    .table => |v| @as(u64, @intCast(v)),
-                    .tuple => |v| @as(u64, @intCast(v)),
-                };
+                const tag = @intFromEnum(cr.tag());
+                const value = if (cr.asNumber()) |n|
+                    @as(u64, @bitCast(n))
+                else if (cr.asString()) |v|
+                    @as(u64, @intCast(v))
+                else if (cr.asAtom()) |v|
+                    @as(u64, @intCast(v))
+                else if (cr.asFunction()) |v|
+                    @as(u64, @intCast(v))
+                else if (cr.asTable()) |v|
+                    @as(u64, @intCast(v))
+                else
+                    @as(u64, @intCast(cr.asTuple().?));
                 out.* = .{ .tag = tag, .value = value };
             }
             break :blk true;

@@ -14,8 +14,9 @@ pub fn maybeFoldConstBinary(self: *Compiler, b: anytype) !bool {
 
     // numeric folding for two numeric literals
     if (left == .number and right == .number) {
-        const lv = left.number;
-        const rv = right.number;
+        const lv = left.number.value;
+        const rv = right.number.value;
+        const has_float_literal = left.number.is_float or right.number.is_float;
         if ((b.op == .div or b.op == .mod) and rv == 0.0) return false;
 
         const res = switch (b.op) {
@@ -28,6 +29,10 @@ pub fn maybeFoldConstBinary(self: *Compiler, b: anytype) !bool {
         };
 
         if (!std.math.isFinite(res)) return false;
+        if (has_float_literal) {
+            try emit.@"const"(self, Data.new.num(res));
+            return true;
+        }
         if (@floor(res) != res) return false;
         const min = @as(f64, @floatFromInt(std.math.minInt(i64)));
         const max = @as(f64, @floatFromInt(std.math.maxInt(i64)));

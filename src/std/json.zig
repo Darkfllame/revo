@@ -25,7 +25,7 @@ fn encode(args: []const Data, vm: *VM) !NativeResult {
 }
 
 fn decode(args: []const Data, vm: *VM) !NativeResult {
-    const source = vm.stringValue(args[0].string);
+    const source = vm.stringValue(args[0].asString().?);
     var parsed = json.parseFromSlice(json.Value, vm.runtime.alloc, source, .{}) catch |err| {
         return resultErr(vm, @errorName(err));
     };
@@ -40,18 +40,19 @@ fn resultErr(vm: *VM, message: []const u8) !NativeResult {
 }
 
 fn writeJsonValue(data: Data, vm: *VM, writer: *std.Io.Writer) anyerror!void {
-    return switch (data) {
+    return switch (data.tag()) {
         .number => return error.UnsupportedJsonValue,
-        .string => |id| try writeJsonString(writer, vm.stringValue(id)),
-        .atom => |id| blk: {
+        .string => try writeJsonString(writer, vm.stringValue(data.asString().?)),
+        .atom => blk: {
+            const id = data.asAtom().?;
             const atom = vm.atomName(id);
             if (std.mem.eql(u8, atom, "nil")) break :blk try writer.writeAll("null");
             if (std.mem.eql(u8, atom, "true")) break :blk try writer.writeAll("true");
             if (std.mem.eql(u8, atom, "false")) break :blk try writer.writeAll("false");
             break :blk try writeJsonString(writer, atom);
         },
-        .table => |id| try writeTableJson(id, vm, writer),
-        .tuple => |id| try writeTupleJson(id, vm, writer),
+        .table => try writeTableJson(data.asTable().?, vm, writer),
+        .tuple => try writeTupleJson(data.asTuple().?, vm, writer),
         .function => return error.UnsupportedJsonValue,
     };
 }
@@ -116,7 +117,7 @@ fn objectToData(object: json.ObjectMap, vm: *VM) anyerror!Data {
     const table = try vm.tables.get(table_id);
     var it = object.iterator();
     while (it.next()) |entry| {
-        try table.putRaw(.{ .atom = try vm.internAtom(entry.key_ptr.*) }, try fromJsonValue(entry.value_ptr.*, vm));
+        try table.putRaw(Data.new.atom(try vm.internAtom(entry.key_ptr.*)), try fromJsonValue(entry.value_ptr.*, vm));
     }
     return Data.new.table(table_id);
 }

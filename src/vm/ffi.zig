@@ -25,31 +25,30 @@ pub const CRevoData = extern struct {
             @as(@typeInfo(memory.Type).@"enum".tag_type, @intCast(self.tag)),
         );
         return switch (tag) {
-            .number => .{ .number = @bitCast(self.value) },
-            .string => .{ .string = @intCast(self.value) },
-            .atom => .{ .atom = @intCast(self.value) },
-            .function => .{ .function = @intCast(self.value) },
-            .table => .{ .table = @intCast(self.value) },
-            .tuple => .{ .tuple = @intCast(self.value) },
+            .number => Data.numberRaw(@bitCast(self.value)),
+            .string => Data.new.str(@intCast(self.value)),
+            .atom => Data.new.atom(@intCast(self.value)),
+            .function => Data.new.function(@intCast(self.value)),
+            .table => Data.new.table(@intCast(self.value)),
+            .tuple => Data.new.tuple(@intCast(self.value)),
         };
     }
 
     pub fn ofData(data: Data, vm_alloc: std.mem.Allocator, strings: *const root.VM.Interner, copies: *std.ArrayList([:0]u8)) !CRevoData {
-        const tag = std.meta.activeTag(data);
-        const value: u64 = inline for (std.meta.fields(Data)) |field| {
-            if (@field(memory.Type, field.name) == tag) {
-                const v = @field(data, field.name);
-                break if (comptime std.mem.eql(u8, field.name, "string")) blk: {
-                    const str_slice = strings.getAssumeAlive(v);
-                    const copy = try vm_alloc.dupeZ(u8, str_slice);
-                    try copies.append(vm_alloc, copy);
-                    break :blk @intFromPtr(copy.ptr);
-                } else if (@TypeOf(v) == f64)
-                    @bitCast(v)
-                else
-                    @intCast(v);
-            }
-        } else unreachable;
+        const tag = data.tag();
+        const value: u64 = switch (tag) {
+            .number => @bitCast(data.asNumber().?),
+            .string => blk: {
+                const str_slice = strings.getAssumeAlive(data.asString().?);
+                const copy = try vm_alloc.dupeZ(u8, str_slice);
+                try copies.append(vm_alloc, copy);
+                break :blk @intFromPtr(copy.ptr);
+            },
+            .atom => data.asAtom().?,
+            .function => data.asFunction().?,
+            .table => data.asTable().?,
+            .tuple => data.asTuple().?,
+        };
         return .{ .tag = @intFromEnum(tag), .value = value };
     }
 };
@@ -68,16 +67,15 @@ pub export fn revo_getglobal(vm: *anyopaque, name_ptr: u64, name_len: usize) cal
     const name_slice = ptr[0..name_len];
 
     if (vm_typed.getGlobal(name_slice)) |value| {
-        const tag = std.meta.activeTag(value);
-        const c_value: u64 = inline for (std.meta.fields(Data)) |field| {
-            if (@field(memory.Type, field.name) == tag) {
-                const v = @field(value, field.name);
-                break if (@TypeOf(v) == f64)
-                    @bitCast(v)
-                else
-                    @intCast(v);
-            }
-        } else unreachable;
+        const tag = value.tag();
+        const c_value: u64 = switch (tag) {
+            .number => @bitCast(value.asNumber().?),
+            .string => value.asString().?,
+            .atom => value.asAtom().?,
+            .function => value.asFunction().?,
+            .table => value.asTable().?,
+            .tuple => value.asTuple().?,
+        };
         return .{ .tag = @intFromEnum(tag), .value = c_value };
     }
 
@@ -102,16 +100,15 @@ pub export fn revo_table_get(vm: *anyopaque, table_id: u64, key: CRevoData) call
     const tbl = vm_typed.tables.get(tid) catch return CRevoData{ .tag = @intFromEnum(memory.Type.atom), .value = 0 };
 
     if (tbl.get(key_data, vm_typed) catch return CRevoData{ .tag = @intFromEnum(memory.Type.atom), .value = 0 }) |value| {
-        const tag = std.meta.activeTag(value);
-        const c_value: u64 = inline for (std.meta.fields(Data)) |field| {
-            if (@field(memory.Type, field.name) == tag) {
-                const v = @field(value, field.name);
-                break if (@TypeOf(v) == f64)
-                    @bitCast(v)
-                else
-                    @intCast(v);
-            }
-        } else unreachable;
+        const tag = value.tag();
+        const c_value: u64 = switch (tag) {
+            .number => @bitCast(value.asNumber().?),
+            .string => value.asString().?,
+            .atom => value.asAtom().?,
+            .function => value.asFunction().?,
+            .table => value.asTable().?,
+            .tuple => value.asTuple().?,
+        };
         return .{ .tag = @intFromEnum(tag), .value = c_value };
     }
 

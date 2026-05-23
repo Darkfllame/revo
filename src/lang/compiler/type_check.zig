@@ -26,6 +26,13 @@ pub fn typeInfoFromName(type_name: []const u8) TypeInfo {
     return .{ .struct_type = type_name };
 }
 
+pub fn storedTypeName(t: TypeInfo) ?[]const u8 {
+    if (t == .any or t == .function or t == .tuple or t == .@"union") return null;
+    const name = types_mod.typeName(t);
+    const roundtrip = typeInfoFromName(name);
+    return if (roundtrip.eql(t)) name else null;
+}
+
 pub fn checkType(alloc: std.mem.Allocator, expected: TypeInfo, actual: TypeInfo, span: ast.Span) !void {
     // std.debug.print("this {any} other {any}", .{ expected, actual });
     if (expected == .any or actual == .any) return;
@@ -38,7 +45,7 @@ pub fn checkType(alloc: std.mem.Allocator, expected: TypeInfo, actual: TypeInfo,
 
 pub fn inferExprType(self: *Compiler, expr: *const Node) TypeInfo {
     return switch (expr.expr) {
-        .number => |n| if (n == @as(f64, @trunc(n))) .int else .float,
+        .number => |n| if (n.is_float) .float else .int,
         .string, .multiline_string => .string,
         .hash => |name| .{ .atom = name },
         .nil => .void,
@@ -81,6 +88,12 @@ pub fn inferExprType(self: *Compiler, expr: *const Node) TypeInfo {
 }
 
 fn inferVarType(self: *Compiler, name: []const u8) TypeInfo {
+    const local = state_mod.resolveLocalVar(self, name) orelse return inferTypeMap(self, name);
+    if (local.type_name) |tn| return typeInfoFromName(tn);
+    return inferTypeMap(self, name);
+}
+
+fn inferTypeMap(self: *Compiler, name: []const u8) TypeInfo {
     const fn_state = state_mod.currentFunctionState(self) orelse return .any;
     const type_str = fn_state.var_types.get(name) orelse return .any;
     return typeInfoFromName(type_str orelse return .any);
@@ -110,27 +123,45 @@ fn inferTupleType(self: *Compiler, items: []const *Node) TypeInfo {
 }
 
 fn inferCallReturnType(self: *Compiler, call: anytype) TypeInfo {
-    _ = self;
-    _ = call;
+    const callee_type = inferExprType(self, call.callee);
+    if (callee_type == .function) return callee_type.function.return_type;
+
+    if (call.callee.expr == .ident) {
+        const sig = state_mod.findFnSignature(self, call.callee.expr.ident) orelse return .any;
+        return if (sig.return_type) |ret| typeInfoFromName(ret) else .any;
+    }
+
     return .any;
 }
 
 fn inferFieldType(self: *Compiler, field: anytype) TypeInfo {
-    if (self.resolveTypedStructFieldOffset(field.object, field.name)) |_| {
-        const fn_state = state_mod.currentFunctionState(self) orelse return .any;
-        const type_name = fn_state.var_types.get(field.object.expr.ident) orelse return .any;
-        const layout = self.struct_layouter.getLayout(type_name orelse return .any) orelse return .any;
-        for (layout.fields) |f| {
-            if (std.mem.eql(u8, f.name, field.name)) return f.field_type;
-        }
-    }
-    return .any;
+    return switch (inferExprType(self, field.object)) {
+        .struct_type => |name| blk: {
+            const layout = self.struct_layouter.getLayout(name) orelse break :blk .any;
+            for (layout.fields) |f| {
+                if (std.mem.eql(u8, f.name, field.name)) break :blk f.field_type;
+            }
+            break :blk .any;
+        },
+        else => .any,
+    };
 }
 
 fn inferIndexType(self: *Compiler, index: anytype) TypeInfo {
-    _ = self;
-    _ = index;
-    return .any;
+    return switch (inferExprType(self, index.object)) {
+        .tuple => switch (index.object.expr) {
+            .tuple => |items| if (index.key.expr == .number) blk: {
+                const key_num = index.key.expr.number.value;
+                if (std.math.isFinite(key_num) and @floor(key_num) == key_num and key_num >= 0) {
+                    const idx: usize = @intFromFloat(key_num);
+                    if (idx < items.len) break :blk inferExprType(self, items[idx]);
+                }
+                break :blk .any;
+            } else .any,
+            else => .any,
+        },
+        else => .any,
+    };
 }
 
 fn inferFnType(self: *Compiler, fn_expr: anytype) TypeInfo {
@@ -172,28 +203,21 @@ pub fn validateBindingType(self: *Compiler, type_name: []const u8, value: *const
 pub fn validateAssignmentType(self: *Compiler, target: *const Node, value: *const Node) !void {
     switch (target.expr) {
         .ident => |name| {
-            const fn_state = state_mod.currentFunctionState(self) orelse return;
-            if (fn_state.var_types.get(name)) |type_str| {
-                if (type_str) |ts| {
-                    const expected = typeInfoFromName(ts);
-                    const actual = inferExprType(self, value);
-                    try checkType(self.alloc, expected, actual, value.span);
-                }
+            const expected = inferVarType(self, name);
+            if (expected != .any) {
+                const actual = inferExprType(self, value);
+                try checkType(self.alloc, expected, actual, value.span);
             }
         },
         .field => |field| {
-            if (self.resolveTypedStructFieldOffset(field.object, field.name)) |field_offset| {
-                _ = field_offset;
-                const fn_state = state_mod.currentFunctionState(self) orelse return;
-                const type_name = fn_state.var_types.get(field.object.expr.ident) orelse return;
-                const tn = type_name orelse return;
-                const layout = self.struct_layouter.getLayout(tn) orelse return;
-                for (layout.fields) |f| {
-                    if (std.mem.eql(u8, f.name, field.name)) {
-                        const actual = inferExprType(self, value);
-                        try checkType(self.alloc, f.field_type, actual, value.span);
-                        return;
-                    }
+            const object_type = inferExprType(self, field.object);
+            if (object_type != .struct_type) return;
+            const layout = self.struct_layouter.getLayout(object_type.struct_type) orelse return;
+            for (layout.fields) |f| {
+                if (std.mem.eql(u8, f.name, field.name)) {
+                    const actual = inferExprType(self, value);
+                    try checkType(self.alloc, f.field_type, actual, value.span);
+                    return;
                 }
             }
         },

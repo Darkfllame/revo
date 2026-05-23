@@ -114,9 +114,9 @@ pub fn register(vm: *VM) !void {
     try root.registerTableFunctions(vm, "math", &funcs);
 
     if (vm.globals.get(try vm.internAtom("math"))) |t| {
-        if (t == .table) {
-            const table = try vm.tables.get(t.table);
-            try table.putRaw(.{ .atom = try vm.internAtom("pi") }, Data.new.num(std.math.pi));
+        if (t.asTable()) |table_id| {
+            const table = try vm.tables.get(table_id);
+            try table.putRaw(Data.new.atom(try vm.internAtom("pi")), Data.new.num(std.math.pi));
         }
     }
 }
@@ -134,5 +134,5 @@ test "math library" {
 
 // .number is guaranteed by type sig
 inline fn toF64(d: Data) f64 {
-    return d.number;
+    return d.asNumber().?;
 }

@@ -37,37 +37,23 @@ pub fn register(vm: *VM) !void {
 }
 
 fn len(args: []const Data, vm: *VM) !NativeResult {
-    const id = switch (args[0]) {
-        .tuple => |id| id,
-        else => return .errType(0, "tuple", @tagName(args[0])),
-    };
+    const id = args[0].asTuple() orelse return .errType(0, "tuple", root.dataToString(args[0]));
     const t = try vm.tuples.get(id);
     return .{ .ok = Data.new.num(t.len()) };
 }
 
 fn index(args: []const Data, vm: *VM) !NativeResult {
-    const id = switch (args[0]) {
-        .tuple => |id| id,
-        else => return .errType(0, "tuple", @tagName(args[0])),
-    };
-    const idx = switch (args[1]) {
-        .number => |idx| try revo.asIndex(idx),
-        else => return .errType(1, "number", @tagName(args[1])),
-    };
+    const id = args[0].asTuple() orelse return .errType(0, "tuple", root.dataToString(args[0]));
+    const n = args[1].asNumber() orelse return .errType(1, "number", root.dataToString(args[1]));
+    const idx = try revo.asIndex(n);
     const t = try vm.tuples.get(id);
     if (idx >= t.items.len) return .{ .ok = revo.core_atoms.data(.missing) };
     return .{ .ok = t.items[idx] };
 }
 
 fn add(args: []const Data, vm: *VM) !NativeResult {
-    const left_id = switch (args[0]) {
-        .tuple => |id| id,
-        else => return .errType(0, "tuple", @tagName(args[0])),
-    };
-    const right_id = switch (args[1]) {
-        .tuple => |id| id,
-        else => return .errType(1, "tuple", @tagName(args[1])),
-    };
+    const left_id = args[0].asTuple() orelse return .errType(0, "tuple", root.dataToString(args[0]));
+    const right_id = args[1].asTuple() orelse return .errType(1, "tuple", root.dataToString(args[1]));
     const left = try vm.tuples.get(left_id);
     const right = try vm.tuples.get(right_id);
     var items = try std.ArrayList(Data).initCapacity(vm.runtime.alloc, left.items.len + right.items.len);
@@ -78,14 +64,9 @@ fn add(args: []const Data, vm: *VM) !NativeResult {
 }
 
 fn mul(args: []const Data, vm: *VM) !NativeResult {
-    const tuple_id = switch (args[0]) {
-        .tuple => |id| id,
-        else => return .errType(0, "tuple", @tagName(args[0])),
-    };
-    const times = switch (args[1]) {
-        .number => |n| @as(i64, @intFromFloat(n)),
-        else => return .errType(1, "number", @tagName(args[1])),
-    };
+    const tuple_id = args[0].asTuple() orelse return .errType(0, "tuple", root.dataToString(args[0]));
+    const n = args[1].asNumber() orelse return .errType(1, "number", root.dataToString(args[1]));
+    const times = @as(i64, @intFromFloat(n));
     if (times < 0) return .errType(1, "non-negative number", "negative number");
     const tuple = try vm.tuples.get(tuple_id);
     var items = try std.ArrayList(Data).initCapacity(vm.runtime.alloc, tuple.items.len * @as(usize, @intCast(times)));
@@ -105,10 +86,7 @@ fn _tostring(args: []const Data, vm: *VM) !NativeResult {
 }
 
 fn _debug(args: []const Data, vm: *VM) !NativeResult {
-    const id = switch (args[0]) {
-        .tuple => |tuple_id| tuple_id,
-        else => return .errType(0, "tuple", @tagName(args[0])),
-    };
+    const id = args[0].asTuple() orelse return .errType(0, "tuple", root.dataToString(args[0]));
     const tuple = try vm.tuples.get(id);
     var buf = std.Io.Writer.Allocating.init(vm.runtime.alloc);
     defer buf.deinit();

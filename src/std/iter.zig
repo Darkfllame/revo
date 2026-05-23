@@ -30,11 +30,11 @@ pub fn map_fn(args: []const Data, vm: *VM) !NativeResult {
     if (args.len < 2) return .errArity(args.len, 2);
 
     const fn_data = args[1];
-    if (fn_data != .function) return .errType(1, "function", dataToString(fn_data));
+    if (!fn_data.isFunction()) return .errType(1, "function", dataToString(fn_data));
 
-    switch (args[0]) {
+    switch (args[0].tag()) {
         .string => {
-            const str = vm.stringValue(args[0].string);
+            const str = vm.stringValue(args[0].asString().?);
             var buf = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, str.len);
             errdefer buf.deinit(vm.runtime.alloc);
 
@@ -42,11 +42,12 @@ pub fn map_fn(args: []const Data, vm: *VM) !NativeResult {
                 const char_str = try vm.ownDataString(&[_]u8{byte});
                 const fn_result = try vm.callFunction(fn_data, &[_]Data{char_str});
 
-                const mapped_byte = switch (fn_result) {
-                    .string => |s| vm.stringValue(s)[0],
-                    .number => |n| @as(u8, @intFromFloat(std.math.clamp(@round(n), 0, 255))),
-                    else => return .errType(0, "string or number", dataToString(fn_result)),
-                };
+                const mapped_byte = if (fn_result.asString()) |s|
+                    vm.stringValue(s)[0]
+                else if (fn_result.asNumber()) |n|
+                    @as(u8, @intFromFloat(std.math.clamp(@round(n), 0, 255)))
+                else
+                    return .errType(0, "string or number", dataToString(fn_result));
                 try buf.append(vm.runtime.alloc, mapped_byte);
             }
 
@@ -54,7 +55,7 @@ pub fn map_fn(args: []const Data, vm: *VM) !NativeResult {
             return .{ .ok = result_str };
         },
         .tuple => {
-            const t_id = args[0].tuple;
+            const t_id = args[0].asTuple().?;
             const tuple = try vm.tuples.get(t_id);
             var result_items = try std.ArrayList(Data).initCapacity(vm.runtime.alloc, tuple.items.len);
             errdefer result_items.deinit(vm.runtime.alloc);
@@ -69,7 +70,7 @@ pub fn map_fn(args: []const Data, vm: *VM) !NativeResult {
             return .okData(Data.new.tuple(result_tuple));
         },
         .table => {
-            const table_id = args[0].table;
+            const table_id = args[0].asTable().?;
             const result_table_id = try vm.tables.create();
             const result_table = try vm.tables.get(result_table_id);
             const table = try vm.tables.get(table_id);
@@ -101,11 +102,11 @@ pub fn filter_fn(args: []const Data, vm: *VM) !NativeResult {
     if (args.len < 2) return .errArity(args.len, 2);
 
     const fn_data = args[1];
-    if (fn_data != .function) return .errType(1, "function", dataToString(fn_data));
+    if (!fn_data.isFunction()) return .errType(1, "function", dataToString(fn_data));
 
-    switch (args[0]) {
+    switch (args[0].tag()) {
         .string => {
-            const str = vm.stringValue(args[0].string);
+            const str = vm.stringValue(args[0].asString().?);
             var buf = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, str.len);
             errdefer buf.deinit(vm.runtime.alloc);
 
@@ -121,7 +122,7 @@ pub fn filter_fn(args: []const Data, vm: *VM) !NativeResult {
             return .{ .ok = result_str };
         },
         .tuple => {
-            const t_id = args[0].tuple;
+            const t_id = args[0].asTuple().?;
             const tuple = try vm.tuples.get(t_id);
             var result_items = try std.ArrayList(Data).initCapacity(vm.runtime.alloc, tuple.items.len);
             errdefer result_items.deinit(vm.runtime.alloc);
@@ -138,7 +139,7 @@ pub fn filter_fn(args: []const Data, vm: *VM) !NativeResult {
             return .okData(Data.new.tuple(result_tuple));
         },
         .table => {
-            const table_id = args[0].table;
+            const table_id = args[0].asTable().?;
             const result_table_id = try vm.tables.create();
             const result_table = try vm.tables.get(result_table_id);
             const table = try vm.tables.get(table_id);
@@ -174,27 +175,27 @@ pub fn reduce_fn(args: []const Data, vm: *VM) !NativeResult {
     if (args.len < 3) return .errArity(args.len, 3);
 
     const fn_data = args[1];
-    if (fn_data != .function) return .errType(1, "function", dataToString(fn_data));
+    if (!fn_data.isFunction()) return .errType(1, "function", dataToString(fn_data));
 
     var accumulator = args[2];
 
-    switch (args[0]) {
+    switch (args[0].tag()) {
         .string => {
-            const str = vm.stringValue(args[0].string);
+            const str = vm.stringValue(args[0].asString().?);
             for (str) |byte| {
                 const char_str = try vm.ownDataString(&[_]u8{byte});
                 accumulator = try vm.callFunction(fn_data, &[_]Data{ accumulator, char_str });
             }
         },
         .tuple => {
-            const t_id = args[0].tuple;
+            const t_id = args[0].asTuple().?;
             const tuple = try vm.tuples.get(t_id);
             for (tuple.items) |item| {
                 accumulator = try vm.callFunction(fn_data, &[_]Data{ accumulator, item });
             }
         },
         .table => {
-            const table_id = args[0].table;
+            const table_id = args[0].asTable().?;
             const table = try vm.tables.get(table_id);
 
             for (table.array.items) |item| {
@@ -222,25 +223,25 @@ pub fn each_fn(args: []const Data, vm: *VM) !NativeResult {
     if (args.len < 2) return .errArity(args.len, 2);
 
     const fn_data = args[1];
-    if (fn_data != .function) return .errType(1, "function", dataToString(fn_data));
+    if (!fn_data.isFunction()) return .errType(1, "function", dataToString(fn_data));
 
-    switch (args[0]) {
+    switch (args[0].tag()) {
         .string => {
-            const str = vm.stringValue(args[0].string);
+            const str = vm.stringValue(args[0].asString().?);
             for (str) |byte| {
                 const char_str = try vm.ownDataString(&[_]u8{byte});
                 _ = try vm.callFunction(fn_data, &[_]Data{char_str});
             }
         },
         .tuple => {
-            const t_id = args[0].tuple;
+            const t_id = args[0].asTuple().?;
             const tuple = try vm.tuples.get(t_id);
             for (tuple.items) |item| {
                 _ = try vm.callFunction(fn_data, &[_]Data{item});
             }
         },
         .table => {
-            const table_id = args[0].table;
+            const table_id = args[0].asTable().?;
             const table = try vm.tables.get(table_id);
 
             for (table.array.items) |item| {
@@ -268,11 +269,11 @@ pub fn find_fn(args: []const Data, vm: *VM) !NativeResult {
     if (args.len < 2) return .errArity(args.len, 2);
 
     const fn_data = args[1];
-    if (fn_data != .function) return .errType(1, "function", dataToString(fn_data));
+    if (!fn_data.isFunction()) return .errType(1, "function", dataToString(fn_data));
 
-    switch (args[0]) {
+    switch (args[0].tag()) {
         .string => {
-            const str = vm.stringValue(args[0].string);
+            const str = vm.stringValue(args[0].asString().?);
             for (str) |byte| {
                 const char_str = try vm.ownDataString(&[_]u8{byte});
                 const fn_result = try vm.callFunction(fn_data, &[_]Data{char_str});
@@ -282,7 +283,7 @@ pub fn find_fn(args: []const Data, vm: *VM) !NativeResult {
             }
         },
         .tuple => {
-            const t_id = args[0].tuple;
+            const t_id = args[0].asTuple().?;
             const tuple = try vm.tuples.get(t_id);
             for (tuple.items) |item| {
                 const fn_result = try vm.callFunction(fn_data, &[_]Data{item});
@@ -292,7 +293,7 @@ pub fn find_fn(args: []const Data, vm: *VM) !NativeResult {
             }
         },
         .table => {
-            const table_id = args[0].table;
+            const table_id = args[0].asTable().?;
             const table = try vm.tables.get(table_id);
 
             for (table.array.items) |item| {
@@ -326,11 +327,11 @@ pub fn all_fn(args: []const Data, vm: *VM) !NativeResult {
     if (args.len < 2) return .errArity(args.len, 2);
 
     const fn_data = args[1];
-    if (fn_data != .function) return .errType(1, "function", dataToString(fn_data));
+    if (!fn_data.isFunction()) return .errType(1, "function", dataToString(fn_data));
 
-    switch (args[0]) {
+    switch (args[0].tag()) {
         .string => {
-            const str = vm.stringValue(args[0].string);
+            const str = vm.stringValue(args[0].asString().?);
             for (str) |byte| {
                 const char_str = try vm.ownDataString(&[_]u8{byte});
                 const fn_result = try vm.callFunction(fn_data, &[_]Data{char_str});
@@ -340,7 +341,7 @@ pub fn all_fn(args: []const Data, vm: *VM) !NativeResult {
             }
         },
         .tuple => {
-            const t_id = args[0].tuple;
+            const t_id = args[0].asTuple().?;
             const tuple = try vm.tuples.get(t_id);
             for (tuple.items) |item| {
                 const fn_result = try vm.callFunction(fn_data, &[_]Data{item});
@@ -350,7 +351,7 @@ pub fn all_fn(args: []const Data, vm: *VM) !NativeResult {
             }
         },
         .table => {
-            const table_id = args[0].table;
+            const table_id = args[0].asTable().?;
             const table = try vm.tables.get(table_id);
 
             for (table.array.items) |item| {
@@ -384,11 +385,11 @@ pub fn any_fn(args: []const Data, vm: *VM) !NativeResult {
     if (args.len < 2) return .errArity(args.len, 2);
 
     const fn_data = args[1];
-    if (fn_data != .function) return .errType(1, "function", dataToString(fn_data));
+    if (!fn_data.isFunction()) return .errType(1, "function", dataToString(fn_data));
 
-    switch (args[0]) {
+    switch (args[0].tag()) {
         .string => {
-            const str = vm.stringValue(args[0].string);
+            const str = vm.stringValue(args[0].asString().?);
             for (str) |byte| {
                 const char_str = try vm.ownDataString(&[_]u8{byte});
                 const fn_result = try vm.callFunction(fn_data, &[_]Data{char_str});
@@ -398,7 +399,7 @@ pub fn any_fn(args: []const Data, vm: *VM) !NativeResult {
             }
         },
         .tuple => {
-            const t_id = args[0].tuple;
+            const t_id = args[0].asTuple().?;
             const tuple = try vm.tuples.get(t_id);
             for (tuple.items) |item| {
                 const fn_result = try vm.callFunction(fn_data, &[_]Data{item});
@@ -408,7 +409,7 @@ pub fn any_fn(args: []const Data, vm: *VM) !NativeResult {
             }
         },
         .table => {
-            const table_id = args[0].table;
+            const table_id = args[0].asTable().?;
             const table = try vm.tables.get(table_id);
 
             for (table.array.items) |item| {

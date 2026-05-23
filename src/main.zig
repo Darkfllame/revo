@@ -352,7 +352,6 @@ fn benchArtifact(
     defer times.deinit(gpa);
 
     for (0..iters) |_| {
-        vm.resetPerfCounters();
         const t_start = std.Io.Timestamp.now(init.io, .cpu_process);
         const run_result = try revo.module.runCompiledModuleReport(vm, name, artifact.instructions);
         const t_end = std.Io.Timestamp.now(init.io, .cpu_process);
@@ -364,7 +363,6 @@ fn benchArtifact(
         }
     }
 
-    vm.resetPerfCounters();
     const run_result = try revo.module.runCompiledModuleReport(vm, name, artifact.instructions);
     switch (run_result) {
         .ok => if (echo_last) try printResult(vm),
@@ -467,7 +465,7 @@ pub fn printRuntimeFailure(init: std.process.Init, failure: anytype, source: []c
     std.debug.print("{s}", .{buf.written()});
 }
 
-fn printBenchStats(vm: *VM, times: []std.Io.Duration) void {
+fn printBenchStats(_: *VM, times: []std.Io.Duration) void {
     std.mem.sort(std.Io.Duration, times, {}, struct {
         pub fn lessThan(_: void, a: std.Io.Duration, b: std.Io.Duration) bool {
             return a.nanoseconds < b.nanoseconds;
@@ -485,36 +483,12 @@ fn printBenchStats(vm: *VM, times: []std.Io.Duration) void {
     const median_ms = @as(f64, @floatFromInt(median)) / 1_000_000.0;
     const p95_ms = @as(f64, @floatFromInt(p95)) / 1_000_000.0;
 
-    const max_perf_field_len = comptime blk: {
-        var a: usize = 0;
-        for (@typeInfo(VM.PerfCounters).@"struct".fields) |field| {
-            if (field.name.len > a) a = field.name.len;
-        }
-        break :blk a;
-    };
-    {
-        const t = "timing";
-        const b: usize = max_perf_field_len - t.len - 1;
-        std.debug.print("\n+= {s} {s}+\n", .{ t, "=" ** b });
-    }
+    std.debug.print("+=========================\n", .{});
     std.debug.print("| best    {d:.3}ms / {d}ns\n", .{ best_ms, best });
     std.debug.print("| median  {d:.3}ms / {d}ns\n", .{ median_ms, median });
     std.debug.print("| p95     {d:.3}ms / {d}ns\n", .{ p95_ms, p95 });
     std.debug.print("| worst   {d:.3}ms / {d}ns\n", .{ worst_ms, worst });
 
-    {
-        const t = "perf";
-        const b: usize = max_perf_field_len - t.len - 1;
-        std.debug.print("\n+= {s} {s}+\n", .{ t, "=" ** b });
-    }
-
-    inline for (@typeInfo(VM.PerfCounters).@"struct".fields) |field| {
-        std.debug.print("| {s}{s}{d}\n", .{
-            field.name,
-            " " ** (max_perf_field_len - field.name.len + 1),
-            @field(vm.perf, field.name),
-        });
-    }
 }
 
 fn printDisassembly(artifact: Artifact, source: []const u8, json: bool) void {

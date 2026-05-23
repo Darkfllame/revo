@@ -20,9 +20,9 @@ pub const ExpandError = error{
 
 pub fn register(vm: *revo.VM) !void {
     const id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{.table}, iter) });
-    try vm.globals.put(try vm.internAtom("__proc_iter"), .{ .function = id });
+    try vm.globals.put(try vm.internAtom("__proc_iter"), Data.new.function(id));
     const apply_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{ .function, .table }, procApply) });
-    try vm.globals.put(try vm.internAtom("__proc_apply"), .{ .function = apply_id });
+    try vm.globals.put(try vm.internAtom("__proc_apply"), Data.new.function(apply_id));
 }
 
 pub fn expandExpr(vm: *revo.VM, allocator: std.mem.Allocator, expr: *Node) ExpandError!*Node {
@@ -470,12 +470,16 @@ fn reportProcExpandError(
 }
 
 fn decodeProcResult(vm: *revo.VM, allocator: std.mem.Allocator, span: Span, data: Data) ExpandError!*Node {
-    return switch (data) {
-        .atom => |atom| if (atom == revo.core_atoms.atom_id(.nil)) alloc(allocator, span, .nil) else error.InvalidProcReturn,
-        .tuple => |tid| decodeNodeSequence(vm, allocator, span, (vm.tuples.get(tid) catch return error.InvalidProcReturn).items),
-        .table => |tid| decodeNodeSequence(vm, allocator, span, (vm.tables.get(tid) catch return error.InvalidProcReturn).array.items),
-        else => error.InvalidProcReturn,
-    };
+    if (data.asAtom()) |atom| {
+        return if (atom == revo.core_atoms.atom_id(.nil)) alloc(allocator, span, .nil) else error.InvalidProcReturn;
+    }
+    if (data.asTuple()) |tid| {
+        return decodeNodeSequence(vm, allocator, span, (vm.tuples.get(tid) catch return error.InvalidProcReturn).items);
+    }
+    if (data.asTable()) |tid| {
+        return decodeNodeSequence(vm, allocator, span, (vm.tables.get(tid) catch return error.InvalidProcReturn).array.items);
+    }
+    return error.InvalidProcReturn;
 }
 
 fn decodeNodeSequence(
@@ -495,6 +499,15 @@ fn decodeNodeSequence(
 }
 
 fn encodeExpr(allocator: std.mem.Allocator, node: *const Node) ExpandError!*Node {
+    if (node.expr == .number) {
+        var items = try std.ArrayList(*Node).initCapacity(allocator, if (node.expr.number.is_float) 3 else 2);
+        errdefer items.deinit(allocator);
+        try items.append(allocator, try atomNode(allocator, node.span, "number"));
+        try items.append(allocator, try alloc(allocator, node.span, .{ .number = .{ .value = node.expr.number.value, .is_float = node.expr.number.is_float } }));
+        if (node.expr.number.is_float) try items.append(allocator, try atomNode(allocator, node.span, "float"));
+        return tupleNode(allocator, node.span, try items.toOwnedSlice(allocator));
+    }
+
     const tag_name = @tagName(node.expr);
     const info = @typeInfo(Expr).@"union";
 
@@ -568,9 +581,9 @@ fn encodeValue(
             }
         },
         .bool => if (value) atomNode(allocator, span, "true") else atomNode(allocator, span, "false"),
-        .float => alloc(allocator, span, .{ .number = @floatCast(value) }),
-        .int, .comptime_int => alloc(allocator, span, .{ .number = @floatFromInt(value) }),
-        .comptime_float => alloc(allocator, span, .{ .number = value }),
+        .float => alloc(allocator, span, .{ .number = .{ .value = @floatCast(value), .is_float = true } }),
+        .int, .comptime_int => alloc(allocator, span, .{ .number = .{ .value = @floatFromInt(value) } }),
+        .comptime_float => alloc(allocator, span, .{ .number = .{ .value = value, .is_float = true } }),
         .@"enum" => atomNode(allocator, span, @tagName(value)),
 
         .@"union" => |ui| {
@@ -609,8 +622,16 @@ fn encodeValue(
 
 fn decodeExprNode(vm: *revo.VM, allocator: std.mem.Allocator, span: Span, data: Data) ExpandError!*Node {
     const tuple = try expectTuple(vm, data);
-    if (tuple.items.len == 0 or tuple.items[0] != .atom) return error.InvalidProcReturn;
-    const tag = vm.atomName(tuple.items[0].atom);
+    if (tuple.items.len == 0 or tuple.items[0].asAtom() == null) return error.InvalidProcReturn;
+    const tag = vm.atomName(tuple.items[0].asAtom().?);
+
+    if (std.mem.eql(u8, tag, "number")) {
+        if (tuple.items.len < 2) return error.InvalidProcReturn;
+        const value = tuple.items[1].asNumber() orelse return error.InvalidProcReturn;
+        const is_float = tuple.items.len >= 3 and tuple.items[2].asAtom() != null and std.mem.eql(u8, vm.atomName(tuple.items[2].asAtom().?), "float");
+        if (tuple.items.len != 2 and tuple.items.len != 3) return error.InvalidProcReturn;
+        return alloc(allocator, span, .{ .number = .{ .value = value, .is_float = is_float } });
+    }
 
     const info = @typeInfo(Expr).@"union";
     inline for (info.fields) |field| {
@@ -670,8 +691,9 @@ fn decodeValue(
             idx.* -= 1;
             return try decodeValue(vm, allocator, span, opt.child, items, idx);
         },
-        .bool => switch (data) {
-            .atom => |atom| blk: {
+        .bool => switch (data.tag()) {
+            .atom => blk: {
+                const atom = data.asAtom().?;
                 const name = vm.atomName(atom);
                 if (std.mem.eql(u8, name, "true")) break :blk true;
                 if (std.mem.eql(u8, name, "false")) break :blk false;
@@ -680,17 +702,17 @@ fn decodeValue(
             else => error.InvalidProcReturn,
         },
         // comptime numbers shouldnt appear unless i fold in parser
-        .int => switch (data) {
-            .number => |n| @as(T, @intFromFloat(n)),
+        .int => switch (data.tag()) {
+            .number => @as(T, @intFromFloat(data.asNumber().?)),
             else => error.InvalidProcReturn,
         },
-        .float => switch (data) {
-            .number => |n| n,
+        .float => switch (data.tag()) {
+            .number => data.asNumber().?,
             else => error.InvalidProcReturn,
         },
         .pointer => |ptr| {
-            if (ptr.size == .slice and ptr.child == u8) return switch (data) {
-                .string => |sid| allocator.dupe(u8, vm.stringValue(sid)) catch return error.OutOfMemory,
+            if (ptr.size == .slice and ptr.child == u8) return switch (data.tag()) {
+                .string => allocator.dupe(u8, vm.stringValue(data.asString().?)) catch return error.OutOfMemory,
                 else => error.InvalidProcReturn,
             };
             if (ptr.size == .slice) {
@@ -708,8 +730,8 @@ fn decodeValue(
             return error.UnsupportedProcValue;
         },
         .@"enum" => {
-            const name = switch (data) {
-                .atom => |atom| vm.atomName(atom),
+            const name = switch (data.tag()) {
+                .atom => vm.atomName(data.asAtom().?),
                 else => return error.InvalidProcReturn,
             };
             const info = @typeInfo(T).@"enum";
@@ -720,8 +742,8 @@ fn decodeValue(
         },
         .@"union" => |un| {
             const union_tuple = try expectTuple(vm, data);
-            if (union_tuple.items.len == 0 or union_tuple.items[0] != .atom) return error.InvalidProcReturn;
-            const union_tag = vm.atomName(union_tuple.items[0].atom);
+            if (union_tuple.items.len == 0 or !union_tuple.items[0].isAtom()) return error.InvalidProcReturn;
+            const union_tag = vm.atomName(union_tuple.items[0].asAtom().?);
 
             inline for (un.fields) |field| {
                 if (std.mem.eql(u8, field.name, union_tag)) {
@@ -753,16 +775,18 @@ fn decodeValue(
         },
         .array => |arr| {
             idx.* -= 1;
-            const array_items = switch (data) {
-                .table => |tid| blk: {
+            const array_items = switch (data.tag()) {
+                .table => blk: {
+                    const tid = data.asTable().?;
                     const table = vm.tables.get(tid) catch return error.InvalidProcReturn;
                     break :blk table.array.items;
                 },
-                .tuple => |tid| blk: {
+                .tuple => blk: {
+                    const tid = data.asTuple().?;
                     const tuple = vm.tuples.get(tid) catch return error.InvalidProcReturn;
                     break :blk tuple.items;
                 },
-                .atom => |atom| if (atom == revo.core_atoms.atom_id(.nil)) &.{} else return error.InvalidProcReturn,
+                .atom => if (data.asAtom().? == revo.core_atoms.atom_id(.nil)) &.{} else return error.InvalidProcReturn,
                 else => return error.InvalidProcReturn,
             };
             if (array_items.len != arr.len) return error.InvalidProcReturn;
@@ -791,16 +815,18 @@ fn decodeSliceValue(
     const data = items[idx.*];
     idx.* += 1;
 
-    const seq = switch (data) {
-        .table => |tid| blk: {
+    const seq = switch (data.tag()) {
+        .table => blk: {
+            const tid = data.asTable().?;
             const table = vm.tables.get(tid) catch return error.InvalidProcReturn;
             break :blk table.array.items;
         },
-        .tuple => |tid| blk: {
+        .tuple => blk: {
+            const tid = data.asTuple().?;
             const tuple = vm.tuples.get(tid) catch return error.InvalidProcReturn;
             break :blk tuple.items;
         },
-        .atom => |atom| if (atom == revo.core_atoms.atom_id(.nil)) &.{} else return error.InvalidProcReturn,
+        .atom => if (data.asAtom().? == revo.core_atoms.atom_id(.nil)) &.{} else return error.InvalidProcReturn,
         else => return error.InvalidProcReturn,
     };
 
@@ -814,15 +840,15 @@ fn decodeSliceValue(
 }
 
 fn isNilData(vm: *revo.VM, data: Data) bool {
-    return switch (data) {
-        .atom => |atom| std.mem.eql(u8, vm.atomName(atom), "nil"),
+    return switch (data.tag()) {
+        .atom => std.mem.eql(u8, vm.atomName(data.asAtom().?), "nil"),
         else => false,
     };
 }
 
 fn expectTuple(vm: *revo.VM, data: Data) ExpandError!*revo.tuple.Tuple {
-    return switch (data) {
-        .tuple => |tid| vm.tuples.get(tid) catch return error.InvalidProcReturn,
+    return switch (data.tag()) {
+        .tuple => vm.tuples.get(data.asTuple().?) catch return error.InvalidProcReturn,
         else => error.InvalidProcReturn,
     };
 }
@@ -887,7 +913,7 @@ fn alloc(allocator: std.mem.Allocator, span: Span, expr: Expr) ExpandError!*Node
 
 fn iter(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
     if (args.len != 1) return .errArity(args.len, 1);
-    const items = switch (args[0]) {
+    const items = switch (args[0].tag()) {
         .table, .tuple => args[0],
         else => return .errType(0, "table or tuple", revo.std_lib.dataToString(args[0])),
     };
@@ -904,25 +930,19 @@ fn peek(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
 
 fn consumed(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
     if (args.len != 1) return .errArity(args.len, 1);
-    const iter_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", revo.std_lib.dataToString(args[0])),
-    };
+    const iter_id = args[0].asTable() orelse return .errType(0, "table", revo.std_lib.dataToString(args[0]));
     const iter_tbl = try vm.tables.get(iter_id);
-    const index_data = iter_tbl.getRaw(.{ .atom = try vm.internAtom("index") }) orelse Data.new.num(0);
+    const index_data = iter_tbl.getRaw(Data.new.atom(try vm.internAtom("index"))) orelse Data.new.num(0);
     return .{ .ok = index_data };
 }
 
 fn nextOf(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
     if (args.len != 2) return .errArity(args.len, 2);
-    const expected_atom = switch (args[1]) {
-        .atom => |a| a,
-        else => return .errType(1, "atom", revo.std_lib.dataToString(args[1])),
-    };
+    const expected_atom = args[1].asAtom() orelse return .errType(1, "atom", revo.std_lib.dataToString(args[1]));
     const expected_name = vm.atomName(expected_atom);
 
     const item = (try iterStep(args[0..1], vm, true)).ok;
-    if (item == .atom and item.atom == revo.core_atoms.atom_id(.nil)) {
+    if (item.asAtom() == revo.core_atoms.atom_id(.nil)) {
         var panic_msg = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, 64);
         defer panic_msg.deinit(vm.runtime.alloc);
         try panic_msg.appendSlice(vm.runtime.alloc, "proc iter:next_of expected :");
@@ -932,27 +952,24 @@ fn nextOf(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
         return .panic();
     }
 
-    const tuple = switch (item) {
-        .tuple => |tid| vm.tuples.get(tid) catch {
-            try vm.setPanicMessage("proc iter:next_of expected tuple node");
-            return .panic();
-        },
-        else => {
-            try vm.setPanicMessage("proc iter:next_of expected tuple node");
-            return .panic();
-        },
+    const tuple = if (item.asTuple()) |tid| vm.tuples.get(tid) catch {
+        try vm.setPanicMessage("proc iter:next_of expected tuple node");
+        return .panic();
+    } else {
+        try vm.setPanicMessage("proc iter:next_of expected tuple node");
+        return .panic();
     };
-    if (tuple.items.len == 0 or tuple.items[0] != .atom) {
+    if (tuple.items.len == 0 or tuple.items[0].asAtom() == null) {
         try vm.setPanicMessage("proc iter:next_of expected tagged tuple node");
         return .panic();
     }
-    if (!std.mem.eql(u8, vm.atomName(tuple.items[0].atom), expected_name)) {
+    if (!std.mem.eql(u8, vm.atomName(tuple.items[0].asAtom().?), expected_name)) {
         var panic_msg = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, 64);
         defer panic_msg.deinit(vm.runtime.alloc);
         try panic_msg.appendSlice(vm.runtime.alloc, "proc iter:next_of expected :");
         try panic_msg.appendSlice(vm.runtime.alloc, expected_name);
         try panic_msg.appendSlice(vm.runtime.alloc, " got :");
-        try panic_msg.appendSlice(vm.runtime.alloc, vm.atomName(tuple.items[0].atom));
+        try panic_msg.appendSlice(vm.runtime.alloc, vm.atomName(tuple.items[0].asAtom().?));
         try vm.setPanicMessage(panic_msg.items);
         return .panic();
     }
@@ -961,15 +978,12 @@ fn nextOf(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
     if (tuple.items.len == 2) return .{ .ok = tuple.items[1] };
 
     const payload_id = try vm.tuples.create(tuple.items[1..]);
-    return .{ .ok = .{ .tuple = payload_id } };
+    return .{ .ok = Data.new.tuple(payload_id) };
 }
 
 fn procApply(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
     if (args.len != 2) return .errArity(args.len, 2);
-    const callee = switch (args[0]) {
-        .function => args[0],
-        else => return .errType(0, "function", revo.std_lib.dataToString(args[0])),
-    };
+    const callee = if (args[0].isFunction()) args[0] else return .errType(0, "function", revo.std_lib.dataToString(args[0]));
 
     const iter_value = try makeIterValue(vm, args[1]);
     const result = try vm.callFunction(callee, &.{iter_value});
@@ -979,23 +993,24 @@ fn procApply(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
 fn makeIterValue(vm: *revo.VM, items: Data) !Data {
     const iter_id = try vm.tables.create();
     const iter_tbl = try vm.tables.get(iter_id);
-    try iter_tbl.putRaw(.{ .atom = try vm.internAtom("items") }, items);
-    try iter_tbl.putRaw(.{ .atom = try vm.internAtom("index") }, Data.new.num(0));
+    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("items")), items);
+    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("index")), Data.new.num(0));
 
     const next_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{.table}, next) });
     const peek_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{.table}, peek) });
     const consumed_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{.table}, consumed) });
     const next_of_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{ .table, .atom }, nextOf) });
-    try iter_tbl.putRaw(.{ .atom = try vm.internAtom("next") }, .{ .function = next_id });
-    try iter_tbl.putRaw(.{ .atom = try vm.internAtom("peek") }, .{ .function = peek_id });
-    try iter_tbl.putRaw(.{ .atom = try vm.internAtom("consumed") }, .{ .function = consumed_id });
-    try iter_tbl.putRaw(.{ .atom = try vm.internAtom("next_of") }, .{ .function = next_of_id });
-    return .{ .table = iter_id };
+    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("next")), Data.new.function(next_id));
+    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("peek")), Data.new.function(peek_id));
+    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("consumed")), Data.new.function(consumed_id));
+    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("next_of")), Data.new.function(next_of_id));
+    return Data.new.table(iter_id);
 }
 
 fn normalizeProcValue(vm: *revo.VM, value: Data) !Data {
-    return switch (value) {
-        .table => |tid| blk: {
+    return switch (value.tag()) {
+        .table => blk: {
+            const tid = value.asTable().?;
             const table = try vm.tables.get(tid);
             if (table.array.items.len == 0) break :blk revo.core_atoms.data(.nil);
             if (table.array.items.len == 1) break :blk table.array.items[0];
@@ -1007,34 +1022,24 @@ fn normalizeProcValue(vm: *revo.VM, value: Data) !Data {
 
 fn iterStep(args: []const Data, vm: *revo.VM, advance: bool) !revo.std_lib.NativeResult {
     if (args.len != 1) return .errArity(args.len, 1);
-    const iter_id = switch (args[0]) {
-        .table => |id| id,
-        else => return .errType(0, "table", revo.std_lib.dataToString(args[0])),
-    };
+    const iter_id = args[0].asTable() orelse return .errType(0, "table", revo.std_lib.dataToString(args[0]));
     const iter_tbl = try vm.tables.get(iter_id);
-    const items_data = iter_tbl.getRaw(.{ .atom = try vm.internAtom("items") }) orelse return .{ .ok = revo.core_atoms.data(.nil) };
-    const index_data = iter_tbl.getRaw(.{ .atom = try vm.internAtom("index") }) orelse Data.new.num(0);
-    const idx = switch (index_data) {
-        .number => |n| try revo.asIndex(n),
-        else => return error.TypeError,
-    };
+    const items_data = iter_tbl.getRaw(Data.new.atom(try vm.internAtom("items"))) orelse return .{ .ok = revo.core_atoms.data(.nil) };
+    const index_data = iter_tbl.getRaw(Data.new.atom(try vm.internAtom("index"))) orelse Data.new.num(0);
+    const idx = if (index_data.asNumber()) |n| try revo.asIndex(n) else return error.TypeError;
 
-    const item = switch (items_data) {
-        .table => |tid| blk: {
-            const table = try vm.tables.get(tid);
-            if (idx >= table.array.items.len) break :blk revo.core_atoms.data(.nil);
-            break :blk table.array.items[idx];
-        },
-        .tuple => |tid| blk: {
-            const tuple = try vm.tuples.get(tid);
-            if (idx >= tuple.items.len) break :blk revo.core_atoms.data(.nil);
-            break :blk tuple.items[idx];
-        },
-        else => revo.core_atoms.data(.nil),
-    };
+    const item = if (items_data.asTable()) |tid| blk: {
+        const table = try vm.tables.get(tid);
+        if (idx >= table.array.items.len) break :blk revo.core_atoms.data(.nil);
+        break :blk table.array.items[idx];
+    } else if (items_data.asTuple()) |tid| blk: {
+        const tuple = try vm.tuples.get(tid);
+        if (idx >= tuple.items.len) break :blk revo.core_atoms.data(.nil);
+        break :blk tuple.items[idx];
+    } else revo.core_atoms.data(.nil);
 
     if (advance) {
-        try iter_tbl.putRaw(.{ .atom = try vm.internAtom("index") }, Data.new.num(idx + 1));
+        try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("index")), Data.new.num(idx + 1));
     }
     return .{ .ok = item };
 }

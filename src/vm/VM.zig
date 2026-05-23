@@ -24,16 +24,6 @@ pub const ModuleCache = std.StringHashMap(struct {
 });
 pub const ChannelID = mem.TableID;
 pub const FiberID = usize;
-pub const PerfCounters = struct {
-    instructions: u64 = 0,
-    gc_collections: u64 = 0,
-    call_ops: u64 = 0,
-    table_get_ops: u64 = 0,
-    table_set_ops: u64 = 0,
-    metamethod_calls: u64 = 0,
-    meta_index_fallbacks: u64 = 0,
-    meta_newindex_fallbacks: u64 = 0,
-};
 
 pub const DebugInfoID = usize;
 pub const DebugInfo = struct {
@@ -42,9 +32,71 @@ pub const DebugInfo = struct {
     source_name: []const u8,
 };
 
-/// another way to do so would be an enum(AtomID), and making sure they always start initialization at 0
-/// not sure about that! may switch over to that model later
-///
+// direct-mapped inline cache for table lookups; compare pc/table_id/version then use value
+pub const ICacheEntry = struct {
+    pc: ProgramCounter,
+    table_id: mem.TableID,
+    version: usize,
+    value: Data,
+};
+
+// main loop: run runnable fibers, wake sleepers, wait for io/timers
+pub fn runReport(self: *VM) !EvalResult {
+    self.clearPanicMessage();
+    self.clearRuntimeMessage();
+    if (self.mainFiber().frames.items.len == 0) {
+        if (self.mainFiber().debug_info_id == null) self.mainFiber().debug_info_id = self.pending_debug_info_id;
+        try self.mainFiber().frames.append(self.runtime.alloc, .{
+            .return_addr = @intCast(self.mainFiber().program.len),
+            .base = 0,
+            .register_count = 16,
+        });
+        const fiber = self.mainFiber();
+        try fiber.slots.resize(self.runtime.alloc, 16);
+        @memset(fiber.slots.items, revo.core_atoms.data(.missing));
+    }
+    self.sched.setFiberState(0, .ready);
+    try @call(.always_inline, Scheduler.enqueueRunnable, .{ &self.sched, @as(FiberID, 0) });
+
+    while (true) {
+        if (try self.runReadyFibers()) |failure| {
+            return .{ .err = failure };
+        }
+        try @call(.always_inline, Scheduler.wakeDueSleepers, .{ &self.sched, self.schedNowMonotonicNs() });
+        // try self.sched.wakeDueSleepers(self.schedNowMonotonicNs());
+        const has_sleepers = self.sched.sleepers.items.len > 0;
+        const has_io_waiters = self.sched.io_waiters.items.len > 0;
+        const has_waiting = self.sched.waiting_cnt > 0;
+
+        if (!has_sleepers and !has_waiting) {
+            @branchHint(.unlikely);
+            break;
+        }
+
+        if (has_io_waiters or (revo.has_async_backend and has_waiting)) {
+            @branchHint(.likely);
+            const timeout_ms: i32 = if (self.sched.nextSleepDelayNs(self.schedNowMonotonicNs())) |delay_ns|
+                @as(i32, @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(i32)))))
+            else
+                -1;
+            // call configured io poll helper to wait for fd events
+            const io_poll = self.sched.io_poll orelse {
+                try self.setRuntimeMessage("io poll is not configured");
+                return .{ .err = self.evalFailure(error.Panic) };
+            };
+            _ = io_poll(self, timeout_ms) catch return .{ .err = self.evalFailure(error.Panic) };
+            try @call(.always_inline, Scheduler.wakeDueSleepers, .{ &self.sched, self.schedNowMonotonicNs() });
+            continue;
+        }
+        if (has_sleepers) {
+            @branchHint(.unlikely);
+            self.schedSleepUntilNextTimer();
+            try @call(.always_inline, Scheduler.wakeDueSleepers, .{ &self.sched, self.schedNowMonotonicNs() });
+        }
+    }
+    return .ok;
+}
+
 /// quite a hefty struct,,, but its worth it
 pub const Fiber = struct {
     pub const OpenUpvalueRef = struct {
@@ -90,8 +142,8 @@ pub const Fiber = struct {
             .pc = 0,
             .program = program,
             .debug_info_id = null,
-            .slots = try std.ArrayList(Data).initCapacity(alloc, 16),
-            .frames = try std.ArrayList(Frame).initCapacity(alloc, 4),
+            .slots = try std.ArrayList(Data).initCapacity(alloc, 256),
+            .frames = try std.ArrayList(Frame).initCapacity(alloc, 256),
             .open_upvalues = try std.ArrayList(OpenUpvalueRef).initCapacity(alloc, 8),
             .running = false,
             .state = .ready,
@@ -145,17 +197,20 @@ panic_message: ?[]const u8 = null,
 panic_span: ?Span = null,
 runtime_message: ?[]const u8 = null,
 gc_instr_counter: usize = 0,
-perf: PerfCounters = .{},
 host_call_depth: usize = 0,
 loaded_extensions: std.ArrayList(std.DynLib),
 
 gc_enabled: bool = true,
 gc_pending: bool = false,
 gc_bytes_allocated: usize = 0,
+// optional opcode counters for benchmarking/profiling (allocated on init)
 gc_threshold: usize = 512 * 1024, // 512kb initial
 gc_pause_factor: usize = 2,
 
 debug_assert_types: bool = false,
+
+/// for table lookups
+icache: [8]ICacheEntry = undefined,
 
 pub fn init(runtime: revo.Runtime) !VM {
     var vm: VM = .{
@@ -177,7 +232,16 @@ pub fn init(runtime: revo.Runtime) !VM {
         .loading_stack = try std.ArrayList([]const u8).initCapacity(runtime.alloc, 1),
         .loaded_extensions = try .initCapacity(runtime.alloc, 0),
     };
+    for (&vm.icache) |*entry| {
+        entry.* = .{
+            .pc = std.math.maxInt(ProgramCounter),
+            .table_id = 0,
+            .version = 0,
+            .value = undefined,
+        };
+    }
     try vm.package_path.appendSlice(runtime.alloc, &.{ "./?", "./lib/?", "/usr/local/lib/revo/?" });
+
     // wire scheduler io poll to net poll as default; runtime may replace this
     vm.sched.io_poll = revo.std_net.pollIoWaiters;
     try vm.sched.fibers.append(runtime.alloc, .{
@@ -217,7 +281,7 @@ pub fn init(runtime: revo.Runtime) !VM {
 }
 
 /// TODO: use @sizeOf everywhere at callsite because this is all over the place
-pub fn noteGCPressure(self: *VM, bytes: usize) void {
+pub inline fn noteGCPressure(self: *VM, bytes: usize) void {
     if (!self.gc_enabled) return;
     self.gc_bytes_allocated += bytes;
     if (self.gc_bytes_allocated >= self.gc_threshold) self.gc_pending = true;
@@ -226,7 +290,7 @@ pub fn noteGCPressure(self: *VM, bytes: usize) void {
 pub fn maybeCollectGarbage(self: *VM) void {
     if (!self.gc_enabled or !self.gc_pending) return;
 
-    self.perf.gc_collections += 1;
+    // self.perf.gc_collections += 1;
     self.gc_bytes_allocated = 0;
     self.gc_pending = false;
     self.markRoots();
@@ -243,15 +307,11 @@ pub fn maybeCollectGarbage(self: *VM) void {
     self.gc_threshold = @max(32 * 1024, live_bytes * self.gc_pause_factor);
 }
 
-pub fn resetPerfCounters(self: *VM) void {
-    self.perf = .{};
-}
-
 pub fn deinit(self: *VM) void {
     self.clearProgramDebugInfo();
     self.clearPanicMessage();
     self.clearRuntimeMessage();
-    self.sched.deinit(self.runtime.alloc);
+    self.sched.deinit();
     self.constants.deinit(self.runtime.alloc);
     self.globals.deinit();
     self.const_globals.deinit();
@@ -371,10 +431,10 @@ pub fn swapFiber(self: *VM, next: Fiber) Fiber {
 }
 
 pub fn schedParkCurrentForSleepMS(self: *VM, ms: u64) !void {
-    try self.sched.parkCurrentForSleepMS(self.runtime.alloc, ms, self.schedNowMonotonicNs());
+    try self.sched.parkCurrentForSleepMS(ms, self.schedNowMonotonicNs());
 }
 
-fn schedNowMonotonicNs(self: *VM) u64 {
+pub inline fn schedNowMonotonicNs(self: *VM) u64 {
     const ts = std.Io.Clock.awake.now(self.runtime.io);
     return @as(u64, @intCast(ts.toNanoseconds()));
 }
@@ -386,8 +446,10 @@ fn schedSleepUntilNextTimer(self: *VM) void {
     }
 }
 
-fn runReadyFibers(self: *VM) !?EvalFailure {
+inline fn runReadyFibers(self: *VM) !?EvalFailure {
     while (self.sched.dequeueRunnable()) |fid| {
+        // dequeue is uncommon vs inner eval loop
+        @branchHint(.unlikely);
         self.sched.current_fiber = fid;
         if (self.currentFiber().state == .dead) continue;
         self.sched.setFiberState(fid, .running);
@@ -402,7 +464,10 @@ fn runReadyFibers(self: *VM) !?EvalFailure {
             // self.perf.instructions += 1;
             // if (self.debug.each_instr) std.debug.print("+ {}\n", .{instr});
             self.evalRegister(instr) catch |e| {
-                if (e == error.Parked) break;
+                if (e == error.Parked) {
+                    @branchHint(.unlikely);
+                    break;
+                }
                 // if (self.debug.trace) self.trace(instr);
                 // if (self.debug.dump) self.dumpStack();
                 return self.evalFailure(e);
@@ -416,7 +481,9 @@ fn runReadyFibers(self: *VM) !?EvalFailure {
         }
 
         if (self.currentFiber().state == .ready) {
-            try self.sched.enqueueRunnable(self.runtime.alloc, fid);
+            // only happens after unpark
+            @branchHint(.unlikely);
+            try @call(.always_inline, Scheduler.enqueueRunnable, .{ &self.sched, fid });
         }
     }
     return null;
@@ -429,7 +496,7 @@ pub fn pop(self: *VM) !Data {
     const fiber = self.currentFiber();
     if (fiber.slots.items.len == 0) return error.StackUnderflow;
     const ret = fiber.slots.pop() orelse unreachable;
-    if (self.debug.each_stack) self.printStack();
+    // if (self.debug.each_stack) self.printStack();
     return ret;
 }
 
@@ -470,68 +537,21 @@ pub inline fn writeRegisterUnsafe(self: *VM, slot: usize, value: Data) void {
 
 /// register read using a cached slots pointer (avoids currentFiber call)
 pub inline fn regRead(slots: []const Data, base: usize, reg: opcode.Register) Data {
-    const slot = base + reg;
-    if (slot >= slots.len) return revo.core_atoms.data(.missing);
-    return slots[slot];
+    if (builtin.mode != .ReleaseFast) {
+        const slot = base + reg;
+        if (slot >= slots.len) return revo.core_atoms.data(.missing);
+    }
+    return slots[base + reg];
+}
+
+pub inline fn regReadUnchecked(slots: []const Data, base: usize, reg: opcode.Register) Data {
+    return slots[base + reg];
 }
 
 /// register write using a cached slots pointer (avoids currentFiber call)
 /// caller must ensure slot < slots.len
 pub inline fn regWrite(slots: []Data, base: usize, reg: opcode.Register, value: Data) void {
     slots[base + reg] = value;
-}
-
-/// register write with bounds check + grow using ArrayList (no currentFiber call)
-/// slot is automatically grown if needed
-pub fn regWriteFiber(
-    slots: *std.ArrayList(Data),
-    alloc: std.mem.Allocator,
-    base: usize,
-    reg: opcode.Register,
-    value: Data,
-) !void {
-    const slot = base + reg;
-    if (slot >= slots.items.len) {
-        const old_len = slots.items.len;
-        try slots.resize(alloc, slot + 1);
-        @memset(slots.items[old_len..slot], revo.core_atoms.data(.missing));
-    }
-    slots.items[slot] = value;
-}
-
-/// copy register with bounds check + grow using ArrayList (no currentFiber call)
-inline fn regCopyFiber(
-    slots: *std.ArrayList(Data),
-    alloc: std.mem.Allocator,
-    base: usize,
-    dst: opcode.Register,
-    src: opcode.Register,
-) !void {
-    const dst_slot = base + dst;
-    const src_slot = base + src;
-    if (src_slot < slots.items.len) {
-        if (dst_slot >= slots.items.len) {
-            const old_len = slots.items.len;
-            try slots.resize(alloc, dst_slot + 1);
-            @memset(slots.items[old_len..dst_slot], revo.core_atoms.data(.missing));
-        }
-        slots.items[dst_slot] = slots.items[src_slot];
-    } else {
-        if (dst_slot >= slots.items.len) {
-            const old_len = slots.items.len;
-            try slots.resize(alloc, dst_slot + 1);
-            @memset(slots.items[old_len..dst_slot], revo.core_atoms.data(.missing));
-        }
-        slots.items[dst_slot] = revo.core_atoms.data(.missing);
-    }
-}
-
-/// avoid recomputing currentFrame() repeatedly
-/// callers should cache `base = frame.base`
-pub inline fn readRegisterFast(self: *VM, base: usize, reg: opcode.Register) Data {
-    const slot = base + reg;
-    if (slot >= self.currentFiber().slots.items.len) return revo.core_atoms.data(.missing);
-    return self.readRegisterUnsafe(slot);
 }
 
 /// avoid recomputing currentFrame() repeatedly
@@ -567,11 +587,11 @@ pub fn atomName(self: *VM, id: mem.AtomID) []const u8 {
 }
 
 pub fn dataAtom(self: *VM, name: []const u8) !Data {
-    if (self.atoms.get(name)) |id| return .{ .atom = id };
+    if (self.atoms.get(name)) |id| return Data.new.atom(id);
     const id = try self.strings.own(name);
     const owned = self.strings.getAssumeAlive(id);
     try self.atoms.put(owned, id);
-    return .{ .atom = id };
+    return Data.new.atom(id);
 }
 
 pub fn setGlobal(self: *VM, name: []const u8, val: Data) !void {
@@ -692,10 +712,10 @@ pub fn currentFrame(self: *VM) !*Frame {
     return &self.currentFiber().frames.items[self.currentFiber().frames.items.len - 1];
 }
 
-fn currentClosure(self: *VM) !?*root.functions.Closure {
+inline fn currentClosure(self: *VM) !?*root.functions.Closure {
     const frame = try self.currentFrame();
     const closure_id = frame.closure_id orelse return null;
-    const func = try self.functions.get(closure_id);
+    const func = try self.functionFast(closure_id);
     return switch (func.*) {
         .closure => |*closure| closure,
         .native, .c_function => null,
@@ -711,7 +731,7 @@ fn localIsConst(self: *VM, slot: root.functions.LocalSlot) !bool {
     return (proto.const_local_bits[idx] & (@as(u8, 1) << bit)) != 0;
 }
 
-fn captureUpvalue(self: *VM, slot_index: usize) !root.functions.UpvalueID {
+inline fn captureUpvalue(self: *VM, slot_index: usize) !root.functions.UpvalueID {
     const open = &self.currentFiber().open_upvalues;
     for (open.items, 0..) |entry, idx| {
         if (entry.slot_index == slot_index) return entry.id;
@@ -748,13 +768,13 @@ fn closeUpvalues(self: *VM, from_index: usize) !void {
     }
 }
 
-fn loadUpvalueData(self: *VM, upvalue_id: root.functions.UpvalueID) !Data {
+inline fn loadUpvalueData(self: *VM, upvalue_id: root.functions.UpvalueID) !Data {
     const upvalue = try self.functions.getUpvalue(upvalue_id);
     if (upvalue.open_index) |slot_index| return self.currentFiber().slots.items[slot_index];
     return upvalue.closed;
 }
 
-fn storeUpvalueData(self: *VM, upvalue_id: root.functions.UpvalueID, value: Data) !void {
+inline fn storeUpvalueData(self: *VM, upvalue_id: root.functions.UpvalueID, value: Data) !void {
     const upvalue = try self.functions.getUpvalue(upvalue_id);
     if (upvalue.open_index) |slot_index| {
         self.currentFiber().slots.items[slot_index] = value;
@@ -815,52 +835,6 @@ pub fn run(self: *VM) !void {
         .ok => {},
         .err => return error.RuntimeFailure,
     };
-}
-
-pub fn runReport(self: *VM) !EvalResult {
-    self.clearPanicMessage();
-    self.clearRuntimeMessage();
-    if (self.mainFiber().frames.items.len == 0) {
-        if (self.mainFiber().debug_info_id == null) self.mainFiber().debug_info_id = self.pending_debug_info_id;
-        try self.mainFiber().frames.append(self.runtime.alloc, .{
-            .return_addr = @intCast(self.mainFiber().program.len),
-            .base = 0,
-        });
-    }
-    self.sched.setFiberState(0, .ready);
-    try self.sched.enqueueRunnable(self.runtime.alloc, 0);
-
-    while (true) {
-        if (try self.runReadyFibers()) |failure| {
-            return .{ .err = failure };
-        }
-        try self.sched.wakeDueSleepers(self.runtime.alloc, self.schedNowMonotonicNs());
-        const has_sleepers = self.sched.sleepers.items.len > 0;
-        const has_io_waiters = self.sched.io_waiters.items.len > 0;
-        const has_waiting = self.sched.waiting_cnt > 0;
-
-        if (!has_sleepers and !has_waiting) break;
-
-        if (has_io_waiters or (revo.has_async_backend and has_waiting)) {
-            const timeout_ms: i32 = if (self.sched.nextSleepDelayNs(self.schedNowMonotonicNs())) |delay_ns|
-                @as(i32, @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(i32)))))
-            else
-                -1;
-            // call configured io poll helper to wait for fd events
-            const io_poll = self.sched.io_poll orelse {
-                try self.setRuntimeMessage("io poll is not configured");
-                return .{ .err = self.evalFailure(error.Panic) };
-            };
-            _ = io_poll(self, timeout_ms) catch return .{ .err = self.evalFailure(error.Panic) };
-            try self.sched.wakeDueSleepers(self.runtime.alloc, self.schedNowMonotonicNs());
-            continue;
-        }
-        if (has_sleepers) {
-            self.schedSleepUntilNextTimer();
-            try self.sched.wakeDueSleepers(self.runtime.alloc, self.schedNowMonotonicNs());
-        }
-    }
-    return .ok;
 }
 
 fn callFunctionParts(self: *VM, callee: Data, maybe_first: ?Data, args: []const Data) EvalError!Data {
@@ -1005,25 +979,27 @@ pub fn evalFailure(self: *VM, err: EvalError) EvalFailure {
 pub fn getMetamethodByAtom(self: *VM, val: Data, atom: mem.AtomID) !?Data {
     const mt_id = try self.getMetatableId(val) orelse return null;
     const mt = try self.tables.get(mt_id);
-    return mt.getRaw(.{ .atom = atom });
+    return mt.getRaw(Data.new.atom(atom));
 }
 
 pub fn getMetatableId(self: *VM, val: Data) !?mem.TableID {
-    return switch (val) {
-        .table => |id| blk: {
+    return switch (val.tag()) {
+        .table => blk: {
+            const id = val.asTable().?;
             if (self.tables.get(id)) |value| {
                 if (value.metatable) |mt_id| break :blk mt_id;
             } else |_| {}
-            break :blk self.metatables[@intFromEnum(std.meta.Tag(Data).table)];
+            break :blk self.metatables[@intFromEnum(mem.Type.table)];
         },
-        .tuple => |id| blk: {
+        .tuple => blk: {
+            const id = val.asTuple().?;
             if (self.tuples.get(id)) |value| {
                 if (value.metatable) |mt_id| break :blk mt_id;
             } else |_| {}
-            break :blk self.metatables[@intFromEnum(std.meta.Tag(Data).tuple)];
+            break :blk self.metatables[@intFromEnum(mem.Type.tuple)];
         },
-        .number => self.metatables[@intFromEnum(std.meta.Tag(Data).number)],
-        else => self.metatables[@intFromEnum(std.meta.activeTag(val))],
+        .number => self.metatables[@intFromEnum(mem.Type.number)],
+        else => self.metatables[@intFromEnum(val.tag())],
     };
 }
 
@@ -1052,8 +1028,194 @@ fn writeAbsoluteSlot(self: *VM, slot: usize, value: Data) !void {
     fiber.slots.items[slot] = value;
 }
 
+inline fn tableFast(self: *VM, id: mem.TableID) !*root.table.Table {
+    if (builtin.mode == .ReleaseFast) {
+        std.debug.assert(id < self.tables.tables.items.len);
+        std.debug.assert(self.tables.tables.items[id] != null);
+        return &self.tables.tables.items[id].?;
+    }
+    return self.tables.get(id);
+}
+
+inline fn functionFast(self: *VM, id: mem.FunctionID) !*root.functions.Function {
+    if (builtin.mode == .ReleaseFast) {
+        std.debug.assert(id < self.functions.functions.items.len);
+        std.debug.assert(self.functions.functions.items[id] != null);
+        return &self.functions.functions.items[id].?;
+    }
+    return self.functions.get(id);
+}
+
+inline fn callClosureFast(self: *VM, callee: Data, instr: Instruction, base: usize, callee_slot: usize, argc: usize) EvalError!void {
+    const fiber = self.currentFiber();
+    const closure_id = callee.asFunction().?;
+    const func = try self.functionFast(closure_id);
+
+    switch (func.*) {
+        .closure => |closure| {
+            if (closure.arity != root.functions.VARIADIC and closure.arity != argc) {
+                @branchHint(.unlikely);
+                try self.setRuntimeMessageFmt("function `{s}` expected {d} args, got {d}", .{ closure.name, closure.arity, argc });
+                return error.WrongArity;
+            }
+
+            // Tail call optimization check
+            if (self.host_call_depth == 0 and
+                fiber.pc < fiber.program.len and
+                fiber.program[fiber.pc].op == .ret)
+            {
+                @branchHint(.unlikely);
+                const tail_frame = try self.currentFrame();
+                if (tail_frame.closure_id != null and tail_frame.base > 0) {
+                    const caller_fn_slot = tail_frame.base - 1;
+                    const moved_len = argc + 1;
+                    try self.closeUpvalues(tail_frame.base);
+                    if (callee_slot != caller_fn_slot) {
+                        std.mem.copyForwards(
+                            Data,
+                            fiber.slots.items[caller_fn_slot .. caller_fn_slot + moved_len],
+                            fiber.slots.items[callee_slot .. callee_slot + moved_len],
+                        );
+                    }
+                    tail_frame.base = caller_fn_slot + 1;
+                    tail_frame.call_site_pc = fiber.pc - 1;
+                    tail_frame.closure_id = closure_id;
+                    tail_frame.register_count = closure.register_count;
+                    if (tail_frame.base + closure.register_count > fiber.slots.items.len) {
+                        try fiber.slots.resize(self.runtime.alloc, tail_frame.base + closure.register_count);
+                    }
+                    if (argc < closure.register_count) {
+                        @memset(fiber.slots.items[tail_frame.base + argc .. tail_frame.base + closure.register_count], revo.core_atoms.data(.missing));
+                    }
+                    fiber.pc = closure.addr;
+                    return;
+                }
+            }
+
+            // Normal call path
+            if (fiber.frames.items.len >= 256) return error.StackOverflow;
+
+            const new_base = callee_slot + 1;
+            if (new_base + closure.register_count > fiber.slots.items.len) {
+                try fiber.slots.resize(self.runtime.alloc, new_base + closure.register_count);
+            }
+            if (argc < closure.register_count) {
+                @memset(fiber.slots.items[new_base + argc .. new_base + closure.register_count], revo.core_atoms.data(.missing));
+            }
+            try fiber.frames.append(self.runtime.alloc, .{
+                .return_addr = fiber.pc,
+                .call_site_pc = fiber.pc - 1,
+                .base = new_base,
+                .result_register = instr.c,
+                .register_count = closure.register_count,
+                .closure_id = closure_id,
+            });
+            fiber.pc = closure.addr;
+        },
+        else => {
+            // Fallback to full callRegister for non-closure functions
+            return self.callNonClosureFunction(func.*, instr, base, callee_slot, argc);
+        },
+    }
+}
+
+fn callNonClosureFunction(self: *VM, func: root.functions.Function, instr: Instruction, base: usize, callee_slot: usize, argc: usize) EvalError!void {
+    const fiber = self.currentFiber();
+
+    switch (func) {
+        .c_function => |f| {
+            const args_start = callee_slot + 1;
+            const args_end = args_start + argc;
+            try self.ensureAbsoluteSlot(args_end);
+            const args = fiber.slots.items[args_start..args_end];
+
+            var c_args = try self.runtime.alloc.alloc(revo.ffi.CRevoData, args.len);
+            defer self.runtime.alloc.free(c_args);
+
+            var string_copies = try std.ArrayList([:0]u8).initCapacity(self.runtime.alloc, argc);
+            defer {
+                for (string_copies.items) |copy| self.runtime.alloc.free(copy);
+                string_copies.deinit(self.runtime.alloc);
+            }
+
+            for (args, 0..) |arg, i|
+                c_args[i] = try revo.ffi.CRevoData.ofData(arg, self.runtime.alloc, &self.strings, &string_copies);
+
+            var c_result: revo.ffi.CRevoData = .{ .tag = 0, .value = 0 };
+            f.fn_ptr(@ptrCast(self), argc, c_args.ptr, &c_result);
+
+            try self.writeRegisterFast(base, instr.c, try c_result.toData(self));
+        },
+        .native => |f| {
+            const args_start = callee_slot + 1;
+            const args_end = args_start + argc;
+            try self.ensureAbsoluteSlot(args_end);
+            const args = fiber.slots.items[args_start..args_end];
+
+            if ((!f.variadic and argc != f.arity) or (f.variadic and argc < f.arity)) {
+                var params = try std.ArrayList(u8).initCapacity(self.runtime.alloc, 8);
+                for (f.param_types, 0..) |t, i| {
+                    if (i > 0) try params.appendSlice(self.runtime.alloc, ", ");
+                    try params.appendSlice(self.runtime.alloc, @tagName(t));
+                }
+                const params_str = try params.toOwnedSlice(self.runtime.alloc);
+                defer self.runtime.alloc.free(params_str);
+                try self.setRuntimeMessageFmt("function `{s}` expected {d} args({s}), got {d}", .{ func.name(), f.arity, params_str, argc });
+                return error.WrongArity;
+            }
+
+            for (f.param_types, 0..) |spec, i| {
+                if (!spec.matches(args[i])) {
+                    try self.setRuntimeMessageFmt("argument {d}: expected {s}, got {s}", .{ i, @tagName(spec), revo.std_lib.dataToString(args[i]) });
+                    return error.TypeError;
+                }
+            }
+
+            const result = f.func(args, self) catch |err| {
+                if (self.runtime_message == null) {
+                    try self.setRuntimeMessage(@errorName(err));
+                }
+                return error.Panic;
+            };
+            switch (result) {
+                .ok => |data| try self.writeRegisterFast(base, instr.c, data),
+                .err => |err| {
+                    switch (err) {
+                        .wrong_arity => |info| {
+                            try self.setRuntimeMessageFmt(
+                                "function `{s}` expected {d} args, got {d}",
+                                .{ func.name(), info.expected, info.got },
+                            );
+                            return error.WrongArity;
+                        },
+                        .type_error => |info| {
+                            if (info.arg) |arg| {
+                                try self.setRuntimeMessageFmt("argument {d}: expected {s}, got {s}", .{ arg, info.expected, info.got });
+                            } else {
+                                try self.setRuntimeMessageFmt("expected {s}, got {s}", .{ info.expected, info.got });
+                            }
+                            return error.TypeError;
+                        },
+                        .native_error => |native_err| return native_err,
+                        .parked => {
+                            self.currentFiber().parked_result_slot = try self.absoluteRegisterIndex(instr.c);
+                            try self.writeRegisterFast(base, instr.c, revo.core_atoms.data(.missing));
+                            return error.Parked;
+                        },
+                        .other => |msg| {
+                            try self.setRuntimeMessage(msg);
+                            return error.Panic;
+                        },
+                    }
+                },
+            }
+        },
+        .closure => unreachable,
+    }
+}
+
 fn callRegister(self: *VM, instr: Instruction) EvalError!void {
-    self.perf.call_ops += 1;
+    // self.perf.call_ops += 1;
     const fiber = self.currentFiber();
     const frame = try self.currentFrame();
     const base = frame.base;
@@ -1064,11 +1226,18 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
     else
         revo.core_atoms.data(.missing);
 
+    // Fast path for closures (most common case in recursion)
+    if (callee.tag() == .function) {
+        @branchHint(.likely);
+        return self.callClosureFast(callee, instr, base, callee_slot, argc);
+    }
+
     // try __call mm on non-fn callees
-    if (callee == .table) {
+    if (callee.asTable()) |table_id| {
+        @branchHint(.unlikely);
         // branch check explicit __call mm
         if (try self.getMetamethodByAtom(callee, revo.core_atoms.atom_id(.__call))) |mm| {
-            self.perf.metamethod_calls += 1;
+            // self.perf.metamethod_calls += 1;
             const args_start = callee_slot + 1;
             const args_end = args_start + argc;
             try self.ensureAbsoluteSlot(args_end);
@@ -1079,9 +1248,8 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
         }
 
         // check if this is a struct desc (has __fields key)
-        const table_id = callee.table;
         const table = try self.tables.get(table_id);
-        if (table.getRaw(.{ .atom = revo.core_atoms.atom_id(.__fields) })) |_| {
+        if (table.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields)))) |_| {
             // if so call @struct_new
             if (self.globals.get(revo.core_atoms.atom_id(.@"@struct_new"))) |struct_new_fn| {
                 const args_start = callee_slot + 1;
@@ -1096,15 +1264,14 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
     }
 
     // callee must be a function
-    const func = switch (callee) {
-        .function => |id| try self.functions.get(id),
-        else => |other| {
-            const got = switch (other) {
+    const func = switch (callee.tag()) {
+        .function => try self.functions.get(callee.asFunction().?),
+        else => {
+            const got = switch (callee.tag()) {
                 .number => "number",
-                else => @tagName(other),
+                else => @tagName(callee.tag()),
             };
             try self.setRuntimeMessageFmt("expected function, got {s}", .{got});
-            // std.debug.print("val is {}", .{other});
             return error.NotAFunction;
         },
     };
@@ -1147,7 +1314,7 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
                 }
                 const params_str = try params.toOwnedSlice(self.runtime.alloc);
                 defer self.runtime.alloc.free(params_str);
-                try self.setRuntimeMessageFmt("function expected {d} args({s}), got {d}", .{ f.arity, params_str, argc });
+                try self.setRuntimeMessageFmt("function `{s}` expected {d} args({s}), got {d}", .{ func.name(), f.arity, params_str, argc });
                 return error.WrongArity;
             }
 
@@ -1170,10 +1337,9 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
                 .err => |err| {
                     switch (err) {
                         .wrong_arity => |info| {
-                            const name = func.name();
                             try self.setRuntimeMessageFmt(
-                                "function {s} expected {d} args, got {d}",
-                                .{ name, info.expected, info.got },
+                                "function `{s}` expected {d} args, got {d}",
+                                .{ func.name(), info.expected, info.got },
                             );
                             return error.WrongArity;
                         },
@@ -1199,62 +1365,21 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
                 },
             }
         },
-        .closure => |closure| {
-            const proto = try self.functions.getPrototype(closure.prototype);
-            if (closure.arity != root.functions.VARIADIC and closure.arity != argc) {
-                try self.setRuntimeMessageFmt("function `{s}` expected {d} args, got {d}", .{ proto.name, closure.arity, argc });
-                return error.WrongArity;
-            }
-            if (self.host_call_depth == 0 and
-                fiber.pc < fiber.program.len and
-                fiber.program[fiber.pc].op == .ret)
-            {
-                const tail_frame = try self.currentFrame();
-                if (tail_frame.closure_id != null and tail_frame.base > 0) {
-                    const caller_fn_slot = tail_frame.base - 1;
-                    const moved_len = argc + 1;
-                    try self.closeUpvalues(tail_frame.base);
-                    if (callee_slot != caller_fn_slot) {
-                        std.mem.copyForwards(
-                            Data,
-                            fiber.slots.items[caller_fn_slot .. caller_fn_slot + moved_len],
-                            fiber.slots.items[callee_slot .. callee_slot + moved_len],
-                        );
-                    }
-                    tail_frame.base = caller_fn_slot + 1;
-                    tail_frame.call_site_pc = fiber.pc - 1;
-                    tail_frame.closure_id = callee.function;
-                    tail_frame.register_count = proto.register_count;
-                    if (proto.register_count > 0) {
-                        try self.ensureAbsoluteSlot(tail_frame.base + proto.register_count - 1);
-                        for (argc..proto.register_count) |idx| {
-                            fiber.slots.items[tail_frame.base + idx] = revo.core_atoms.data(.missing);
-                        }
-                    }
-                    fiber.pc = proto.addr;
-                    return;
-                }
-            }
-            if (fiber.frames.items.len >= 256) return error.StackOverflow;
-
-            const new_base = callee_slot + 1;
-            if (proto.register_count > 0) {
-                try self.ensureAbsoluteSlot(new_base + proto.register_count - 1);
-                for (argc..proto.register_count) |idx| {
-                    fiber.slots.items[new_base + idx] = revo.core_atoms.data(.missing);
-                }
-            }
-            try fiber.frames.append(self.runtime.alloc, .{
-                .return_addr = fiber.pc,
-                .call_site_pc = fiber.pc - 1,
-                .base = new_base,
-                .result_register = instr.c,
-                .register_count = proto.register_count,
-                .closure_id = callee.function,
-            });
-            fiber.pc = proto.addr;
-        },
+        .closure => unreachable,
     }
+}
+
+fn callClosureRegister(self: *VM, instr: Instruction) EvalError!void {
+    const fiber = self.currentFiber();
+    const frame = try self.currentFrame();
+    const base = frame.base;
+    const callee_slot = base + instr.a;
+    const argc: usize = instr.b;
+    const callee = if (callee_slot < fiber.slots.items.len)
+        fiber.slots.items[callee_slot]
+    else
+        revo.core_atoms.data(.missing);
+    return self.callClosureFast(callee, instr, base, callee_slot, argc);
 }
 
 fn callFieldRegister(self: *VM, instr: Instruction) EvalError!void {
@@ -1265,10 +1390,7 @@ fn callFieldRegister(self: *VM, instr: Instruction) EvalError!void {
     const object = try self.readRegister(instr.a);
     const key = try self.readRegister(instr.a + 1);
     const lookup_result = (try self.resolveField(object, key)) orelse {
-        const key_name = switch (key) {
-            .atom => |atom| self.atomName(atom),
-            else => revo.std_lib.dataToString(key),
-        };
+        const key_name = if (key.asAtom()) |atom| self.atomName(atom) else revo.std_lib.dataToString(key);
         try self.setRuntimeMessageFmt("field `{s}` does not exist on {s}", .{
             key_name,
             revo.std_lib.typeof(object),
@@ -1298,41 +1420,43 @@ fn callFieldRegister(self: *VM, instr: Instruction) EvalError!void {
 
 fn returnRegister(self: *VM, instr: Instruction) EvalError!void {
     const fiber = self.currentFiber();
-    const result = try self.readRegister(instr.a);
+    const result = regRead(fiber.slots.items, fiber.frames.items[fiber.frames.items.len - 1].base, instr.a);
     const frame = fiber.frames.pop() orelse unreachable;
-    try self.closeUpvalues(frame.base);
+    if (fiber.open_upvalues.items.len > 0) try self.closeUpvalues(frame.base);
     fiber.pc = frame.return_addr;
 
     // check if returning to the exit frame (only one frame left after pop)
     const returning_to_exit = self.sched.current_fiber == 0 and fiber.frames.items.len == 1;
 
     // toplevel :err tuple should panic
-    if (returning_to_exit and result == .tuple) {
-        const tuple = try self.tuples.get(result.tuple);
-        if (tuple.items.len >= 1) {
-            const tag = tuple.items[0];
-            if (tag == .atom and tag.atom == revo.core_atoms.atom_id(.err)) {
-                self.panic_span = if (self.currentDebugInfo()) |debug|
-                    self.spanAtPc(debug, if (fiber.pc > 0) fiber.pc - 1 else 0)
-                else
-                    null;
-                if (tuple.items.len >= 2) {
-                    var buf = std.Io.Writer.Allocating.init(self.runtime.alloc);
-                    defer buf.deinit();
-                    tuple.items[1].write(&buf.writer, self, .display) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.Panic,
-                    };
-                    self.setPanicMessageOwned(try buf.toOwnedSlice());
+    if (returning_to_exit) {
+        if (result.asTuple()) |result_tid| {
+            const tuple = try self.tuples.get(result_tid);
+            if (tuple.items.len >= 1) {
+                const tag = tuple.items[0];
+                if (tag.asAtom() == revo.core_atoms.atom_id(.err)) {
+                    self.panic_span = if (self.currentDebugInfo()) |debug|
+                        self.spanAtPc(debug, if (fiber.pc > 0) fiber.pc - 1 else 0)
+                    else
+                        null;
+                    if (tuple.items.len >= 2) {
+                        var buf = std.Io.Writer.Allocating.init(self.runtime.alloc);
+                        defer buf.deinit();
+                        tuple.items[1].write(&buf.writer, self, .display) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            else => return error.Panic,
+                        };
+                        self.setPanicMessageOwned(try buf.toOwnedSlice());
+                    }
+                    return error.Panic;
                 }
-                return error.Panic;
             }
         }
     }
 
     if (fiber.frames.items.len == 0 or fiber.pc >= fiber.program.len) {
         const finished_id = self.sched.current_fiber;
-        try self.sched.finishFiber(self.runtime.alloc, finished_id, result);
+        try self.sched.finishFiber(finished_id, result);
         if (finished_id == 0) {
             fiber.slots.items.len = 0;
             try self.push(result);
@@ -1342,22 +1466,20 @@ fn returnRegister(self: *VM, instr: Instruction) EvalError!void {
 
     const parent = try self.currentFrame();
     const result_slot = parent.base + frame.result_register;
-    fiber.slots.items.len = result_slot + 1;
-    try self.writeAbsoluteSlot(result_slot, result);
+    const parent_end = parent.base + parent.register_count;
+    fiber.slots.items.len = @max(result_slot + 1, parent_end);
+    fiber.slots.items[result_slot] = result;
 }
 
-fn spawnRegister(self: *VM, instr: Instruction) EvalError!void {
+inline fn spawnRegister(self: *VM, instr: Instruction) EvalError!void {
     const argc: usize = instr.b;
     const fiber = self.currentFiber();
     const callee = try self.readRegister(instr.a);
-    const closure_id = switch (callee) {
-        .function => |id| id,
-        else => {
-            try self.setRuntimeMessage("spawn expects function!");
-            return error.NotAFunction;
-        },
+    const closure_id = callee.asFunction() orelse {
+        try self.setRuntimeMessage("spawn expects function!");
+        return error.NotAFunction;
     };
-    const func = try self.functions.get(closure_id);
+    const func = try self.functionFast(closure_id);
     const closure = switch (func.*) {
         .closure => |f| f,
         else => {
@@ -1365,9 +1487,9 @@ fn spawnRegister(self: *VM, instr: Instruction) EvalError!void {
             return error.NotAFunction;
         },
     };
-    const proto = try self.functions.getPrototype(closure.prototype);
     if (closure.arity != root.functions.VARIADIC and closure.arity != argc) {
-        try self.setRuntimeMessageFmt("fiber closure `{s}` expected {d} args, got {d}", .{ proto.name, closure.arity, argc });
+        @branchHint(.unlikely);
+        try self.setRuntimeMessageFmt("fiber closure `{s}` expected {d} args, got {d}", .{ closure.name, closure.arity, argc });
         return error.WrongArity;
     }
 
@@ -1376,11 +1498,8 @@ fn spawnRegister(self: *VM, instr: Instruction) EvalError!void {
     errdefer child.deinit(self.runtime.alloc);
     child.debug_info_id = fiber.debug_info_id;
     child.state = .ready;
-    const child_slot_count: usize = @max(@as(usize, proto.register_count), argc);
-    if (child_slot_count > 0) {
-        try child.slots.resize(self.runtime.alloc, child_slot_count);
-        @memset(child.slots.items, revo.core_atoms.data(.missing));
-    }
+    try child.slots.resize(self.runtime.alloc, closure.register_count);
+    @memset(child.slots.items, revo.core_atoms.data(.missing));
     for (0..argc) |idx| {
         // this is safe
         const src_reg = instr.a + 1 + @as(opcode.Register, @intCast(idx));
@@ -1396,43 +1515,41 @@ fn spawnRegister(self: *VM, instr: Instruction) EvalError!void {
         .return_addr = @intCast(child.program.len),
         .base = 0,
         .result_register = 0,
-        .register_count = proto.register_count,
+        .register_count = closure.register_count,
         .closure_id = child_closure_id,
     });
-    child.pc = proto.addr;
+    child.pc = closure.addr;
 
     try self.sched.fibers.append(self.runtime.alloc, child);
-    try self.sched.enqueueRunnable(self.runtime.alloc, child_id);
+    try @call(.always_inline, Scheduler.enqueueRunnable, .{ &self.sched, child_id });
     try self.writeRegister(instr.c, Data.new.num(@as(i64, @intCast(child_id))));
 }
 
-fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
+inline fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
     const fiber = self.currentFiber();
     const base = fiber.frames.items[fiber.frames.items.len - 1].base;
     const slots = fiber.slots.items;
     const alloc = self.runtime.alloc;
     switch (instr.op) {
-        .move => try regCopyFiber(&fiber.slots, alloc, base, instr.a, instr.b),
-        .load_const => try regWriteFiber(&fiber.slots, alloc, base, instr.a, try self.getConstant(instr.bx)),
-        .load_nil => try regWriteFiber(&fiber.slots, alloc, base, instr.a, revo.core_atoms.data(.nil)),
-        .load_small_int => try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(@as(i64, @intCast(instr.bx)))),
+        .move => {
+            const val = regRead(slots, base, instr.b);
+            regWrite(slots, base, instr.a, val);
+        },
+        .load_const => regWrite(slots, base, instr.a, try self.getConstant(instr.bx)),
+        .load_nil => regWrite(slots, base, instr.a, revo.core_atoms.data(.nil)),
+        .load_small_int => regWrite(slots, base, instr.a, Data.new.num(@as(i64, @intCast(instr.bx)))),
         .add => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
-            const lnum = lhs.as_number() catch null;
-            const rnum = rhs.as_number() catch null;
-            if (lnum != null and rnum != null) {
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lnum.? + rnum.?));
+            if (lhs.asNum()) |ln| if (rhs.asNum()) |rn| {
+                regWrite(slots, base, instr.a, Data.new.num(ln + rn));
                 return;
-            }
-            if (lhs == .string and rhs == .string) {
-                const lstr = self.stringValue(lhs.string);
-                const rstr = self.stringValue(rhs.string);
-                const concat = try std.mem.concat(alloc, u8, &.{ lstr, rstr });
-                const result_str = try self.adoptDataStringNoDedup(concat);
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, result_str);
+            };
+            if (lhs.asStr()) |ls| if (rhs.asStr()) |rs| {
+                const result_str = try self.adoptDataStringNoDedup(try std.mem.concat(alloc, u8, &.{ self.stringValue(ls), self.stringValue(rs) }));
+                regWrite(slots, base, instr.a, result_str);
                 return;
-            }
+            };
             try self.setRuntimeMessageFmt("cannot add {s} and {s}", .{ revo.std_lib.dataToString(lhs), revo.std_lib.dataToString(rhs) });
             return error.IncompatibleTypes;
         },
@@ -1440,12 +1557,10 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
         .sub => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
-            const lnum = lhs.as_number() catch null;
-            const rnum = rhs.as_number() catch null;
-            if (lnum != null and rnum != null) {
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lnum.? - rnum.?));
+            if (lhs.asNum()) |ln| if (rhs.asNum()) |rn| {
+                regWrite(slots, base, instr.a, Data.new.num(ln - rn));
                 return;
-            }
+            };
             try self.setRuntimeMessageFmt("cannot subtract {s} from {s}", .{ revo.std_lib.dataToString(rhs), revo.std_lib.dataToString(lhs) });
             return error.IncompatibleTypes;
         },
@@ -1453,36 +1568,28 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
         .mul => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
-            const lnum = lhs.as_number() catch null;
-            const rnum = rhs.as_number() catch null;
-            if (lnum != null and rnum != null) {
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lnum.? * rnum.?));
+            if (lhs.asNum()) |ln| if (rhs.asNum()) |rn| {
+                regWrite(slots, base, instr.a, Data.new.num(ln * rn));
                 return;
-            }
-            if (lhs == .string and rnum != null) {
-                const str = self.stringValue(lhs.string);
-                const count: usize = @intCast(std.math.clamp(@as(i64, @intFromFloat(rnum.?)), 0, std.math.maxInt(i32)));
+            };
+            if (lhs.asStr()) |ls| if (rhs.asNum()) |rn| {
+                const str = self.stringValue(ls);
+                const count: usize = @intCast(std.math.clamp(@as(i64, @intFromFloat(rn)), 0, std.math.maxInt(i32)));
                 _ = std.math.mul(usize, str.len, count) catch return error.OutOfMemory;
                 const result = try alloc.alloc(u8, str.len * count);
-                for (0..count) |i| {
-                    @memcpy(result[i * str.len ..][0..str.len], str);
-                }
-                const result_str = try self.adoptDataStringNoDedup(result);
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, result_str);
+                for (0..count) |i| @memcpy(result[i * str.len ..][0..str.len], str);
+                regWrite(slots, base, instr.a, try self.adoptDataStringNoDedup(result));
                 return;
-            }
-            if (rhs == .string and lnum != null) {
-                const str = self.stringValue(rhs.string);
-                const count: usize = @intCast(std.math.clamp(@as(i64, @intFromFloat(lnum.?)), 0, std.math.maxInt(i32)));
+            };
+            if (rhs.asStr()) |rs| if (lhs.asNum()) |ln| {
+                const str = self.stringValue(rs);
+                const count: usize = @intCast(std.math.clamp(@as(i64, @intFromFloat(ln)), 0, std.math.maxInt(i32)));
                 _ = std.math.mul(usize, str.len, count) catch return error.OutOfMemory;
                 const result = try alloc.alloc(u8, str.len * count);
-                for (0..count) |i| {
-                    @memcpy(result[i * str.len ..][0..str.len], str);
-                }
-                const result_str = try self.adoptDataStringNoDedup(result);
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, result_str);
+                for (0..count) |i| @memcpy(result[i * str.len ..][0..str.len], str);
+                regWrite(slots, base, instr.a, try self.adoptDataStringNoDedup(result));
                 return;
-            }
+            };
             try self.setRuntimeMessageFmt("cannot multiply {s} and {s}", .{ revo.std_lib.dataToString(lhs), revo.std_lib.dataToString(rhs) });
             return error.IncompatibleTypes;
         },
@@ -1490,14 +1597,11 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
         .div => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
-            const lnum = lhs.as_number() catch null;
-            const rnum = rhs.as_number() catch null;
-            if (lnum != null and rnum != null) {
-                const rv = rnum.?;
-                if (rv == 0) return error.DivisionByZero;
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lnum.? / rv));
+            if (lhs.asNum()) |ln| if (rhs.asNum()) |rn| {
+                if (rn == 0) return error.DivisionByZero;
+                regWrite(slots, base, instr.a, Data.new.num(ln / rn));
                 return;
-            }
+            };
             try self.setRuntimeMessageFmt("cannot divide {s} by {s}", .{ revo.std_lib.dataToString(lhs), revo.std_lib.dataToString(rhs) });
             return error.IncompatibleTypes;
         },
@@ -1505,14 +1609,11 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
         .mod => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
-            const lnum = lhs.as_number() catch null;
-            const rnum = rhs.as_number() catch null;
-            if (lnum != null and rnum != null) {
-                const rv = rnum.?;
-                if (rv == 0) return error.DivisionByZero;
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(@mod(lnum.?, rv)));
+            if (lhs.asNum()) |ln| if (rhs.asNum()) |rn| {
+                if (rn == 0) return error.DivisionByZero;
+                regWrite(slots, base, instr.a, Data.new.num(@mod(ln, rn)));
                 return;
-            }
+            };
             try self.setRuntimeMessageFmt("cannot mod {s} by {s}", .{ revo.std_lib.dataToString(lhs), revo.std_lib.dataToString(rhs) });
             return error.IncompatibleTypes;
         },
@@ -1521,19 +1622,19 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            const li = @as(i64, @intFromFloat(lhs.number));
-            const ri = @as(i64, @intFromFloat(rhs.number));
+            const li = @as(i64, @intFromFloat(@as(f64, @bitCast(lhs.bits))));
+            const ri = @as(i64, @intFromFloat(@as(f64, @bitCast(rhs.bits))));
             if (ri == 0) return error.DivisionByZero;
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(@as(f64, @floatFromInt(@mod(li, ri)))));
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @floatFromInt(@mod(li, ri)))));
         },
 
         .negate => {
             const v = regRead(slots, base, instr.b);
-            if (v == .number) {
-                try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(-v.number));
+            if (v.asNum()) |n| {
+                regWrite(slots, base, instr.a, Data.new.num(-n));
                 return;
             }
             try self.setRuntimeMessageFmt("cannot negate {s}", .{revo.std_lib.dataToString(v)});
@@ -1542,137 +1643,127 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
 
         .negate_int => {
             const v = regRead(slots, base, instr.b);
-            if (self.debug_assert_types) std.debug.assert(v == .number);
-            const v_int = @as(i64, @intFromFloat(v.number));
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(@as(f64, @floatFromInt(-v_int))));
+            if (self.debug_assert_types) std.debug.assert(v.isNumber());
+            const v_int = @as(i64, @intFromFloat(@as(f64, @bitCast(v.bits))));
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @floatFromInt(-v_int))));
         },
 
         .negate_float => {
             const v = regRead(slots, base, instr.b);
-            if (self.debug_assert_types) std.debug.assert(v == .number);
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(-v.number));
+            if (self.debug_assert_types) std.debug.assert(v.isNumber());
+            regWrite(slots, base, instr.a, Data.new.num(-@as(f64, @bitCast(v.bits))));
         },
 
-        // specialized arith opcodes for typed int/float (no tag checks)
+        // specialized arith opcodes for typed int/float (direct @bitCast, no tag check)
         .add_int => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lhs.number + rhs.number));
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) + @as(f64, @bitCast(rhs.bits))));
         },
 
         .sub_int => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lhs.number - rhs.number));
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) - @as(f64, @bitCast(rhs.bits))));
         },
 
         .mul_int => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lhs.number * rhs.number));
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) * @as(f64, @bitCast(rhs.bits))));
         },
 
         .div_int => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            if (rhs.number == 0) return error.DivisionByZero;
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(@divTrunc(@as(i64, @intFromFloat(lhs.number)), @as(i64, @intFromFloat(rhs.number)))));
+            const rv = @as(f64, @bitCast(rhs.bits));
+            if (rv == 0) return error.DivisionByZero;
+            regWrite(slots, base, instr.a, Data.new.num(@divTrunc(@as(i64, @intFromFloat(@as(f64, @bitCast(lhs.bits)))), @as(i64, @intFromFloat(rv)))));
         },
 
         .add_float => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lhs.number + rhs.number));
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) + @as(f64, @bitCast(rhs.bits))));
         },
 
         .sub_float => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lhs.number - rhs.number));
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) - @as(f64, @bitCast(rhs.bits))));
         },
 
         .mul_float => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lhs.number * rhs.number));
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) * @as(f64, @bitCast(rhs.bits))));
         },
 
         .div_float => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
             if (self.debug_assert_types) {
-                std.debug.assert(lhs == .number);
-                std.debug.assert(rhs == .number);
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
             }
-            if (rhs.number == 0) return error.DivisionByZero;
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(lhs.number / rhs.number));
+            if (@as(f64, @bitCast(rhs.bits)) == 0) return error.DivisionByZero;
+            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) / @as(f64, @bitCast(rhs.bits))));
         },
 
-        inline .eq, .neq, .lt, .gt, .lte, .gte => |op| try compare_impl.evalCached(slots, base, self, instr, op),
+        inline .eq, .neq, .lt, .gt, .lte, .gte => |op| try compare_impl.evalCachedFast(slots, base, self, instr, op),
 
         // specialized comparison opcodes for int (no metamethods, no type conversion)
         inline .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int => |op| {
             const lhs_val = regRead(slots, base, instr.b);
             const rhs_val = regRead(slots, base, instr.c);
-            if (self.debug_assert_types) {
-                std.debug.assert(lhs_val == .number);
-                std.debug.assert(rhs_val == .number);
-            }
-            const lhs = lhs_val.as_number() catch unreachable;
-            const rhs = rhs_val.as_number() catch unreachable;
-            const lhs_int = @as(i64, @intFromFloat(lhs));
-            const rhs_int = @as(i64, @intFromFloat(rhs));
-
+            const lhs: f64 = @bitCast(lhs_val.bits);
+            const rhs: f64 = @bitCast(rhs_val.bits);
             const result = switch (op) {
-                .eq_int => lhs_int == rhs_int,
-                .neq_int => lhs_int != rhs_int,
-                .lt_int => lhs_int < rhs_int,
-                .gt_int => lhs_int > rhs_int,
-                .lte_int => lhs_int <= rhs_int,
-                .gte_int => lhs_int >= rhs_int,
+                .eq_int => lhs == rhs,
+                .neq_int => lhs != rhs,
+                .lt_int => lhs < rhs,
+                .gt_int => lhs > rhs,
+                .lte_int => lhs <= rhs,
+                .gte_int => lhs >= rhs,
                 else => unreachable,
             };
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.boolean(result));
+            regWrite(slots, base, instr.a, Data.new.boolean(result));
         },
 
-        // specialized comparison opcodes for float (no metamethods)
+        // specialized comparison opcodes for float (no metamethods, no type conversion)
         inline .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float => |op| {
             const lhs_val = regRead(slots, base, instr.b);
             const rhs_val = regRead(slots, base, instr.c);
-            if (self.debug_assert_types) {
-                std.debug.assert(lhs_val == .number);
-                std.debug.assert(rhs_val == .number);
-            }
-            const lhs = lhs_val.as_number() catch unreachable;
-            const rhs = rhs_val.as_number() catch unreachable;
+            const lhs: f64 = @bitCast(lhs_val.bits);
+            const rhs: f64 = @bitCast(rhs_val.bits);
             const result = switch (op) {
                 .eq_float => lhs == rhs,
                 .neq_float => lhs != rhs,
@@ -1682,7 +1773,7 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
                 .gte_float => lhs >= rhs,
                 else => unreachable,
             };
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.boolean(result));
+            regWrite(slots, base, instr.a, Data.new.boolean(result));
         },
 
         .@"and" => regWrite(
@@ -1699,79 +1790,92 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             Data.new.boolean(!revo.isFalse(regRead(slots, base, instr.b)) or !revo.isFalse(regRead(slots, base, instr.c))),
         ),
 
-        .not => try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.boolean(revo.isFalse(regRead(slots, base, instr.b)))),
+        .not => regWrite(slots, base, instr.a, Data.new.boolean(revo.isFalse(regRead(slots, base, instr.b)))),
 
         .table_new => {
             self.noteGCPressure(64);
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, .{ .table = try self.tables.create() });
+            regWrite(slots, base, instr.a, Data.new.table(try self.tables.create()));
         },
         .table_set => {
-            self.perf.table_set_ops += 1;
-            const table_value = try self.readRegister(instr.a);
-            const t_id = switch (table_value) {
-                .table => |id| id,
-                else => return error.TypeError,
-            };
-            const t = try self.tables.get(t_id);
+            // self.perf.table_set_ops += 1;
+            const table_value = regRead(slots, base, instr.a);
+            const t_id = table_value.asTable() orelse return error.TypeError;
+            const t = try self.tableFast(t_id);
             try t.put(t_id, self, regRead(slots, base, instr.b), regRead(slots, base, instr.c));
         },
         .table_get => {
-            self.perf.table_get_ops += 1;
-            const object = try self.readRegister(instr.b);
+            // self.perf.table_get_ops += 1;
+            const object = regRead(slots, base, instr.b);
             const key = regRead(slots, base, instr.c);
-            if (try self.resolveField(object, key)) |resolved| {
-                try self.writeRegister(instr.a, resolved.value);
-            } else try self.writeRegister(instr.a, revo.core_atoms.data(.undef));
-        },
-        .table_set_atom => {
-            self.perf.table_set_ops += 1;
-            const table_value = try self.readRegister(instr.a);
-            const t_id = switch (table_value) {
-                .table => |id| id,
-                else => return error.TypeError,
-            };
-            const t = try self.tables.get(t_id);
-            const key = Data.new.atom(instr.bx);
-            try t.put(t_id, self, key, regRead(slots, base, instr.c));
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, .{ .table = t_id });
-        },
-        .table_get_atom => {
-            self.perf.table_get_ops += 1;
-            const object = try self.readRegister(instr.b);
-            const key = Data.new.atom(instr.bx);
-            if (try self.resolveField(object, key)) |resolved| {
-                try self.writeRegister(instr.a, resolved.value);
-            } else try self.writeRegister(instr.a, revo.core_atoms.data(.undef));
-        },
-        .tuple_new => {
-            const start = try self.absoluteRegisterIndex(instr.b);
-            const count: usize = instr.bx;
-            self.noteGCPressure(@sizeOf(root.tuple.Tuple) + @sizeOf(Data) * instr.bx);
-            try self.writeRegister(
-                instr.a,
-                .{ .tuple = try self.tuples.create(
-                    slots[start .. start + count],
-                ) },
-            );
-        },
-        .tuple_get => {
-            const tuple_id = switch (try self.readRegister(instr.b)) {
-                .tuple => |id| id,
-                else => return error.TypeError,
-            };
-            const idx_val = regRead(slots, base, instr.c);
-
-            // happy path: small non-negative number index
-            if (idx_val == .number and idx_val.number >= 0 and @floor(idx_val.number) == idx_val.number) {
-                const idx: usize = @intFromFloat(idx_val.number);
-                const t = try self.tuples.get(tuple_id);
-                if (idx < t.items.len) {
-                    try self.writeRegister(instr.a, t.items[idx]);
+            if (object.asTable()) |t_id| {
+                const t = try self.tableFast(t_id);
+                if (t.getRaw(key)) |value| {
+                    regWrite(slots, base, instr.a, value);
                     return;
                 }
             }
+            if (try self.resolveField(object, key)) |resolved| {
+                regWrite(slots, base, instr.a, resolved.value);
+            } else regWrite(slots, base, instr.a, revo.core_atoms.data(.undef));
+        },
+        .table_set_atom => {
+            // self.perf.table_set_ops += 1;
+            const table_value = regRead(slots, base, instr.a);
+            const t_id = table_value.asTable() orelse return error.TypeError;
+            const t = try self.tableFast(t_id);
+            const key = Data.new.atom(instr.bx);
+            try t.put(t_id, self, key, regRead(slots, base, instr.c));
+        },
+        .table_get_atom => {
+            // self.perf.table_get_ops += 1;
+            const object = regRead(slots, base, instr.b);
+            const t_id = object.asTable() orelse {
+                const key = Data.new.atom(instr.bx);
+                if (try self.resolveField(object, key)) |resolved| {
+                    regWrite(slots, base, instr.a, resolved.value);
+                } else regWrite(slots, base, instr.a, revo.core_atoms.data(.undef));
+                return;
+            };
+            const pc = fiber.pc - 1;
+            const ic = &self.icache[pc & 7];
+            const t = try self.tableFast(t_id);
+            if (ic.pc == pc and ic.table_id == t_id and ic.version == t.ic_version) {
+                @branchHint(.likely);
+                regWrite(slots, base, instr.a, ic.value);
+            } else {
+                const key = Data.new.atom(instr.bx);
+                if (t.getRaw(key)) |value| {
+                    ic.* = .{ .pc = pc, .table_id = t_id, .version = t.ic_version, .value = value };
+                    regWrite(slots, base, instr.a, value);
+                    return;
+                }
+                if (try self.resolveField(object, key)) |resolved| {
+                    ic.* = .{ .pc = pc, .table_id = t_id, .version = t.ic_version, .value = resolved.value };
+                    regWrite(slots, base, instr.a, resolved.value);
+                } else regWrite(slots, base, instr.a, revo.core_atoms.data(.undef));
+            }
+        },
+        .tuple_new => {
+            const start = base + instr.b;
+            const count: usize = instr.bx;
+            self.noteGCPressure(@sizeOf(root.tuple.Tuple) + @sizeOf(Data) * instr.bx);
+            regWrite(slots, base, instr.a, Data.new.tuple(try self.tuples.create(
+                slots[start .. start + count],
+            )));
+        },
+        .tuple_get => {
+            const tuple_id = (regRead(slots, base, instr.b)).asTuple() orelse return error.TypeError;
+            const idx_val = regRead(slots, base, instr.c);
 
-            // slow path: existing hash-based lookup for atoms/etc
+            if (idx_val.asNumber()) |idx_num| if (idx_num >= 0 and @floor(idx_num) == idx_num) {
+                const idx: usize = @intFromFloat(idx_num);
+                const t = try self.tuples.get(tuple_id);
+                if (idx < t.items.len) {
+                    regWrite(slots, base, instr.a, t.items[idx]);
+                    return;
+                }
+            };
+
             const idx = revo.asIndex(idx_val.as_number() catch return error.TypeError) catch return error.TypeError;
 
             const t = try self.tuples.get(tuple_id);
@@ -1779,51 +1883,43 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
                 try self.setRuntimeMessageFmt("tuple index {d} out of range for tuple of length {d}", .{ idx, t.items.len });
                 return error.InvalidTuple;
             }
-            try self.writeRegister(instr.a, t.items[idx]);
+            regWrite(slots, base, instr.a, t.items[idx]);
         },
         .tuple_get_const => {
-            const tuple_id = switch (try self.readRegister(instr.b)) {
-                .tuple => |id| id,
-                else => return error.TypeError,
-            };
+            const tuple_id = (regRead(slots, base, instr.b)).asTuple() orelse return error.TypeError;
             const t = try self.tuples.get(tuple_id);
             if (instr.bx >= t.items.len) {
                 try self.setRuntimeMessageFmt("tuple index {d} out of range for tuple of length {d}", .{ instr.bx, t.items.len });
                 return error.InvalidTuple;
             }
-            try self.writeRegister(instr.a, t.items[instr.bx]);
+            regWrite(slots, base, instr.a, t.items[instr.bx]);
         },
 
         .struct_get_offset => {
-            const object = try self.readRegister(instr.b);
-            const table_id = switch (object) {
-                .table => |id| id,
-                else => return error.TypeError,
-            };
+            const object = regRead(slots, base, instr.b);
+            const table_id = object.asTable() orelse return error.TypeError;
             const table = try self.tables.get(table_id);
             if (instr.bx < table.array.items.len) {
-                try self.writeRegister(instr.a, table.array.items[instr.bx]);
+                regWrite(slots, base, instr.a, table.array.items[instr.bx]);
             } else {
-                try self.writeRegister(instr.a, revo.core_atoms.data(.undef));
+                regWrite(slots, base, instr.a, revo.core_atoms.data(.undef));
             }
         },
         .struct_set_offset => {
-            const object = try self.readRegister(instr.a);
-            const table_id = switch (object) {
-                .table => |id| id,
-                else => return error.TypeError,
-            };
+            const object = regRead(slots, base, instr.a);
+            const table_id = object.asTable() orelse return error.TypeError;
             const table = try self.tables.get(table_id);
             const value = regRead(slots, base, instr.c);
             if (table.metatable) |mt_id| {
                 const mt = try self.tables.get(mt_id);
-                if (mt.getRaw(.{ .atom = revo.core_atoms.atom_id(.__fields) })) |fields_data| {
-                    if (fields_data == .table) {
-                        const fields = try self.tables.get(fields_data.table);
+                if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields)))) |fields_data| {
+                    if (fields_data.asTable()) |fields_id| {
+                        const fields = try self.tables.get(fields_id);
                         if (instr.bx < fields.hash_order.items.len) {
                             const field_key = fields.hash_order.items[instr.bx];
                             try table.put(table_id, self, field_key, value);
-                            try regWriteFiber(&fiber.slots, alloc, base, instr.a, .{ .table = table_id });
+                            const slots2 = fiber.slots.items;
+                            regWrite(slots2, base, instr.a, Data.new.table(table_id));
                             return;
                         }
                     }
@@ -1833,9 +1929,11 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
         },
         .jump => fiber.pc = instr.bx,
         .jump_if_false => {
+            @branchHint(.unlikely);
             if (revo.isFalse(regRead(slots, base, instr.a))) fiber.pc = instr.bx;
         },
         .jump_if_true => {
+            @branchHint(.unlikely);
             if (!revo.isFalse(regRead(slots, base, instr.a))) fiber.pc = instr.bx;
         },
         .load_global => {
@@ -1843,14 +1941,14 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
                 try self.setRuntimeMessageFmt("undefined variable `{s}`", .{self.atomName(instr.bx)});
                 return error.UndefinedVariable;
             };
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, value);
+            regWrite(slots, base, instr.a, value);
         },
         .load_stdlib_global => {
             const value = self.stdlib_globals.get(instr.bx) orelse {
                 try self.setRuntimeMessageFmt("undefined stdlib variable `{s}`", .{self.atomName(instr.bx)});
                 return error.UndefinedVariable;
             };
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, value);
+            regWrite(slots, base, instr.a, value);
         },
         .store_global => {
             if (self.const_globals.contains(instr.bx)) {
@@ -1867,11 +1965,33 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             try self.globals.put(instr.bx, try self.readRegister(instr.a));
             try self.const_globals.put(instr.bx, {});
         },
-        .load_local => try regCopyFiber(&fiber.slots, alloc, base, instr.a, instr.b),
-        .bind_local => try regCopyFiber(&fiber.slots, alloc, base, instr.a, instr.b),
+        .load_local => {
+            const dst = base + instr.a;
+            const src = base + instr.b;
+            if (builtin.mode != .ReleaseFast and src >= slots.len) {
+                regWrite(slots, base, instr.a, revo.core_atoms.data(.missing));
+            } else {
+                slots[dst] = slots[src];
+            }
+        },
+        .bind_local => {
+            const dst = base + instr.a;
+            const src = base + instr.b;
+            if (builtin.mode != .ReleaseFast and src >= slots.len) {
+                regWrite(slots, base, instr.a, revo.core_atoms.data(.missing));
+            } else {
+                slots[dst] = slots[src];
+            }
+        },
         .store_local => {
             if (try self.localIsConst(instr.a)) return error.ConstantReassignment;
-            try regCopyFiber(&fiber.slots, alloc, base, instr.a, instr.b);
+            const dst = base + instr.a;
+            const src = base + instr.b;
+            if (builtin.mode != .ReleaseFast and src >= slots.len) {
+                regWrite(slots, base, instr.a, revo.core_atoms.data(.missing));
+            } else {
+                slots[dst] = slots[src];
+            }
         },
         .closure => {
             self.noteGCPressure(48);
@@ -1887,30 +2007,29 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
                     try upvalues.append(self.runtime.alloc, closure.upvalues[spec.index]);
                 }
             }
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, .{ .function = try self.functions.createClosure(instr.bx, upvalues.items) });
+            regWrite(slots, base, instr.a, Data.new.function(try self.functions.createClosure(instr.bx, upvalues.items)));
         },
         .load_upval => {
             const closure = (try self.currentClosure()) orelse return error.InvalidLocal;
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, try self.loadUpvalueData(closure.upvalues[instr.bx]));
+            regWrite(slots, base, instr.a, try self.loadUpvalueData(closure.upvalues[instr.bx]));
         },
         .store_upval => {
             const closure = (try self.currentClosure()) orelse return error.InvalidLocal;
             try self.storeUpvalueData(closure.upvalues[instr.bx], regRead(slots, base, instr.a));
         },
         .call => try self.callRegister(instr),
+        .call_closure => try self.callClosureRegister(instr),
         .call_field => try self.callFieldRegister(instr),
         .ret => try self.returnRegister(instr),
         .spawn => try self.spawnRegister(instr),
         .join => {
-            const handle = try self.readRegister(instr.a);
-            const target_id = switch (handle) {
-                .number => |n| if (n >= 0 and @floor(n) == n) @as(usize, @intFromFloat(n)) else return error.TypeError,
-                else => return error.TypeError,
-            };
+            const handle = regRead(slots, base, instr.a);
+            const target_num = handle.asNumber() orelse return error.TypeError;
+            const target_id = if (target_num >= 0 and @floor(target_num) == target_num) @as(usize, @intFromFloat(target_num)) else return error.TypeError;
             if (target_id >= self.sched.fibers.items.len) return error.TypeError;
             const target = &self.sched.fibers.items[target_id];
             if (target.state == .dead) {
-                try self.writeRegister(instr.a, target.result);
+                regWrite(slots, base, instr.a, target.result);
             } else {
                 try target.waiters.append(self.runtime.alloc, self.sched.current_fiber);
                 self.sched.parkCurrentWithResult(
@@ -1924,7 +2043,7 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             fiber.running = false;
         },
         .halt => {
-            const result = try self.readRegister(instr.a);
+            const result = regRead(slots, base, instr.a);
             fiber.slots.items.len = 0;
             try self.push(result);
             fiber.running = false;
@@ -1939,9 +2058,9 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             // R[a]   = current (start initially)
             // R[a+1] = step
             // R[a+2] = limit
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, start);
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a + 1, step);
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a + 2, limit);
+            regWrite(slots, base, instr.a, start);
+            regWrite(slots, base, instr.a + 1, step);
+            regWrite(slots, base, instr.a + 2, limit);
         },
         .range_next => {
             // loop state in consecutive registers starting at b:
@@ -1955,24 +2074,18 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             const has_next = (step > 0 and current < limit) or (step < 0 and current > limit);
 
             // out: r[a]=value, r[c]=index (if c!=0), r[bx]=has_next
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(current));
+            regWrite(slots, base, instr.a, Data.new.num(current));
 
             if (instr.c != 0) {
                 const index_reg = regRead(slots, base, instr.c);
-                const index = if (index_reg == .number) index_reg.number else 0.0;
-                try regWriteFiber(&fiber.slots, alloc, base, instr.c, Data.new.num(index));
+                const index = index_reg.asNumber() orelse 0.0;
+                regWrite(slots, base, instr.c, Data.new.num(index));
+                if (has_next) regWrite(slots, base, instr.c, Data.new.num(index + 1));
             }
-            try regWriteFiber(&fiber.slots, alloc, base, @intCast(instr.bx), Data.new.boolean(has_next));
+            regWrite(slots, base, @intCast(instr.bx), Data.new.boolean(has_next));
 
             // advance state if there is a next iteration
-            if (has_next) {
-                try regWriteFiber(&fiber.slots, alloc, base, instr.b, Data.new.num(current + step));
-                if (instr.c != 0) {
-                    const index_reg = regRead(slots, base, instr.c);
-                    const index = if (index_reg == .number) index_reg.number else 0.0;
-                    try regWriteFiber(&fiber.slots, alloc, base, instr.c, Data.new.num(index + 1));
-                }
-            }
+            if (has_next) regWrite(slots, base, instr.b, Data.new.num(current + step));
         },
         .range_for => {
             // R[a] = current (in/out)
@@ -1992,22 +2105,21 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
                 i += 1;
             }
 
-            try regWriteFiber(&fiber.slots, alloc, base, instr.a, Data.new.num(current));
+            regWrite(slots, base, instr.a, Data.new.num(current));
         },
         .unwrap_result => {
-            const val = try self.readRegister(instr.a);
+            const val = regRead(slots, base, instr.a);
             const propagate_errors = instr.bx == 0;
 
             // if val is (:err, ...) is true, return early
-            if (val != .tuple) return;
-
-            const tuple = try self.tuples.get(val.tuple);
+            const tuple_id = val.asTuple() orelse return;
+            const tuple = try self.tuples.get(tuple_id);
             if (tuple.items.len == 0) return;
 
             const tag = tuple.items[0];
 
             // branch (:err, e)
-            if (tag == .atom and tag.atom == revo.core_atoms.atom_id(.err)) {
+            if (tag.asAtom() == revo.core_atoms.atom_id(.err)) {
                 if (propagate_errors) {
                     if (fiber.frames.items.len == 2) {
                         if (tuple.items.len > 1) {
@@ -2034,9 +2146,9 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             }
 
             // check if (:ok, v) then extract
-            if (tag == .atom and tag.atom == revo.core_atoms.atom_id(.ok)) {
+            if (tag.asAtom() == revo.core_atoms.atom_id(.ok)) {
                 if (tuple.items.len > 1) {
-                    try self.writeRegister(instr.a, tuple.items[1]);
+                    regWrite(slots, base, instr.a, tuple.items[1]);
                 }
                 return;
             }
@@ -2044,13 +2156,13 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             // otherwise just pass thru
         },
         .jump_if_not_nil_and_not_err => {
-            const val = try self.readRegister(instr.a);
-            const is_nil = if (val == .atom) val.atom == revo.core_atoms.atom_id(.nil) else false;
-            const is_err = if (val == .tuple) blk: {
-                const tuple = try self.tuples.get(val.tuple);
+            const val = regRead(slots, base, instr.a);
+            const is_nil = if (val.asAtom()) |a| a == revo.core_atoms.atom_id(.nil) else false;
+            const is_err = if (val.asTuple()) |tid| blk: {
+                const tuple = try self.tuples.get(tid);
                 if (tuple.items.len > 0) {
                     const tag = tuple.items[0];
-                    break :blk tag == .atom and tag.atom == revo.core_atoms.atom_id(.err);
+                    break :blk tag.asAtom() == revo.core_atoms.atom_id(.err);
                 }
                 break :blk false;
             } else false;
@@ -2059,12 +2171,12 @@ fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             }
         },
         .jump_if_err => {
-            const val = try self.readRegister(instr.a);
-            const is_err = if (val == .tuple) blk: {
-                const tuple = try self.tuples.get(val.tuple);
+            const val = regRead(slots, base, instr.a);
+            const is_err = if (val.asTuple()) |tid| blk: {
+                const tuple = try self.tuples.get(tid);
                 if (tuple.items.len > 0) {
                     const tag = tuple.items[0];
-                    break :blk tag == .atom and tag.atom == revo.core_atoms.atom_id(.err);
+                    break :blk tag.asAtom() == revo.core_atoms.atom_id(.err);
                 }
                 break :blk false;
             } else false;
@@ -2088,11 +2200,11 @@ pub const runModule = module.runModule;
 
 // gc
 pub fn markData(self: *VM, data: Data) void {
-    switch (data) {
-        .string => |id| self.strings.mark(id),
-        .table => |id| self.tables.mark(id, self),
-        .tuple => |id| self.tuples.mark(id, self),
-        .function => |id| self.functions.mark(id, self),
+    switch (data.tag()) {
+        .string => self.strings.mark(data.asString().?),
+        .table => self.tables.mark(data.asTable().?, self),
+        .tuple => self.tuples.mark(data.asTuple().?, self),
+        .function => self.functions.mark(data.asFunction().?, self),
         else => {},
     }
 }
@@ -2175,7 +2287,7 @@ test "callFunction unwinds frames on native error" {
     const start_frames = vm.currentFiber().frames.items.len;
     const start_slots = vm.currentFiber().slots.items.len;
 
-    try std.testing.expectError(error.Panic, vm.callFunction(.{ .function = fn_id }, &.{}));
+    try std.testing.expectError(error.Panic, vm.callFunction(Data.new.function(fn_id), &.{}));
     try std.testing.expectEqual(start_frames, vm.currentFiber().frames.items.len);
     try std.testing.expectEqual(start_slots, vm.currentFiber().slots.items.len);
 }

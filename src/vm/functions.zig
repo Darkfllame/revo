@@ -58,8 +58,11 @@ pub const Prototype = struct {
 };
 
 pub const Closure = struct {
+    // cache prototype id and register_count so VM can size frames without a prototype lookup
     prototype: PrototypeID,
     arity: u8,
+    addr: ProgramCounter,
+    register_count: RegisterCount,
     name: []const u8,
     upvalues: []UpvalueID,
 };
@@ -137,7 +140,7 @@ pub const FunctionPool = struct {
         self.upvalue_dead.deinit(self.alloc);
     }
 
-    pub fn create(self: *FunctionPool, func: Function) !mem.FunctionID {
+    pub inline fn create(self: *FunctionPool, func: Function) !mem.FunctionID {
         if (self.function_dead.pop()) |id| {
             self.functions.items[id] = func;
             return id;
@@ -186,17 +189,19 @@ pub const FunctionPool = struct {
         return id;
     }
 
-    pub fn createClosure(self: *FunctionPool, prototype_id: PrototypeID, upvalues: []const UpvalueID) !mem.FunctionID {
+    pub inline fn createClosure(self: *FunctionPool, prototype_id: PrototypeID, upvalues: []const UpvalueID) !mem.FunctionID {
         const proto = try self.getPrototype(prototype_id);
         return self.create(.{ .closure = .{
             .prototype = prototype_id,
             .arity = proto.arity,
+            .addr = proto.addr,
+            .register_count = proto.register_count,
             .name = proto.name,
             .upvalues = try self.alloc.dupe(UpvalueID, upvalues),
         } });
     }
 
-    pub fn createUpvalue(self: *FunctionPool, upvalue: Upvalue) !UpvalueID {
+    pub inline fn createUpvalue(self: *FunctionPool, upvalue: Upvalue) !UpvalueID {
         if (self.upvalue_dead.pop()) |id| {
             self.upvalues.items[id] = upvalue;
             return id;
@@ -209,18 +214,18 @@ pub const FunctionPool = struct {
         return id;
     }
 
-    pub fn get(self: *FunctionPool, id: mem.FunctionID) !*Function {
+    pub inline fn get(self: *FunctionPool, id: mem.FunctionID) !*Function {
         if (id >= self.functions.items.len) return error.FunctionDNE;
         if (self.functions.items[id]) |*f| return f;
         return error.FunctionDNE;
     }
 
-    pub fn getPrototype(self: *FunctionPool, id: PrototypeID) !*Prototype {
+    pub inline fn getPrototype(self: *FunctionPool, id: PrototypeID) !*Prototype {
         if (id >= self.prototypes.items.len) return error.FunctionDNE;
         return &self.prototypes.items[id];
     }
 
-    pub fn getUpvalue(self: *FunctionPool, id: UpvalueID) !*Upvalue {
+    pub inline fn getUpvalue(self: *FunctionPool, id: UpvalueID) !*Upvalue {
         if (id >= self.upvalues.items.len) return error.FunctionDNE;
         if (self.upvalues.items[id]) |*u| return u;
         return error.FunctionDNE;

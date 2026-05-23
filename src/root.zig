@@ -154,7 +154,7 @@ pub const core_atoms = enum(AtomID) {
     pub const lastFalse = @intFromEnum(@This().false);
 
     pub inline fn data(comptime a: @This()) Data {
-        return Data{ .atom = @intFromEnum(a) };
+        return Data.new.atom(@intFromEnum(a));
     }
 
     pub inline fn atom_id(comptime a: @This()) AtomID {
@@ -168,11 +168,9 @@ pub const core_atoms = enum(AtomID) {
 
 /// (:f or :false or :nil or 0 or 0.0 or :undef or :missing) == :false
 pub inline fn isFalse(val: Data) bool {
-    return switch (val) {
-        .number => |n| n == 0,
-        .atom => |id| id <= core_atoms.lastFalse,
-        else => false,
-    };
+    if (val.asNumber()) |n| return n == 0;
+    if (val.asAtom()) |id| return id <= core_atoms.lastFalse;
+    return false;
 }
 
 pub fn renderFailureAt(
