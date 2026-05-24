@@ -154,7 +154,17 @@ cp ./zig-out/bin/revo ~/.local/bin/revo
 # verify installation
 revo --version
 ```
-you might want to set `-Drepl=[libedit|readline]` if you prefer a BSD or a GNU line editor
+
+### repl
+
+the default REPL backend is [isocline](https://github.com/daanx/isocline):
+- repl history saved to `~/.revo_history`
+- multi-line expressions are shift+enter or C-j
+- tab completion for revo keywords, commands (`:q`, `:clear`, `:backend`), and stdlib modules
+- go to matching brace with M-b
+- ctrl+r for searching through history
+
+you can also get a dumb backend by doing `-Drepl=none`
 
 ### packaging:
 - AUR: `revo-git` ([info & pkgbuild](https://aur.archlinux.org/packages/revo-git))
@@ -218,13 +228,11 @@ examples:
 zig build # debug build
 zig build run # debug run (repl implementation is hardcoded to a very simple one)
 zig build -Doptimize=ReleaseFast # release build
-zig build -Drepl=none # custom repl backend (isocline, readline, libedit, none)
+zig build -Drepl=none # minimal repl backend (isocline, none)
 # build C library + auto-generated header
 # check zig-out/include/, zig-out/lib/
 zig build lib 
 ```
-
-the default repl backend is the vendored isocline, linked statically. read [build.zig](./build.zig)
 
 **note:** the C library and header are only built with `zig build lib`.
 the auto-generated header is always in sync with exported functions, marked with `callconv("c")`
@@ -245,10 +253,6 @@ see [CONTRIBUTING.md](./CONTRIBUTING.md)
 ## credits
 
 - [isocline](https://github.com/daanx/isocline) by daanx - MIT
-
-**optional repl backends, not vendored but linked dynamically**
-- [libedit](https://thrysoee.dk/editline/) - BSD
-- [GNU readline](https://tiswww.case.edu/php/chet/readline/rltop.html) - GPLv3
 
 # license
 

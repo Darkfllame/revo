@@ -104,3 +104,30 @@ pub fn printInfo(alloc: std.mem.Allocator, writer: *std.Io.Writer, comptime fmt:
     try writer.writeAll("\n");
     try writer.flush();
 }
+
+pub fn replStyleDef(styleName: []const u8) [:0]const u8 {
+    if (std.mem.eql(u8, styleName, "keyword")) return "color=magenta bold";
+    if (std.mem.eql(u8, styleName, "number")) return "color=green";
+    if (std.mem.eql(u8, styleName, "string")) return "color=yellow";
+    if (std.mem.eql(u8, styleName, "operator")) return "color=blue";
+    if (std.mem.eql(u8, styleName, "function")) return "color=cyan";
+    if (std.mem.eql(u8, styleName, "atom")) return "color=yellow";
+    return "color=default";
+}
+
+pub const base16 = [16][]const u8{
+    "#101010", "#202020", "#2b2b2b", "#505050",
+    "#b0b0b0", "#d0d0d0", "#e0e0e0", "#fafafa",
+    "#ab4642", "#dc9656", "#f7ca88", "#a1b56c",
+    "#86c1b9", "#7cafc2", "#ba8baf", "#a16946",
+};
+
+pub fn replStyleDefBase16(styleName: []const u8) [:0]const u8 {
+    if (std.mem.eql(u8, styleName, "keyword")) return "color=" ++ base16[14] ++ " bold";
+    if (std.mem.eql(u8, styleName, "number")) return "color=" ++ base16[11];
+    if (std.mem.eql(u8, styleName, "string")) return "color=" ++ base16[10];
+    if (std.mem.eql(u8, styleName, "operator")) return "color=" ++ base16[3];
+    if (std.mem.eql(u8, styleName, "function")) return "color=" ++ base16[13];
+    if (std.mem.eql(u8, styleName, "hash")) return "color=" ++ base16[10];
+    return "color=" ++ base16[5];
+}

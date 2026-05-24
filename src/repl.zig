@@ -7,47 +7,143 @@ const VM = revo.VM;
 pub const Backend = build_options.@"build.build.ReplBackend";
 pub const backend: Backend = build_options.repl_backend;
 
-const libedit_c = if (backend == .libedit) @cImport({
-    @cInclude("editline/readline.h");
-}) else struct {};
-
-const readline_c = if (backend == .readline) @cImport({
-    @cInclude("readline/readline.h");
-    @cInclude("readline/history.h");
-}) else struct {};
-
 const isocline_c = if (backend == .isocline) @cImport({
     @cInclude("isocline.h");
 }) else struct {};
 
 const signal_c = if (backend != .none) @cImport(@cInclude("signal.h")) else struct {};
-const libc = @cImport(@cInclude("stdlib.h"));
+const libc = @cImport({
+    @cInclude("stdlib.h");
+    @cInclude("string.h");
+});
+
+const IsoclineContext = struct {
+    vm: *VM,
+    gpa: Allocator,
+};
+
+var isocline_ctx: ?IsoclineContext = null;
+
+fn isoclineCompleter(cenv: ?*isocline_c.ic_completion_env_t, prefix: [*c]const u8, _: ?*anyopaque) callconv(.c) void {
+    if (cenv == null) return;
+    _ = isocline_c.ic_complete_word(cenv, prefix, @ptrCast(&isoclineWordCompleter), null);
+}
+
+fn isoclineWordCompleter(cenv: ?*isocline_c.ic_completion_env_t, word: [*c]const u8) callconv(.c) void {
+    if (isocline_ctx == null or cenv == null) return;
+    const wlen = libc.strlen(word);
+    const wslice = word[0..wlen];
+
+    var buf: [256]u8 = undefined;
+
+    const commands = &[_][]const u8{ ":q", ":quit", ":clear", ":backend" };
+    for (commands) |cmd| {
+        if (std.mem.startsWith(u8, cmd, wslice)) {
+            const cmd_c = std.fmt.bufPrintZ(&buf, "{s}", .{cmd}) catch continue;
+            _ = isocline_c.ic_add_completion(cenv, cmd_c);
+        }
+    }
+
+    // add stdlib globals first, only then module globals so they get priority
+    const ctx = isocline_ctx.?;
+    const vm = ctx.vm;
+
+    var s_it = vm.stdlib_globals.iterator();
+    while (s_it.next()) |entry| {
+        const name = vm.atomName(entry.key_ptr.*);
+        if (std.mem.startsWith(u8, name, wslice)) {
+            const n_c = std.fmt.bufPrintZ(&buf, "{s}", .{name}) catch continue;
+            _ = isocline_c.ic_add_completion(cenv, n_c);
+        }
+    }
+
+    var g_it = vm.globals.iterator();
+    while (g_it.next()) |entry| {
+        const name = vm.atomName(entry.key_ptr.*);
+        if (std.mem.startsWith(u8, name, wslice)) {
+            const n_c = std.fmt.bufPrintZ(&buf, "{s}", .{name}) catch continue;
+            _ = isocline_c.ic_add_completion(cenv, n_c);
+        }
+    }
+
+    // ...then keywords
+    for (revo.lang.lexer.TokenType.of_string.keys()) |kw| {
+        if (std.mem.startsWith(u8, kw, wslice)) {
+            const kw_c = std.fmt.bufPrintZ(&buf, "{s}", .{kw}) catch continue;
+            _ = isocline_c.ic_add_completion(cenv, kw_c);
+        }
+    }
+}
+
+fn isoclineHighlighter(henv: ?*isocline_c.ic_highlight_env_t, input: [*c]const u8, _: ?*anyopaque) callconv(.c) void {
+    if (henv == null) return;
+    const input_len = libc.strlen(input);
+    if (input_len == 0) return;
+    const input_slice = input[0..input_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tokens = switch (revo.lang.lexReport(alloc, input_slice) catch return) {
+        .ok => |t| t,
+        .err => {
+            isocline_c.ic_highlight_formatted(henv, input, input);
+            return;
+        },
+    };
+
+    var fb = std.ArrayList(u8).initCapacity(alloc, input_len + 32) catch return;
+
+    var last: usize = 0;
+    for (tokens) |tok| {
+        const tstart = tok.start;
+        const tend = tok.end;
+        if (tend <= tstart) continue;
+
+        if (tstart > last) fb.appendSlice(alloc, input_slice[last..tstart]) catch {};
+
+        var style: ?[]const u8 = switch (tok.type) {
+            .number => "number",
+            .string, .multiline_string, .backtick_string => "string",
+            .kw_const, .kw_let, .kw_macro, .kw_test, .kw_suite, .kw_skip, .kw_struct, .kw_type, .kw_fn, .kw_if, .kw_else, .kw_match, .kw_when, .kw_do, .kw_end, .kw_loop, .kw_for, .kw_while, .kw_global, .kw_in, .kw_break, .kw_return, .kw_import, .kw_spawn, .kw_join, .kw_yield, .kw_and, .kw_or, .kw_not, .kw_comp, .kw_proc, .kw_orelse => "keyword",
+            .plus, .minus, .star, .slash, .percent, .eq, .neq, .lt, .gt, .lte, .gte, .assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .percent_assign, .arrow, .dot, .dotdot, .colon, .comma, .pipe, .pipe_forward, .huh, .lparen, .rparen, .lbracket, .rbracket, .lsquiggly, .rsquiggly => "operator",
+            .hash => "hash",
+            else => null,
+        };
+
+        if (style == null and tok.type == .ident) {
+            var pos = tend;
+            while (pos < input_slice.len and std.ascii.isWhitespace(input_slice[pos])) pos += 1;
+            if (pos < input_slice.len and input_slice[pos] == '(') style = "function";
+        }
+
+        if (style) |s| {
+            fb.appendSlice(alloc, "[") catch {};
+            fb.appendSlice(alloc, s) catch {};
+            fb.appendSlice(alloc, "]") catch {};
+            fb.appendSlice(alloc, input_slice[tstart..tend]) catch {};
+            fb.appendSlice(alloc, "[/]") catch {};
+        } else {
+            fb.appendSlice(alloc, input_slice[tstart..tend]) catch {};
+        }
+
+        last = tend;
+    }
+
+    if (last < input_slice.len) fb.appendSlice(alloc, input_slice[last..]) catch {};
+    fb.append(alloc, 0) catch {};
+    isocline_c.ic_highlight_formatted(henv, input, fb.items.ptr);
+}
 
 fn readLine(init: std.process.Init) ![]u8 {
     return switch (backend) {
-        .libedit => {
-            const line = libedit_c.readline(">> ") orelse return error.EndOfStream;
-            if (line[0] != 0) _ = libedit_c.add_history(line);
-            const duped = try init.gpa.dupe(u8, std.mem.span(line));
-            libc.free(line);
-            return duped;
-        },
-        .readline => {
-            const line = readline_c.readline(">> ") orelse return error.EndOfStream;
-            if (line[0] != 0) _ = readline_c.add_history(line);
-            const duped = try init.gpa.dupe(u8, std.mem.span(line));
-            libc.free(line);
-            return duped;
-        },
         .isocline => {
-            const line = isocline_c.ic_readline("rεvo") orelse return error.EndOfStream;
-            // isocline_c.ic_set_history(isocline_c.NULL, -1);
-
+            const line = isocline_c.ic_readline("rεvo ") orelse return error.EndOfStream;
             if (line[0] != 0)
                 _ = isocline_c.ic_history_add(line);
-
             const duped = try init.gpa.dupe(u8, std.mem.span(line));
-            libc.free(line);
+            isocline_c.ic_free(line);
             return duped;
         },
         .none => {
@@ -137,85 +233,97 @@ pub const Session = struct {
             return true;
         }
 
-        const snip_len = line.len + 1;
-        var snip_mem = try self.gpa.alloc(u8, snip_len);
-        @memcpy(snip_mem[0..line.len], line);
-        snip_mem[line.len] = '\n';
-        const snippet = snip_mem[0..snip_len];
+        // do null-terminated snippet with trailing newline on the stack when
+        // possible; fall back to heap for super long lines
+        var snippet_buf = try std.ArrayList(u8).initCapacity(self.gpa, 8);
+        defer snippet_buf.deinit(self.gpa);
+        try snippet_buf.appendSlice(self.gpa, line);
+        try snippet_buf.append(self.gpa, '\n');
+        const snippet = snippet_buf.items;
 
-        const snip_build = revo.lang.build(self.vm, .{ .name = "<repl>", .text = snippet }, .{}) catch |err| {
-            self.gpa.free(snip_mem);
-            try out.print("repl build error: {}\n", .{err});
-            return true;
+        // try parsing the snippet on its own first to decide whether it is a
+        // complete expression or an unfinished fragment like opening of a block
+        var parse_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer parse_arena.deinit();
+
+        const parse_ok = switch (try revo.lang.parseSourceReport(parse_arena.allocator(), snippet)) {
+            .ok => true,
+            .err => false,
         };
 
-        switch (snip_build) {
-            .ok => |artifact| {
-                defer self.gpa.free(snip_mem);
-                defer self.gpa.free(artifact.instructions);
-                defer self.gpa.free(artifact.spans);
+        if (parse_ok) {
+            const snip_build = revo.lang.build(self.vm, .{ .name = "<repl>", .text = snippet }, .{}) catch |err| {
+                try out.print("repl build error: {}\n", .{err});
+                return true;
+            };
 
-                self.vm.setProgramDebugInfo(artifact.spans, snippet, "<repl>") catch {};
+            switch (snip_build) {
+                .ok => |artifact| {
+                    defer self.gpa.free(artifact.instructions);
+                    defer self.gpa.free(artifact.spans);
 
-                const run_result = revo.module.runCompiledSessionReport(self.vm, "<repl>", artifact.instructions) catch |err| {
-                    try out.print("runtime error: {}\n", .{err});
-                    self.clear();
-                    return true;
-                };
+                    self.vm.setProgramDebugInfo(artifact.spans, snippet, "<repl>") catch {};
 
-                switch (run_result) {
-                    .ok => try self.printResult(out),
-                    .err => |failure| {
-                        try self.printRuntimeFailure(out, failure);
+                    const run_result = revo.module.runCompiledSessionReport(self.vm, "<repl>", artifact.instructions) catch |err| {
+                        try out.print("runtime error: {}\n", .{err});
                         self.clear();
                         return true;
-                    },
-                }
+                    };
 
+                    switch (run_result) {
+                        .ok => try self.printResult(out),
+                        .err => |failure| {
+                            try self.printRuntimeFailure(out, failure);
+                            self.clear();
+                        },
+                    }
+                },
+                .err => {
+                    // shouldn't normally happen since parse succeeded???
+                    try out.print("repl build error: {}\n", .{snip_build.err});
+                },
+            }
+        } else {
+            // incomplete fragment so accumulate and try building the whole block
+            try self.source_acc.appendSlice(self.gpa, line);
+            try self.source_acc.append(self.gpa, '\n');
+
+            const build_result = revo.lang.build(self.vm, .{ .name = "<repl>", .text = self.source_acc.items }, .{}) catch |build_err| {
+                try out.print("repl build error: {}\n", .{build_err});
                 return true;
-            },
-            .err => {
-                self.gpa.free(snip_mem);
-                try self.source_acc.appendSlice(self.gpa, line);
-                try self.source_acc.append(self.gpa, '\n');
+            };
 
-                const build_result = revo.lang.build(self.vm, .{ .name = "<repl>", .text = self.source_acc.items }, .{}) catch |build_err| {
-                    try out.print("repl build error: {}\n", .{build_err});
+            const artifact = switch (build_result) {
+                .ok => |ok| ok,
+                .err => |err2| {
+                    try self.printBuildError(out, err2);
                     return true;
-                };
-                const artifact = switch (build_result) {
-                    .ok => |ok| ok,
-                    .err => |err2| {
-                        try self.printBuildError(out, err2);
-                        return true;
-                    },
-                };
-                defer self.gpa.free(artifact.instructions);
-                defer self.gpa.free(artifact.spans);
+                },
+            };
+            defer self.gpa.free(artifact.instructions);
+            defer self.gpa.free(artifact.spans);
 
-                self.vm.setProgramDebugInfo(artifact.spans, self.source_acc.items, "<repl>") catch {};
+            self.vm.setProgramDebugInfo(artifact.spans, self.source_acc.items, "<repl>") catch {};
 
-                const run_result = revo.module.runCompiledSessionReport(self.vm, "<repl>", artifact.instructions) catch |run_err| {
-                    try out.print("runtime error: {}\n", .{run_err});
+            const run_result = revo.module.runCompiledSessionReport(self.vm, "<repl>", artifact.instructions) catch |run_err| {
+                try out.print("runtime error: {}\n", .{run_err});
+                self.clear();
+                return true;
+            };
+
+            switch (run_result) {
+                .ok => {
+                    self.source_acc.clearRetainingCapacity();
+                    try self.printResult(out);
+                },
+                .err => |failure| {
+                    try self.printRuntimeFailure(out, failure);
                     self.clear();
-                    return true;
-                };
-
-                switch (run_result) {
-                    .ok => {
-                        self.source_acc.clearRetainingCapacity();
-                        try self.printResult(out);
-                    },
-                    .err => |failure| {
-                        try self.printRuntimeFailure(out, failure);
-                        self.clear();
-                        return true;
-                    },
-                }
-
-                return true;
-            },
+                },
+            }
         }
+
+        return true;
     }
 };
 
@@ -223,13 +331,41 @@ pub fn run(vm: *VM, gpa: Allocator, init: std.process.Init) !void {
     var banner_buffer: [128]u8 = undefined;
     var out = std.Io.File.stdout().writer(init.io, &banner_buffer);
     const writer = &out.interface;
-    const banner = try std.fmt.allocPrint(gpa, "revo {s} -- repl ({s} backend)\ntype :q to exit, :clear to reset session\n", .{ build_options.version, @tagName(backend) });
-    defer gpa.free(banner);
-    try writer.writeAll(banner);
+
+    try writer.print(
+        "revo {s} -- repl ({s} backend)\ntype :q to exit, :clear to reset session\n",
+        .{ build_options.version, @tagName(backend) },
+    );
     try writer.flush();
 
     const signal_was_set = backend != .none and OS != .wasi;
     if (signal_was_set) _ = signal_c.signal(signal_c.SIGINT, @ptrCast(&sigintHandler));
+
+    if (backend == .isocline) {
+        isocline_ctx = IsoclineContext{ .vm = vm, .gpa = gpa };
+
+        var b: [512]u8 = undefined;
+        const hist_path = if (std.c.getenv("HOME")) |p|
+            try std.fmt.bufPrintZ(&b, "{s}/.revo_history", .{std.mem.span(p)})
+        else
+            try std.fmt.bufPrintZ(&b, ".revo_history", .{});
+        isocline_c.ic_set_history(hist_path.ptr, 1000);
+
+        // lfeatures
+        _ = isocline_c.ic_enable_color(true);
+        _ = isocline_c.ic_enable_inline_help(true);
+        _ = isocline_c.ic_enable_completion_preview(true);
+        _ = isocline_c.ic_enable_hint(true);
+        isocline_c.ic_set_default_completer(@ptrCast(&isoclineCompleter), null);
+        isocline_c.ic_set_default_highlighter(@ptrCast(&isoclineHighlighter), null);
+
+        for (&[_][]const u8{ "keyword", "string", "number", "function", "hash" }) |s| {
+            const def = revo.pretty.replStyleDefBase16(s);
+            var name_buf: [32]u8 = undefined;
+            const s_c = try std.fmt.bufPrintZ(&name_buf, "{s}", .{s});
+            _ = isocline_c.ic_style_def(s_c.ptr, def.ptr);
+        }
+    }
 
     var session = try Session.init(vm, gpa);
     defer session.deinit();
@@ -248,13 +384,6 @@ pub fn run(vm: *VM, gpa: Allocator, init: std.process.Init) !void {
         if (!try session.step(writer, raw)) break;
         try writer.flush();
 
-        if (sigint_received.load(.seq_cst)) {
-            sigint_received.store(false, .seq_cst);
-            try writer.writeAll("\ninterrupt\n");
-            try writer.flush();
-            session.clear();
-            break;
-        }
     }
 
     if (signal_was_set) _ = signal_c.signal(signal_c.SIGINT, @ptrFromInt(0));
@@ -275,7 +404,6 @@ fn initTestEnv() !TestEnv {
     return TestEnv{ .vm = vm, .session = session, .out = out };
 }
 
-// keep tests short by using initTestEnv
 test "repl prints results" {
     var env = try initTestEnv();
     defer env.session.deinit();

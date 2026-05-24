@@ -6,7 +6,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const ReplBackend = enum { libedit, readline, isocline, none };
+    // none left in for compat & embed
+    const ReplBackend = enum { isocline, none };
     const repl_backend = b.option(ReplBackend, "repl", "which repl backend to use") orelse .isocline;
 
     const build_options = b.addOptions();
@@ -53,13 +54,6 @@ pub fn build(b: *std.Build) void {
         }
 
         exe_root.addOptions("build_options", build_options);
-
-        switch (repl_backend) {
-            .libedit => exe_root.linkSystemLibrary("edit", .{ .preferred_link_mode = .dynamic }),
-            .readline => exe_root.linkSystemLibrary("readline", .{ .preferred_link_mode = .dynamic }),
-            .isocline => {},
-            .none => {},
-        }
     }
 
     for (imports) |imp| exe_root.addImport(imp[0], imp[1]);
