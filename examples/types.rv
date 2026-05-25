@@ -11,6 +11,23 @@
 
 # scalar binds & coercion
 
+struct Asdf {
+  name = "me",
+  age = 21,
+
+  fn get_age(self) self.age,
+}
+let x = Asdf{}
+
+let acc = 0
+
+for y in 0..1000 do
+  acc += x:get_age()
+  print(x.name)
+end
+
+print(acc)
+
 const id = fn(x, y) x * 2
 id(1, y = 2)
 # type A = (:ok, any) | (:err, atom)
@@ -64,7 +81,7 @@ let z: float = 10
 fn add(a: int, b: int) a + b
 let sum = add(3, 4)
 # add(3, "wrong")    # argument 2 to `add` expects int, got string
-add("wrong", 3)    # argument 1 to `add` expects int, got string
+# add("wrong", 3)    # argument 1 to `add` expects int, got string
 
 # typed function return validation
 # fn bad_return() -> int do

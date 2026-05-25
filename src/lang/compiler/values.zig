@@ -273,7 +273,7 @@ pub fn compileStruct(self: *Compiler, expr: *const Node, name: []const u8, items
                 .name = item.field.name,
                 .field_type = if (item.field.type_name) |tn| type_check.resolveTypeName(self, tn) else types_mod.TypeInfo.any,
                 .type_name = item.field.type_name,
-                .default_val = if (item.field.default_value) |dv| evalConstNode(dv) else null,
+                .default_val = if (item.field.default_value) |dv| evalConstNode(self, dv) else null,
             });
         }
     }
@@ -367,11 +367,20 @@ fn typeInfoFromName(type_name: []const u8) @import("types.zig").TypeInfo {
     return types_mod.TypeInfo.any;
 }
 
-fn evalConstNode(node: *const Node) ?Data {
-    return switch (node.expr) {
-        .number => |n| Data.new.num(n.value),
-        .string => |s| if (s.len == 0) Data.new.atom(0) else null, // strings need interning, skip
-        .ident => |name| if (std.mem.eql(u8, name, "nil")) Data.new.atom(0) else null,
-        else => null,
-    };
+fn evalConstNode(self: *Compiler, node: *const Node) ?Data {
+    switch (node.expr) {
+        // TODO: the rest of them
+        .number => |n| return Data.new.num(n.value),
+        .string => |s| {
+            // intern string into vm and return owned Data; just skip if interning fails
+            const vm = self.vm;
+            const ds = vm.ownDataString(s) catch return null;
+            return ds;
+        },
+        .ident => |name| {
+            if (std.mem.eql(u8, name, "nil")) return revo.core_atoms.data(.nil);
+            return null;
+        },
+        else => return null,
+    }
 }
