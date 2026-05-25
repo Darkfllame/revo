@@ -1061,7 +1061,7 @@ test "runtime span for struct constructor type error points at constructor call"
         \\ }
         \\ User { age = "old" }
     ,
-        .Panic,
+        .TypeError,
         4,
         2,
         "field `age` on `User` expected number, got string",
@@ -1076,7 +1076,7 @@ test "runtime span for struct field assignment type error points at assignment" 
         \\ let user = User {}
         \\ user.age = "old"
     ,
-        .Panic,
+        .TypeError,
         5,
         2,
         "field `age` on `User` expected number, got string",
@@ -1310,7 +1310,7 @@ test "structs with comma-separated items and fn syntax" {
     , 5);
 }
 
-test "structs build table-backed instances" {
+test "structs build struct instances" {
     try t.top_number(
         \\ struct User {
         \\     name: string,
@@ -1334,7 +1334,7 @@ test "structs build table-backed instances" {
         \\ }
         \\ const user = User { name = "ana" }
         \\ type(user)
-    , "table");
+    , "struct");
 }
 
 test "struct fields are mutable" {
@@ -1359,7 +1359,7 @@ test "struct fields are mutable" {
         \\ }
         \\ let user = User {}
         \\ user.age = "old"
-    , .Panic, "field `age` on `User` expected number, got string");
+    , .TypeError, "field `age` on `User` expected number, got string");
     try t.top_number(
         \\ struct User {
         \\     name: string,
@@ -1398,6 +1398,13 @@ test "structs reject bad inputs" {
         \\     name: string,
         \\     age: number = 0,
         \\ }
+        \\ User()
+    , .Panic, "missing field `name` for struct `User`");
+    try t.expectRuntimeFailureWithMessage(
+        \\ struct User {
+        \\     name: string,
+        \\     age: number = 0,
+        \\ }
         \\ User { age = 12 }
     , .Panic, "missing field `name` for struct `User`");
     try t.expectRuntimeFailureWithMessage(
@@ -1411,7 +1418,7 @@ test "structs reject bad inputs" {
         \\     age: number
         \\ }
         \\ User { age = "old" }
-    , .Panic, "field `age` on `User` expected number, got string");
+    , .TypeError, "field `age` on `User` expected number, got string");
 }
 
 test "string with rejects empty replacement char" {

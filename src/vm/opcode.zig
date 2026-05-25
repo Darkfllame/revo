@@ -65,8 +65,10 @@ pub const Opcode = enum(u8) {
     table_get, // "R[a] <- table_get(R[b], R[c])"
     table_set_atom, // "R[a][:atom(bx)] <- R[c]"
     table_get_atom, // "R[a] <- table_get(R[b], :atom(bx))"
-    struct_get_offset, // "R[a] <- struct_field(R[b], offset=bx)" (fast fixed-offset field access)
-    struct_set_offset, // "R[a][bx] <- R[c]" (fast fixed-offset field write)
+    struct_new, // "R[a] <- struct_new(typeid=bx)" (new struct instance with defaults)
+    struct_set_method, // "struct_add_method(R[a]=type_val, R[b]=name_atom, R[c]=method)"
+    struct_get_offset, // "R[a] <- struct_field(R[b], offset=bx)" (fast fixed-offset field access on struct_val)
+    struct_set_offset, // "struct_field(R[a])[bx] <- R[c]" (fast fixed-offset field write on struct_val)
     tuple_get_const, // "R[a] <- tuple_get(R[b], bx)"
     halt, // "halt with R[a]"
     jump, // "pc <- bx"

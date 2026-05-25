@@ -15,6 +15,7 @@ pub const print = @import("print.zig");
 pub const testing = @import("testing.zig");
 pub const tests = @import("tests.zig");
 pub const tuple = @import("tuple.zig");
+pub const struct_mod = @import("struct.zig");
 pub const VM = @import("VM.zig").VM;
 pub const ChannelID = @import("VM.zig").ChannelID;
 pub const ConstantID = @import("VM.zig").ConstantID;

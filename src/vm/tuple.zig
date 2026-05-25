@@ -72,11 +72,9 @@ pub const TuplePool = struct {
     pub fn mark(self: *TuplePool, id: memory.TupleID, vm: *revo.VM) void {
         if (id >= self.tuples.items.len) return;
         if (self.marks.isSet(id)) return;
-        if (self.tuples.items[id]) |*tuple| {
-            self.marks.set(id);
-            for (tuple.items) |item| vm.markData(item);
-            if (tuple.metatable) |mt| vm.tables.mark(mt, vm);
-        }
+        if (self.tuples.items[id] == null) return;
+        self.marks.set(id);
+        vm.pushMarkTuple(id);
     }
 
     pub fn sweep(self: *TuplePool) void {
@@ -102,6 +100,34 @@ pub const TuplePool = struct {
             }
         }
         return total;
+    }
+
+    pub fn clearMarks(self: *TuplePool) void {
+        self.marks.unmanaged.unsetAll();
+    }
+
+    pub fn capacity(self: *const TuplePool) usize {
+        return self.tuples.items.len;
+    }
+
+    pub fn sweepStep(self: *TuplePool, cursor: usize, limit: usize) usize {
+        if (cursor >= self.tuples.items.len) return 0;
+
+        const end = @min(cursor + limit, self.tuples.items.len);
+        var processed: usize = 0;
+
+        for (cursor..end) |i| {
+            if (self.tuples.items[i]) |*t| {
+                if (!self.marks.isSet(i)) {
+                    t.deinit();
+                    self.tuples.items[i] = null;
+                    self.dead.append(self.alloc, @intCast(i)) catch {};
+                }
+            }
+            processed += 1;
+        }
+
+        return processed;
     }
 };
 

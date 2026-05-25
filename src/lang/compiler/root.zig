@@ -555,7 +555,7 @@ pub const Compiler = struct {
             if (sig.param_types[i]) |expected_type| {
                 const actual_type = type_check.inferExprType(self, reordered_args[i]);
                 type_check.checkType(self.alloc, type_check.resolveTypeName(self, expected_type), actual_type, reordered_args[i].span) catch |err| switch (err) {
-                     error.TypeError => {
+                    error.TypeError => {
                         const actual_types = try self.buildArgTypesList(reordered_args);
                         defer self.alloc.free(actual_types);
 
@@ -643,9 +643,10 @@ pub const Compiler = struct {
         if (object.expr != .ident) return null;
         const fn_state = state_mod.currentFunctionState(self) orelse return null;
         const type_name = fn_state.var_types.get(object.expr.ident) orelse return null;
-        const layout = self.struct_layouter.getLayout(type_name orelse return null) orelse return null;
-        for (layout.fields, 0..) |field, idx| if (std.mem.eql(u8, field.name, field_name)) return idx;
-        return null;
+        const type_id = self.vm.struct_types.findTypeByName(type_name.?) orelse return null;
+        const desc = self.vm.struct_types.getType(type_id) orelse return null;
+        const field_atom = self.vm.internAtom(field_name) catch return null;
+        return desc.fieldIndex(field_atom);
     }
 
     fn aliasRuntimeValue(self: *Compiler, ti: types.TypeInfo) ?Data {

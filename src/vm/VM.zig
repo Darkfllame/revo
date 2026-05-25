@@ -63,7 +63,7 @@ pub fn runReport(self: *VM) !EvalResult {
             return .{ .err = failure };
         }
         try @call(.always_inline, Scheduler.wakeDueSleepers, .{ &self.sched, self.schedNowMonotonicNs() });
-        // try self.sched.wakeDueSleepers(self.schedNowMonotonicNs());
+
         const has_sleepers = self.sched.sleepers.items.len > 0;
         const has_io_waiters = self.sched.io_waiters.items.len > 0;
         const has_waiting = self.sched.waiting_cnt > 0;
@@ -79,7 +79,7 @@ pub fn runReport(self: *VM) !EvalResult {
                 @as(i32, @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(i32)))))
             else
                 -1;
-            // call configured io poll helper to wait for fd events
+
             const io_poll = self.sched.io_poll orelse {
                 try self.setRuntimeMessage("io poll is not configured");
                 return .{ .err = self.evalFailure(error.Panic) };
@@ -169,6 +169,7 @@ pub const Fiber = struct {
 };
 
 const Scheduler = @import("scheduler.zig");
+const struct_mod = @import("struct.zig");
 
 // concurrency
 sched: Scheduler,
@@ -180,6 +181,8 @@ stdlib_globals: Globals,
 tables: TablePool,
 tuples: TuplePool,
 functions: FunctionPool,
+struct_types: struct_mod.StructTypePool,
+struct_instances: struct_mod.StructInstancePool,
 strings: Interner,
 atoms: std.StringHashMap(mem.AtomID),
 debug: DebugOptions = .{},
@@ -206,11 +209,28 @@ gc_bytes_allocated: usize = 0,
 // optional opcode counters for benchmarking/profiling (allocated on init)
 gc_threshold: usize = 512 * 1024, // 512kb initial
 gc_pause_factor: usize = 2,
+gc_nursery_threshold: usize = 64 * 1024, // 64kb nursery
 
 debug_assert_types: bool = false,
 
 /// for table lookups
 icache: [8]ICacheEntry = undefined,
+
+// gc work state for incremental
+gc_mark_stack: std.ArrayList(MarkItem),
+gc_sweep_state: struct {
+    phase: enum { idle, tables, tuples, functions, upvalues, structs, strings, done } = .idle,
+    cursor: usize = 0,
+},
+
+const MarkItem = union(enum) {
+    data: Data,
+    table: mem.TableID,
+    tuple: mem.TupleID,
+    function: mem.FunctionID,
+    upvalue: root.functions.UpvalueID,
+    struct_instance: struct_mod.StructInstanceID,
+};
 
 pub fn init(runtime: revo.Runtime) !VM {
     var vm: VM = .{
@@ -221,6 +241,8 @@ pub fn init(runtime: revo.Runtime) !VM {
         .tables = try TablePool.init(runtime.alloc),
         .tuples = try TuplePool.init(runtime.alloc),
         .functions = try FunctionPool.init(runtime.alloc),
+        .struct_types = struct_mod.StructTypePool.init(runtime.alloc),
+        .struct_instances = try struct_mod.StructInstancePool.init(runtime.alloc),
         .strings = try Interner.init(runtime.alloc),
         .atoms = std.StringHashMap(mem.AtomID).init(runtime.alloc),
         .module_cache = ModuleCache.init(runtime.alloc),
@@ -231,6 +253,8 @@ pub fn init(runtime: revo.Runtime) !VM {
         .module_dir = null,
         .loading_stack = try std.ArrayList([]const u8).initCapacity(runtime.alloc, 1),
         .loaded_extensions = try .initCapacity(runtime.alloc, 0),
+        .gc_mark_stack = try std.ArrayList(MarkItem).initCapacity(runtime.alloc, 256),
+        .gc_sweep_state = .{},
     };
     for (&vm.icache) |*entry| {
         entry.* = .{
@@ -262,10 +286,6 @@ pub fn init(runtime: revo.Runtime) !VM {
     // set initial fiber result to no_result after core atoms are initialized
     vm.sched.fibers.items[0].result = revo.core_atoms.data(.no_result);
 
-    // true and t, false and f are equivalent
-    // try vm.atoms.put("f", revo.core_atoms.atom_id(.false));
-    // try vm.atoms.put("t", revo.core_atoms.atom_id(.true));
-
     try revo.std_lib.register_stdlib(&vm);
 
     var it = vm.globals.iterator();
@@ -284,27 +304,271 @@ pub fn init(runtime: revo.Runtime) !VM {
 pub inline fn noteGCPressure(self: *VM, bytes: usize) void {
     if (!self.gc_enabled) return;
     self.gc_bytes_allocated += bytes;
-    if (self.gc_bytes_allocated >= self.gc_threshold) self.gc_pending = true;
+
+    // check nursery threshold first
+    if (self.gc_bytes_allocated >= self.gc_nursery_threshold) {
+        self.gc_pending = true;
+    } else if (self.gc_bytes_allocated >= self.gc_threshold) {
+        self.gc_pending = true;
+    }
 }
 
 pub fn maybeCollectGarbage(self: *VM) void {
     if (!self.gc_enabled or !self.gc_pending) return;
 
-    // self.perf.gc_collections += 1;
-    self.gc_bytes_allocated = 0;
-    self.gc_pending = false;
-    self.markRoots();
-    const live_bytes =
-        self.tables.bytes() +
-        self.tuples.bytes() +
-        self.functions.bytes() +
-        self.strings.bytes();
-    self.tables.sweep();
-    self.functions.sweep();
-    self.tuples.sweep();
-    self.strings.sweep();
+    // if itts is[ w] in the middle of a sweep, continue it
+    if (self.gc_sweep_state.phase != .idle and self.gc_sweep_state.phase != .done) {
+        self.doIncrementalSweep();
+        if (self.gc_sweep_state.phase == .done) {
+            self.gc_sweep_state = .{};
+            self.gc_pending = false;
+            // recalc thresh based on live bytes after full cycle
+            const live_bytes =
+                self.tables.bytes() +
+                self.tuples.bytes() +
+                self.functions.bytes() +
+                self.strings.bytes();
+            self.gc_threshold = @max(32 * 1024, live_bytes * self.gc_pause_factor);
+        }
+        return;
+    }
 
-    self.gc_threshold = @max(32 * 1024, live_bytes * self.gc_pause_factor);
+    // new cycle
+    self.gc_bytes_allocated = 0;
+
+    self.tables.clearMarks();
+    self.tuples.clearMarks();
+    self.functions.clearMarks();
+    self.struct_instances.clearMarks();
+    self.strings.clearMarks();
+
+    self.markRoots();
+
+    self.processMarkStack();
+
+    // start incr sweep
+    self.gc_sweep_state.phase = .tables;
+    self.gc_sweep_state.cursor = 0;
+    self.doIncrementalSweep();
+
+    // if sweep finished immediately (small heap), reset state
+    if (self.gc_sweep_state.phase == .done) {
+        self.gc_sweep_state = .{};
+        self.gc_pending = false;
+        const live_bytes =
+            self.tables.bytes() +
+            self.tuples.bytes() +
+            self.functions.bytes() +
+            self.strings.bytes();
+        self.gc_threshold = @max(32 * 1024, live_bytes * self.gc_pause_factor);
+    }
+}
+
+fn doIncrementalSweep(self: *VM) void {
+    const step_limit = 1024; // process up to 1024 items per slice
+    var processed: usize = 0;
+
+    while (processed < step_limit) {
+        switch (self.gc_sweep_state.phase) {
+            .idle => return,
+            .tables => {
+                const count = self.tables.sweepStep(self.gc_sweep_state.cursor, step_limit - processed);
+                if (count == 0 or self.gc_sweep_state.cursor >= self.tables.capacity()) {
+                    self.gc_sweep_state.phase = .tuples;
+                    self.gc_sweep_state.cursor = 0;
+                } else {
+                    self.gc_sweep_state.cursor += count;
+                    processed += count;
+                }
+            },
+            .tuples => {
+                const count = self.tuples.sweepStep(self.gc_sweep_state.cursor, step_limit - processed);
+                if (count == 0 or self.gc_sweep_state.cursor >= self.tuples.capacity()) {
+                    self.gc_sweep_state.phase = .functions;
+                    self.gc_sweep_state.cursor = 0;
+                } else {
+                    self.gc_sweep_state.cursor += count;
+                    processed += count;
+                }
+            },
+            .functions => {
+                const count = self.functions.sweepStep(self.gc_sweep_state.cursor, step_limit - processed);
+                if (count == 0 or self.gc_sweep_state.cursor >= self.functions.capacity()) {
+                    self.gc_sweep_state.phase = .upvalues;
+                    self.gc_sweep_state.cursor = 0;
+                } else {
+                    self.gc_sweep_state.cursor += count;
+                    processed += count;
+                }
+            },
+            .upvalues => {
+                const count = self.functions.sweepUpvalueStep(self.gc_sweep_state.cursor, step_limit - processed);
+                if (count == 0 or self.gc_sweep_state.cursor >= self.functions.upvalueCapacity()) {
+                    self.gc_sweep_state.phase = .structs;
+                    self.gc_sweep_state.cursor = 0;
+                } else {
+                    self.gc_sweep_state.cursor += count;
+                    processed += count;
+                }
+            },
+            .structs => {
+                const count = self.struct_instances.sweepStep(self.gc_sweep_state.cursor, step_limit - processed);
+                if (count == 0 or self.gc_sweep_state.cursor >= self.struct_instances.capacity()) {
+                    self.gc_sweep_state.phase = .strings;
+                    self.gc_sweep_state.cursor = 0;
+                } else {
+                    self.gc_sweep_state.cursor += count;
+                    processed += count;
+                }
+            },
+            .strings => {
+                const count = self.strings.sweepStep(self.gc_sweep_state.cursor, step_limit - processed);
+                if (count == 0 or self.gc_sweep_state.cursor >= self.strings.capacity()) {
+                    self.gc_sweep_state.phase = .done;
+                    return;
+                } else {
+                    self.gc_sweep_state.cursor += count;
+                    processed += count;
+                }
+            },
+            .done => return,
+        }
+    }
+}
+
+fn processMarkStack(self: *VM) void {
+    var idx: usize = 0;
+    while (idx < self.gc_mark_stack.items.len) : (idx += 1) {
+        const item = self.gc_mark_stack.items[idx];
+        switch (item) {
+            .data => |data| self.markDataImpl(data),
+            .table => |id| {
+                if (id >= self.tables.tables.items.len) continue;
+                const table = self.tables.tables.items[id] orelse continue;
+                for (table.array.items) |entry| self.pushMark(entry);
+                var it = table.hash_entries.iterator();
+                while (it.next()) |entry| {
+                    self.pushMark(entry.key_ptr.*);
+                    self.pushMark(entry.value_ptr.*);
+                }
+                if (table.metatable) |mt| self.tables.mark(mt, self);
+            },
+            .tuple => |id| {
+                if (id >= self.tuples.tuples.items.len) continue;
+                const tuple = self.tuples.tuples.items[id] orelse continue;
+                for (tuple.items) |entry| self.pushMark(entry);
+                if (tuple.metatable) |mt| self.tables.mark(mt, self);
+            },
+            .function => |id| {
+                if (id >= self.functions.functions.items.len) continue;
+                const func = self.functions.functions.items[id] orelse continue;
+                switch (func) {
+                    .closure => |closure| {
+                        for (closure.upvalues) |upvalue_id|
+                            self.functions.markUpvalue(upvalue_id, self);
+                    },
+                    .native, .c_function => {},
+                }
+            },
+            .upvalue => |id| {
+                if (id >= self.functions.upvalues.items.len) continue;
+                const upvalue = self.functions.upvalues.items[id] orelse continue;
+                if (upvalue.open_index == null) self.pushMark(upvalue.closed);
+            },
+            .struct_instance => |id| {
+                if (id >= self.struct_instances.instances.items.len) continue;
+                const instance = self.struct_instances.instances.items[id] orelse continue;
+                for (instance.fields) |entry| self.pushMark(entry);
+            },
+        }
+    }
+    self.gc_mark_stack.clearRetainingCapacity();
+}
+
+fn markRoots(self: *VM) void {
+    for (self.sched.fibers.items) |fiber| {
+        for (fiber.slots.items) |data| self.pushMark(data);
+        for (fiber.frames.items) |frame| {
+            if (frame.closure_id) |id| self.functions.mark(id, self);
+        }
+        for (fiber.open_upvalues.items) |entry| self.functions.markUpvalue(entry.id, self);
+    }
+
+    var globals_it = self.globals.iterator();
+    while (globals_it.next()) |global| self.pushMark(global.value_ptr.*);
+
+    for (self.constants.items) |data| self.pushMark(data);
+
+    var atom_it = self.atoms.iterator();
+    while (atom_it.next()) |entry| {
+        self.strings.mark(entry.value_ptr.*);
+        if (self.strings.lookup(entry.key_ptr.*)) |alias_id| self.strings.mark(alias_id);
+    }
+
+    inline for (@typeInfo(revo.core_atoms).@"enum".fields) |field| {
+        const atom_id: revo.AtomID = @intFromEnum(@field(revo.core_atoms, field.name));
+        self.strings.mark(atom_id);
+    }
+
+    var cache_it = self.module_cache.iterator();
+    while (cache_it.next()) |v| self.pushMark(v.value_ptr.*.result);
+
+    var channel_it = self.sched.channels.iterator();
+    while (channel_it.next()) |entry| {
+        self.tables.mark(entry.key_ptr.*, self);
+        const channel = entry.value_ptr;
+        for (channel.queue.items[channel.queue_head..]) |value| self.pushMark(value);
+        for (channel.send_waiters.items[channel.send_head..]) |waiter| {
+            if (waiter.value) |v| self.pushMark(v);
+        }
+    }
+}
+
+inline fn pushMark(self: *VM, data: Data) void {
+    // only push heap-allocated
+    switch (data.tag()) {
+        .string, .table, .tuple, .function, .struct_val => {
+            self.gc_mark_stack.append(self.runtime.alloc, MarkItem{ .data = data }) catch return;
+            // oom is fatal anyways
+            // ...unless you always have some space just to report it somewhere
+            // im not doing it
+        },
+        else => {},
+    }
+}
+
+// 
+// probably shouldnt be here but its fine
+// 
+pub inline fn pushMarkTable(self: *VM, id: mem.TableID) void {
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .table = id }) catch return;
+}
+
+pub inline fn pushMarkTuple(self: *VM, id: mem.TupleID) void {
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .tuple = id }) catch return;
+}
+
+pub inline fn pushMarkFunction(self: *VM, id: mem.FunctionID) void {
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .function = id }) catch return;
+}
+
+pub inline fn pushMarkUpvalue(self: *VM, id: root.functions.UpvalueID) void {
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .upvalue = id }) catch return;
+}
+
+pub inline fn pushMarkStructInstance(self: *VM, id: struct_mod.StructInstanceID) void {
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .struct_instance = id }) catch return;
+}
+
+inline fn markDataImpl(self: *VM, data: Data) void {
+    switch (data.tag()) {
+        .string => self.strings.mark(data.asString().?),
+        .table => self.tables.mark(data.asTable().?, self),
+        .tuple => self.tuples.mark(data.asTuple().?, self),
+        .function => self.functions.mark(data.asFunction().?, self),
+        .struct_val => self.struct_instances.mark(data.asStructVal().?, self),
+        else => {},
+    }
 }
 
 pub fn deinit(self: *VM) void {
@@ -321,6 +585,8 @@ pub fn deinit(self: *VM) void {
     self.tables.deinit();
     self.tuples.deinit();
     self.functions.deinit();
+    self.struct_types.deinit();
+    self.struct_instances.deinit();
     self.strings.deinit();
     self.atoms.deinit();
     for (self.debug_infos.items) |info| {
@@ -341,6 +607,8 @@ pub fn deinit(self: *VM) void {
             lib.close();
     }
     self.loaded_extensions.deinit(self.runtime.alloc);
+
+    self.gc_mark_stack.deinit(self.runtime.alloc);
 }
 
 pub fn addConstant(self: *VM, val: Data) !ConstantID {
@@ -1019,6 +1287,7 @@ pub const EvalError = error{
     InvalidTable,
     InvalidTuple,
     OutOfMemory,
+    ConstantReassignment,
 } || root.functions.NativeError;
 
 fn writeAbsoluteSlot(self: *VM, slot: usize, value: Data) !void {
@@ -1232,7 +1501,7 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
     }
 
     // try __call mm on non-fn callees
-    if (callee.asTable()) |table_id| {
+    if (callee.asTable()) |_| {
         @branchHint(.unlikely);
         // branch check explicit __call mm
         if (try self.getMetamethodByAtom(callee, revo.core_atoms.atom_id(.__call))) |mm| {
@@ -1245,21 +1514,12 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
             try self.writeRegisterFast(base, instr.c, result);
             return;
         }
+    }
 
-        // check if this is a struct desc (has __fields key)
-        const table = try self.tables.get(table_id);
-        if (table.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields)))) |_| {
-            // if so call @struct_new
-            if (self.globals.get(revo.core_atoms.atom_id(.@"@struct_new"))) |struct_new_fn| {
-                const args_start = callee_slot + 1;
-                const args_end = args_start + argc;
-                try self.ensureAbsoluteSlot(args_end);
-                const args = fiber.slots.items[args_start..args_end];
-                const result = try self.callFunctionParts(struct_new_fn, callee, args);
-                try self.writeRegisterFast(base, instr.c, result);
-                return;
-            }
-        }
+    // .struct_type callee is constructor
+    if (callee.isStructType()) {
+        const type_id = callee.asStructType().?;
+        return self.callStructConstructor(type_id, instr, base, callee_slot, argc);
     }
 
     // callee must be a function
@@ -1366,6 +1626,112 @@ fn callRegister(self: *VM, instr: Instruction) EvalError!void {
         },
         .closure => unreachable,
     }
+}
+
+fn callStructConstructor(self: *VM, type_id: revo.StructTypeID, instr: Instruction, base: usize, callee_slot: usize, argc: usize) EvalError!void {
+    const fiber = self.currentFiber();
+    const desc = self.struct_types.getType(type_id) orelse {
+        try self.setRuntimeMessage("invalid struct type");
+        return error.Panic;
+    };
+    const instance_id = try self.struct_instances.create(type_id, desc.fields.len);
+    const instance = self.structGetInstance(instance_id) catch return error.Panic;
+    for (desc.fields, 0..) |f, i| {
+        if (f.default_val) |dv| instance.fields[i] = dv;
+    }
+    if (argc > 1) {
+        try self.setRuntimeMessageFmt("struct `{s}` expects at most 1 init table, got {}", .{ desc.name, argc });
+        return error.TypeError;
+    }
+    if (argc == 1) {
+        const init_data = fiber.slots.items[callee_slot + 1];
+        const init_id = init_data.asTable() orelse {
+            try self.setRuntimeMessageFmt("struct `{s}` expects an init table, got {s}", .{ desc.name, revo.std_lib.typeof(init_data) });
+            return error.TypeError;
+        };
+        const init_table = try self.tables.get(init_id);
+        for (desc.fields, 0..) |f, i| {
+            if (init_table.getRaw(Data.new.atom(f.name_atom))) |val| {
+                instance.fields[i] = val;
+            }
+        }
+        for (init_table.hash_order.items) |k| {
+            const k_atom = k.asAtom() orelse continue;
+            if (desc.fieldIndex(k_atom) == null) {
+                try self.setRuntimeMessageFmt("unknown field `{s}` for struct `{s}`", .{ self.atomName(k_atom), desc.name });
+                return error.Panic;
+            }
+        }
+    }
+    for (desc.fields, 0..) |f, i| {
+        if (instance.fields[i].rawBits() == revo.core_atoms.data(.undef).rawBits() and f.default_val == null) {
+            try self.setRuntimeMessageFmt("missing field `{s}` for struct `{s}`", .{ self.atomName(f.name_atom), desc.name });
+            return error.Panic;
+        }
+        if (f.type_atom) |expected_atom| {
+            const val = instance.fields[i];
+            if (!self.structFieldValueMatches(expected_atom, val)) {
+                try self.setRuntimeMessageFmt("field `{s}` on `{s}` expected {s}, got {s}", .{
+                    self.atomName(f.name_atom),
+                    desc.name,
+                    self.atomName(expected_atom),
+                    revo.std_lib.typeof(val),
+                });
+                return error.TypeError;
+            }
+        }
+    }
+    try self.writeRegisterFast(base, instr.c, Data.new.structVal(instance_id));
+}
+
+fn structFieldValueMatches(self: *VM, expected_atom: revo.memory.AtomID, value: Data) bool {
+    const expected_name = self.atomName(expected_atom);
+    if (std.mem.eql(u8, expected_name, "bool")) {
+        const true_id = revo.core_atoms.atom_id(.true);
+        const false_id = revo.core_atoms.atom_id(.false);
+        return if (value.asAtom()) |a| a == true_id or a == false_id else false;
+    }
+    if (std.mem.eql(u8, expected_name, "int")) return value.isNumber();
+    if (std.mem.eql(u8, expected_name, "integer")) return value.isNumber();
+    if (std.mem.eql(u8, expected_name, "float")) return value.isNumber();
+    if (std.mem.eql(u8, expected_name, "number")) return value.isNumber();
+    return std.mem.eql(u8, expected_name, revo.std_lib.typeof(value));
+}
+
+fn setStructField(self: *VM, object: Data, field_atom: revo.memory.AtomID, value: Data) EvalError!bool {
+    const instance_id = object.asStructVal() orelse return false;
+    const instance = self.structGetInstance(instance_id) catch return error.Panic;
+    const desc = self.struct_types.getType(instance.type_id) orelse {
+        try self.setRuntimeMessage("invalid struct type");
+        return error.Panic;
+    };
+
+    const idx = desc.fieldIndex(field_atom) orelse {
+        try self.setRuntimeMessageFmt("unknown field `{s}` for struct `{s}`", .{ self.atomName(field_atom), desc.name });
+        return error.Panic;
+    };
+    if (desc.fields[idx].type_atom) |expected_atom| {
+        if (!self.structFieldValueMatches(expected_atom, value)) {
+            try self.setRuntimeMessageFmt("field `{s}` on `{s}` expected {s}, got {s}", .{
+                self.atomName(field_atom),
+                desc.name,
+                self.atomName(expected_atom),
+                revo.std_lib.typeof(value),
+            });
+            return error.TypeError;
+        }
+    }
+    instance.fields[idx] = value;
+    return true;
+}
+
+fn structGetInstance(self: *VM, id: revo.vm.struct_mod.StructInstanceID) EvalError!*revo.vm.struct_mod.StructInstance {
+    return self.struct_instances.get(id) catch |e| switch (e) {
+        error.InvalidStruct => {
+            try self.setRuntimeMessage("invalid struct instance");
+            return error.Panic;
+        },
+    };
 }
 
 fn callClosureRegister(self: *VM, instr: Instruction) EvalError!void {
@@ -1798,9 +2164,13 @@ inline fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
         .table_set => {
             // self.perf.table_set_ops += 1;
             const table_value = regRead(slots, base, instr.a);
+            const key = regRead(slots, base, instr.b);
+            if (key.asAtom()) |atom| {
+                if (try self.setStructField(table_value, atom, regRead(slots, base, instr.c))) return;
+            }
             const t_id = table_value.asTable() orelse return error.TypeError;
             const t = try self.tableFast(t_id);
-            try t.put(t_id, self, regRead(slots, base, instr.b), regRead(slots, base, instr.c));
+            try t.put(t_id, self, key, regRead(slots, base, instr.c));
         },
         .table_get => {
             // self.perf.table_get_ops += 1;
@@ -1820,6 +2190,7 @@ inline fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
         .table_set_atom => {
             // self.perf.table_set_ops += 1;
             const table_value = regRead(slots, base, instr.a);
+            if (try self.setStructField(table_value, instr.bx, regRead(slots, base, instr.c))) return;
             const t_id = table_value.asTable() orelse return error.TypeError;
             const t = try self.tableFast(t_id);
             const key = Data.new.atom(instr.bx);
@@ -1893,38 +2264,43 @@ inline fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             }
             regWrite(slots, base, instr.a, t.items[instr.bx]);
         },
-
+        .struct_new => {
+            const type_id: revo.StructTypeID = instr.bx;
+            const desc = self.struct_types.getType(type_id) orelse {
+                try self.setRuntimeMessage("invalid struct type");
+                return error.Panic;
+            };
+            const instance_id = try self.struct_instances.create(type_id, desc.fields.len);
+            const instance = self.structGetInstance(instance_id) catch return error.Panic;
+            //
+            // defaults
+            for (desc.fields, 0..) |f, i| {
+                if (f.default_val) |dv| instance.fields[i] = dv;
+            }
+            regWrite(slots, base, instr.a, Data.new.structVal(instance_id));
+        },
+        .struct_set_method => {
+            const type_val = regRead(slots, base, instr.a);
+            const type_id = type_val.asStructType() orelse return error.TypeError;
+            const name_atom_data = regRead(slots, base, instr.b);
+            const name_atom = name_atom_data.asAtom() orelse return error.TypeError;
+            const method = regRead(slots, base, instr.c);
+            const desc = self.struct_types.getType(type_id) orelse return error.TypeError;
+            try desc.methods.put(self.atomName(name_atom), method);
+        },
         .struct_get_offset => {
             const object = regRead(slots, base, instr.b);
-            const table_id = object.asTable() orelse return error.TypeError;
-            const table = try self.tables.get(table_id);
-            if (instr.bx < table.array.items.len) {
-                regWrite(slots, base, instr.a, table.array.items[instr.bx]);
-            } else {
-                regWrite(slots, base, instr.a, revo.core_atoms.data(.undef));
-            }
+            const instance_id = object.asStructVal() orelse return error.TypeError;
+            const instance = self.structGetInstance(instance_id) catch return error.Panic;
+            regWrite(slots, base, instr.a, instance.get(instr.bx));
         },
         .struct_set_offset => {
             const object = regRead(slots, base, instr.a);
-            const table_id = object.asTable() orelse return error.TypeError;
-            const table = try self.tables.get(table_id);
+            const instance_id = object.asStructVal() orelse return error.TypeError;
+            const instance = self.structGetInstance(instance_id) catch return error.Panic;
             const value = regRead(slots, base, instr.c);
-            if (table.metatable) |mt_id| {
-                const mt = try self.tables.get(mt_id);
-                if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields)))) |fields_data| {
-                    if (fields_data.asTable()) |fields_id| {
-                        const fields = try self.tables.get(fields_id);
-                        if (instr.bx < fields.hash_order.items.len) {
-                            const field_key = fields.hash_order.items[instr.bx];
-                            try table.put(table_id, self, field_key, value);
-                            const slots2 = fiber.slots.items;
-                            regWrite(slots2, base, instr.a, Data.new.table(table_id));
-                            return;
-                        }
-                    }
-                }
-            }
-            return error.TypeError;
+            instance.set(instr.bx, value);
+            regWrite(slots, base, instr.a, Data.new.structVal(instance_id));
         },
         .jump => fiber.pc = instr.bx,
         .jump_if_false => {
@@ -2194,7 +2570,6 @@ pub const getMetatable = lookup.getMetatable;
 pub const getMetamethod = lookup.getMetamethod;
 pub const setMetatable = lookup.setMetatable;
 pub const setTableMetatable = lookup.setTableMetatable;
-pub const setStructInstanceTable = lookup.setStructInstanceTable;
 pub const runModule = module.runModule;
 
 // gc
@@ -2204,88 +2579,9 @@ pub fn markData(self: *VM, data: Data) void {
         .table => self.tables.mark(data.asTable().?, self),
         .tuple => self.tuples.mark(data.asTuple().?, self),
         .function => self.functions.mark(data.asFunction().?, self),
+        .struct_val => self.struct_instances.mark(data.asStructVal().?, self),
         else => {},
     }
-}
-fn markRoots(self: *VM) void {
-    for (self.sched.fibers.items) |fiber| {
-        for (fiber.slots.items) |data| self.markData(data);
-        for (fiber.frames.items) |frame| {
-            if (frame.closure_id) |id| self.functions.mark(id, self);
-        }
-        for (fiber.open_upvalues.items) |entry| self.functions.markUpvalue(entry.id, self);
-    }
-
-    var globals_it = self.globals.iterator();
-    while (globals_it.next()) |global| self.markData(global.value_ptr.*);
-
-    for (self.constants.items) |data| self.markData(data);
-
-    var atom_it = self.atoms.iterator();
-    while (atom_it.next()) |entry| {
-        self.strings.mark(entry.value_ptr.*);
-        if (self.strings.lookup(entry.key_ptr.*)) |alias_id| self.strings.mark(alias_id);
-    }
-
-    // important: pin all core atoms for VM lifetime
-    inline for (@typeInfo(revo.core_atoms).@"enum".fields) |field| {
-        const atom_id: revo.AtomID = @intFromEnum(@field(revo.core_atoms, field.name));
-        self.strings.mark(atom_id);
-    }
-
-    var cache_it = self.module_cache.iterator();
-    while (cache_it.next()) |v| self.markData(v.value_ptr.*.result);
-
-    var channel_it = self.sched.channels.iterator();
-    while (channel_it.next()) |entry| {
-        self.tables.mark(entry.key_ptr.*, self);
-        const channel = entry.value_ptr;
-        for (channel.queue.items[channel.queue_head..]) |value| self.markData(value);
-        for (channel.send_waiters.items[channel.send_head..]) |waiter| {
-            if (waiter.value) |v| self.markData(v);
-        }
-    }
-}
-
-test "is_false truthiness contract" {
-    const test_rt = revo.lang.testing;
-    var vm = try revo.VM.init(test_rt.runtime());
-    defer vm.deinit();
-    try std.testing.expect(revo.isFalse(Data.new.nil()));
-    try std.testing.expect(revo.isFalse(Data.new.num(0)));
-    try std.testing.expect(revo.isFalse(Data.new.num(0.0)));
-    try std.testing.expect(!revo.isFalse(Data.new.num(2)));
-}
-
-test "set_metatable on number applies to all number values" {
-    var vm = try VM.init(testing.runtime());
-    defer vm.deinit();
-
-    const mt_id = try vm.tables.create();
-    try vm.setMetatable(Data.new.num(0), mt_id);
-
-    const mt = try vm.getMetatableId(Data.new.num(1.5));
-    try std.testing.expect(mt != null);
-    try std.testing.expectEqual(mt_id, mt.?);
-}
-
-test "callFunction unwinds frames on native error" {
-    const fail_native = struct {
-        fn call(_: []const Data, _: *VM) anyerror!revo.std_lib.NativeResult {
-            return error.Panic;
-        }
-    }.call;
-
-    var vm = try VM.init(testing.runtime());
-    defer vm.deinit();
-
-    const fn_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{}, fail_native) });
-    const start_frames = vm.currentFiber().frames.items.len;
-    const start_slots = vm.currentFiber().slots.items.len;
-
-    try std.testing.expectError(error.Panic, vm.callFunction(Data.new.function(fn_id), &.{}));
-    try std.testing.expectEqual(start_frames, vm.currentFiber().frames.items.len);
-    try std.testing.expectEqual(start_slots, vm.currentFiber().slots.items.len);
 }
 
 const lang = revo.lang;

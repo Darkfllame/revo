@@ -45,6 +45,35 @@ pub fn writeData(self: Data, writer: *std.Io.Writer, vm: *revo.VM, mode: Data.Re
             };
             tup.write(writer, vm, mode) catch try writer.writeAll("<tuple-unprintable>");
         },
+        .struct_val => {
+            const instance_id = self.asStructVal().?;
+            const instance = vm.struct_instances.get(instance_id) catch {
+                try writer.writeAll("<dead-struct>");
+                return;
+            };
+            const desc = vm.struct_types.getType(instance.type_id) orelse {
+                try writer.writeAll("<unknown-struct>");
+                return;
+            };
+            try writer.writeAll(desc.name);
+            try writer.writeAll("{ ");
+            for (desc.fields, 0..) |f, i| {
+                if (i != 0) try writer.writeAll(", ");
+                try writer.writeAll(vm.atomName(f.name_atom));
+                try writer.writeAll(" = ");
+                try writeData(instance.fields[i], writer, vm, mode);
+            }
+            try writer.writeAll(" }");
+        },
+        .struct_type => {
+            const type_id = self.asStructType().?;
+            const desc = vm.struct_types.getType(type_id) orelse {
+                try writer.writeAll("<unknown-type>");
+                return;
+            };
+            try writer.writeAll("#");
+            try writer.writeAll(desc.name);
+        },
     }
 }
 
@@ -60,11 +89,7 @@ pub fn writeTuple(t: *revo.tuple.Tuple, writer: *std.Io.Writer, vm: *revo.VM, mo
 
 pub fn writeTable(tbl: *revo.table.Table, writer: *std.Io.Writer, vm: *revo.VM, mode: Data.RenderMode) anyerror!void {
     try writer.writeAll("{ ");
-    const has_struct_fields = if (tbl.metatable) |mt_id| blk: {
-        const mt = try vm.tables.get(mt_id);
-        break :blk mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields))) != null;
-    } else false;
-    const should_write_idx = tbl.hash_entries.count() != 0 and !has_struct_fields;
+    const should_write_idx = tbl.hash_entries.count() != 0;
     for (tbl.array.items, 0..) |val, idx| {
         if (should_write_idx) {
             try writeData(Data.new.num(idx), writer, vm, mode);

@@ -462,10 +462,10 @@ test "repl can call a global function later" {
     try std.testing.expect(ok1);
     const before_call = env.out.written().len;
     const written_after_first = env.out.written();
-    std.debug.print("OUT after step1 ({d}): '{s}'\n", .{written_after_first.len, written_after_first});
+    std.debug.print("OUT after step1 ({d}): '{s}'\n", .{ written_after_first.len, written_after_first });
     const ok2 = try env.session.step(&env.out.writer, "f(1, 3)");
     try std.testing.expect(ok2);
     const written = env.out.written();
-    std.debug.print("OUT after step2 ({d}): '{s}'\n", .{written.len, written});
+    std.debug.print("OUT after step2 ({d}): '{s}'\n", .{ written.len, written });
     try std.testing.expect(std.mem.indexOfPos(u8, written, before_call, "4\n") != null);
 }

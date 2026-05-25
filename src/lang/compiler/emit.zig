@@ -100,8 +100,9 @@ fn stackEffect(op: Opcode) struct { pop: usize, push: usize } {
         .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .load_nil, .load_small_int, .load_const => .{ .pop = 0, .push = 1 },
         .table_set => .{ .pop = 3, .push = 0 },
         .table_get, .tuple_get => .{ .pop = 2, .push = 1 },
-        .table_set_atom, .struct_set_offset => .{ .pop = 2, .push = 0 },
+        .table_set_atom, .struct_set_offset, .struct_set_method => .{ .pop = 3, .push = 0 },
         .table_get_atom, .tuple_get_const, .struct_get_offset => .{ .pop = 1, .push = 1 },
+        .struct_new => .{ .pop = 0, .push = 1 },
         .join, .ret, .halt => .{ .pop = 1, .push = 0 },
         .yield, .jump, .unwrap_result, .call, .call_closure, .call_field, .spawn, .tuple_new, .range_init, .range_next, .range_for, .move => .{ .pop = 0, .push = 0 },
     };
@@ -114,7 +115,7 @@ fn resultType(op: Opcode) revo.lang.compiler.types.TypeInfo {
         .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float, .@"and", .@"or", .not => .bool,
         .load_nil => .void,
         .load_small_int => .int,
-        .load_const, .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .table_get, .table_get_atom, .tuple_get, .tuple_get_const, .struct_get_offset, .call, .call_closure, .call_field, .spawn, .join, .range_next, .unwrap_result, .move => .any,
+        .load_const, .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .table_get, .table_get_atom, .tuple_get, .tuple_get_const, .struct_get_offset, .struct_new, .call, .call_closure, .call_field, .spawn, .join, .range_next, .unwrap_result, .move => .any,
         else => .any,
     };
 }
@@ -144,6 +145,7 @@ fn toIrOp(op: Opcode) revo.lang.compiler.ir.IrOp {
         .table_set => .table_set,
         .table_new => .table_new,
         .call, .call_closure => .call,
+        .struct_new => .struct_new,
         .struct_get_offset => .struct_get_offset,
         .struct_set_offset => .struct_set_offset,
         else => .load_nil,
@@ -159,11 +161,12 @@ fn recordIr(self: *Compiler, op: Opcode, i: Instruction, op_arg: Operand) !void 
         .jump_if_false, .jump_if_true, .jump_if_not_nil_and_not_err, .jump_if_err => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 1, 0, null),
         .store_global, .store_global_const, .store_local, .store_upval, .bind_local => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 1, 0, null),
         .ret => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 1, 0, null),
-        .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 0, 1, null),
+        .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .struct_new => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 0, 1, null),
         .table_get, .tuple_get => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 2, 1, null),
         .table_get_atom, .tuple_get_const, .struct_get_offset, .join => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 1, 1, null),
         .table_set => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 3, 0, null),
         .table_set_atom, .struct_set_offset => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 2, 0, null),
+        .struct_set_method => try ctx.recordStackOp(.table_set, .any, i, 3, 0, null),
         .tuple_new => try ctx.recordStackOp(toIrOp(op), resultType(op), i, op_arg, 1, null),
         .call, .call_closure => try ctx.recordStackOp(toIrOp(.call), resultType(op), i, op_arg + 1, 1, null),
         .call_field => {
@@ -201,7 +204,7 @@ pub fn emit(self: *Compiler, op: Opcode, op_arg: Operand) !void {
             ir_rec = true;
         },
         // loads
-        .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .load_nil, .load_small_int, .load_const => {
+        .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .struct_new, .load_nil, .load_small_int, .load_const => {
             i = switch (op) {
                 .load_global => .{ .op = .load_global, .a = try toRegister(d), .bx = op_arg },
                 .load_stdlib_global => .{ .op = .load_stdlib_global, .a = try toRegister(d), .bx = op_arg },
@@ -209,6 +212,7 @@ pub fn emit(self: *Compiler, op: Opcode, op_arg: Operand) !void {
                 .load_upval => .{ .op = .load_upval, .a = try toRegister(d), .bx = op_arg },
                 .closure => .{ .op = .closure, .a = try toRegister(d), .bx = op_arg },
                 .table_new => .{ .op = .table_new, .a = try toRegister(d) },
+                .struct_new => .{ .op = .struct_new, .a = try toRegister(d), .bx = op_arg },
                 .load_nil => .{ .op = .load_nil, .a = try toRegister(d) },
                 .load_small_int => .{ .op = .load_small_int, .a = try toRegister(d), .bx = op_arg },
                 .load_const => .{ .op = .load_const, .a = try toRegister(d), .bx = op_arg },
@@ -216,7 +220,7 @@ pub fn emit(self: *Compiler, op: Opcode, op_arg: Operand) !void {
             };
             d += 1;
             if (self.ir_ctx) |*ctx| switch (op) {
-                .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 0, 1, null),
+                .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .struct_new => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 0, 1, null),
                 .load_const => try ctx.recordLoad(.load_const, .any, i, .none),
                 .load_nil => try ctx.recordLoad(.load_nil, .void, i, .none),
                 .load_small_int => try ctx.recordLoad(.load_int, .int, i, .{ .int_value = @intCast(op_arg) }),
@@ -272,6 +276,11 @@ pub fn emit(self: *Compiler, op: Opcode, op_arg: Operand) !void {
             std.debug.assert(d >= 2);
             i = .{ .op = op, .a = try toRegister(d - 2), .c = try toRegister(d - 1), .bx = op_arg };
             d -= 1;
+        },
+        .struct_set_method => {
+            std.debug.assert(d >= 3);
+            i = .{ .op = .struct_set_method, .a = try toRegister(d - 3), .b = try toRegister(d - 2), .c = try toRegister(d - 1) };
+            d -= 2;
         },
         .table_get_atom, .tuple_get_const, .struct_get_offset => {
             std.debug.assert(d > 0);

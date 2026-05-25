@@ -85,11 +85,13 @@ fn evalImpl(vm: *VM, lhs: Data, rhs: Data, instr: Instruction, comptime op: Opco
     if (!supports_order) {
         switch (op) {
             .eq, .neq => {
-                // identity check for atoms/functions/tables
+                // identity check for atoms/functions/tables/structs
                 const is_eq = switch (l_tag) {
                     .atom => lhs.asAtom().? == rhs.asAtom().?,
                     .function => lhs.asFunction().? == rhs.asFunction().?,
                     .table => lhs.asTable().? == rhs.asTable().?,
+                    .struct_val => lhs.asStructVal().? == rhs.asStructVal().?,
+                    .struct_type => lhs.asStructType().? == rhs.asStructType().?,
                     else => unreachable,
                 };
                 try vm.writeRegister(instr.a, Data.new.boolean(if (op == .eq) is_eq else !is_eq));
@@ -175,6 +177,8 @@ pub fn evalCachedFast(slots: []Data, base: usize, vm: *VM, instr: Instruction, c
                     .atom => lhs.asAtom().? == rhs.asAtom().?,
                     .function => lhs.asFunction().? == rhs.asFunction().?,
                     .table => lhs.asTable().? == rhs.asTable().?,
+                    .struct_val => lhs.asStructVal().? == rhs.asStructVal().?,
+                    .struct_type => lhs.asStructType().? == rhs.asStructType().?,
                     else => unreachable,
                 };
                 VM.regWrite(slots, base, instr.a, Data.new.boolean(if (op == .eq) is_eq else !is_eq));

@@ -74,11 +74,9 @@ pub const TablePool = struct {
     pub fn mark(self: *TablePool, id: memory.TableID, vm: *revo.VM) void {
         if (id >= self.tables.items.len) return;
         if (self.marks.isSet(id)) return;
-        if (self.tables.items[id]) |*t| {
-            self.marks.set(id);
-            t.mark(vm);
-            if (t.metatable) |mt| self.mark(mt, vm);
-        }
+        if (self.tables.items[id] == null) return;
+        self.marks.set(id);
+        vm.pushMarkTable(id);
     }
 
     pub fn sweep(self: *TablePool) void {
@@ -102,6 +100,37 @@ pub const TablePool = struct {
         }
         return total;
     }
+
+    pub fn clearMarks(self: *TablePool) void {
+        self.marks.unmanaged.unsetAll();
+    }
+
+    pub fn capacity(self: *const TablePool) usize {
+        return self.tables.items.len;
+    }
+
+    /// process up to `limit` items starting from `cursor`
+    /// ret n of processed
+    pub fn sweepStep(self: *TablePool, cursor: usize, limit: usize) usize {
+        if (cursor >= self.tables.items.len) return 0;
+
+        const end = @min(cursor + limit, self.tables.items.len);
+        var processed: usize = 0;
+
+        var i = cursor;
+        while (i < end) : (i += 1) {
+            if (self.tables.items[i]) |*t| {
+                if (!self.marks.isSet(i)) {
+                    t.deinit();
+                    self.tables.items[i] = null;
+                    self.dead.append(self.alloc, @intCast(i)) catch {};
+                }
+            }
+            processed += 1;
+        }
+
+        return processed;
+    }
 };
 
 pub const Table = struct {
@@ -114,25 +143,8 @@ pub const Table = struct {
                     const bits: u64 = key.rawBits();
                     h.update(std.mem.asBytes(&bits));
                 },
-                .string => {
-                    const id = key.asString().?;
-                    h.update(std.mem.asBytes(&id));
-                },
-                .atom => {
-                    const id = key.asAtom().?;
-                    h.update(std.mem.asBytes(&id));
-                },
-                .function => {
-                    const id = key.asFunction().?;
-                    h.update(std.mem.asBytes(&id));
-                },
-                .table => {
-                    const id = key.asTable().?;
-                    h.update(std.mem.asBytes(&id));
-                },
-                .tuple => {
-                    const id = key.asTuple().?;
-                    h.update(std.mem.asBytes(&id));
+                else => {
+                    h.update(std.mem.asBytes(&key.unboxed()));
                 },
             }
             return h.final();
@@ -176,64 +188,14 @@ pub const Table = struct {
             .function => a.asFunction().? == b.asFunction().?,
             .table => a.asTable().? == b.asTable().?,
             .tuple => a.asTuple().? == b.asTuple().?,
+            .struct_val => a.asStructVal().? == b.asStructVal().?,
+            .struct_type => a.asStructType().? == b.asStructType().?,
         };
     }
 
     fn integerArrayIndex(key: Data) ?usize {
         const n = key.asNumber() orelse return null;
         return if (n < 0 or !std.math.isFinite(n) or @floor(n) != n) null else @as(usize, @intFromFloat(n));
-    }
-
-    inline fn canonicalKey(key: Data) Data {
-        return key;
-    }
-
-    fn isBoolAtom(atom: memory.AtomID) bool {
-        return atom == revo.core_atoms.atom_id(.true) or atom == revo.core_atoms.atom_id(.false);
-    }
-
-    fn valueTypeName(value: Data) []const u8 {
-        return switch (value.tag()) {
-            .atom => if (value.asAtom().? == revo.core_atoms.atom_id(.nil)) "nil" else "atom",
-            .number => "number",
-            .string => "string",
-            .function => "function",
-            .table => "table",
-            .tuple => "tuple",
-        };
-    }
-
-    fn structFieldTypeMatches(expected: Data, value: Data, vm: *revo.VM) bool {
-        const expected_atom = expected.asAtom() orelse return true;
-        const expected_name = vm.atomName(expected_atom);
-        if (std.mem.eql(u8, expected_name, "bool")) {
-            return value.asAtom() != null and isBoolAtom(value.asAtom().?);
-        }
-        if (std.mem.eql(u8, expected_name, "integer")) return value.isNumber();
-        if (std.mem.eql(u8, expected_name, "float")) return value.isNumber();
-        return std.mem.eql(u8, expected_name, valueTypeName(value));
-    }
-
-    fn structName(mt: *Table, vm: *revo.VM) ![]const u8 {
-        const name = mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__name))) orelse revo.core_atoms.data(.nil);
-        return if (name.asString()) |id| vm.stringValue(id) else "<struct>";
-    }
-
-    pub fn structFieldIndex(self: *const Table, vm: *revo.VM, field_atom: memory.AtomID) !?usize {
-        const mt_id = self.metatable orelse return null;
-        const mt = try vm.tables.get(mt_id);
-        const fields_data = mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields))) orelse return null;
-        const fields_id = fields_data.asTable() orelse return null;
-        const fields = try vm.tables.get(fields_id);
-        const field_key = Data.new.atom(field_atom);
-        const offset_data = fields.getRaw(field_key) orelse return null;
-
-        if (offset_data.asNumber()) |n| {
-            if (n >= 0 and @floor(n) == n and n <= @as(f64, @floatFromInt(std.math.maxInt(usize)))) {
-                return @as(usize, @intFromFloat(n));
-            }
-        }
-        return null;
     }
 
     pub fn put(self: *Table, table_id: memory.TableID, vm: *revo.VM, key: Data, val: Data) !void {
@@ -244,53 +206,6 @@ pub const Table = struct {
 
         const mt_id = self.metatable.?;
         const mt = try vm.tables.get(mt_id);
-
-        // struct instances are table backed with descriptor as mt
-        if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields)))) |fields_data| {
-            const fields_id = fields_data.asTable() orelse return error.TypeError;
-            const fields = try vm.tables.get(fields_id);
-            const key_atom = key.asAtom() orelse {
-                const struct_name = try structName(mt, vm);
-                try vm.setRuntimeMessageFmt("unknown field `{s}` for struct `{s}`", .{ valueTypeName(key), struct_name });
-                return error.Panic;
-            };
-            const field_key = Data.new.atom(key_atom);
-            _ = fields.getRaw(field_key) orelse {
-                const struct_name = try structName(mt, vm);
-                try vm.setRuntimeMessageFmt("unknown field `{s}` for struct `{s}`", .{ vm.atomName(key_atom), struct_name });
-                return error.Panic;
-            };
-
-            if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__types)))) |types_data| {
-                if (types_data.asTable()) |types_id| {
-                    const types = try vm.tables.get(types_id);
-                    if (types.getRaw(field_key)) |expected| {
-                        if (!structFieldTypeMatches(expected, val, vm)) {
-                            const struct_name = try structName(mt, vm);
-                            try vm.setRuntimeMessageFmt("field `{s}` on `{s}` expected {s}, got {s}", .{
-                                vm.atomName(key_atom),
-                                struct_name,
-                                if (expected.asAtom()) |atom| vm.atomName(atom) else valueTypeName(expected),
-                                valueTypeName(val),
-                            });
-                            return error.Panic;
-                        }
-                    }
-                }
-            }
-
-            if (try self.structFieldIndex(vm, key_atom)) |field_idx| {
-                if (field_idx >= self.array.items.len) {
-                    const old_len = self.array.items.len;
-                    try self.array.resize(vm.runtime.alloc, field_idx + 1);
-                    @memset(self.array.items[old_len..], revo.core_atoms.data(.missing));
-                }
-                self.array.items[field_idx] = val;
-            }
-
-            try self.putRaw(key, val);
-            return;
-        }
 
         if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__newindex)))) |newindex_method| {
             if (newindex_method.asFunction()) |f| {
@@ -305,8 +220,7 @@ pub const Table = struct {
 
     pub fn putRaw(self: *Table, key: Data, val: Data) !void {
         self.ic_version +%= 1;
-        const canon = canonicalKey(key);
-        if (integerArrayIndex(canon)) |idx| {
+        if (integerArrayIndex(key)) |idx| {
             if (idx < self.array.items.len) {
                 self.array.items[idx] = val;
                 return;
@@ -316,26 +230,25 @@ pub const Table = struct {
             } // else fallback to hash
         }
 
-        if (self.hash_entries.getPtr(canon)) |entry_val| {
+        if (self.hash_entries.getPtr(key)) |entry_val| {
             entry_val.* = val;
             return;
         }
-        try self.hash_entries.put(canon, val);
-        try self.hash_order.append(self.alloc, canon);
+        try self.hash_entries.put(key, val);
+        try self.hash_order.append(self.alloc, key);
     }
 
-    pub fn push(self: *Table, val: Data) !void {
+    pub inline fn push(self: *Table, val: Data) !void {
         try self.array.append(self.alloc, val);
     }
 
-    pub fn getRaw(self: *Table, key: Data) ?Data {
-        const canon = canonicalKey(key);
-        if (integerArrayIndex(canon)) |idx| {
+    pub inline fn getRaw(self: *Table, key: Data) ?Data {
+        if (integerArrayIndex(key)) |idx| {
             if (idx < self.array.items.len) {
                 return self.array.items[idx];
             }
         }
-        return self.hash_entries.get(canon);
+        return self.hash_entries.get(key);
     }
 
     pub fn get(self: *Table, key: Data, vm: *revo.VM) !?Data {
@@ -376,9 +289,7 @@ pub const Table = struct {
         return 64 + 16 * self.count();
     }
 
-    pub fn write(self: *Table, writer: *std.Io.Writer, vm: *revo.VM, mode: Data.RenderMode) anyerror!void {
-        return revo.vm.print.writeTable(self, writer, vm, mode);
-    }
+    pub const write = revo.vm.print.writeTable;
 };
 
 test "table literals and field lookup work" {

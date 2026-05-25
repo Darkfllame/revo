@@ -136,11 +136,6 @@ pub const core_atoms = enum(AtomID) {
     __tostring,
     __debug,
     __call,
-    __fields,
-    __types,
-    __name,
-    __defaults,
-    @"@struct_new",
     SocketClosed,
     InvalidAddress,
     ConnectionFailed,
@@ -203,6 +198,8 @@ pub const AtomID = memory.AtomID;
 pub const FunctionID = memory.FunctionID;
 pub const TableID = memory.TableID;
 pub const TupleID = memory.TupleID;
+pub const StructTypeID = memory.StructTypeID;
+pub const StructInstanceID = memory.StructInstanceID;
 pub const ProgramCounter = vm.ProgramCounter;
 pub const ConstantID = vm.ConstantID;
 pub const GlobalID = vm.GlobalID;

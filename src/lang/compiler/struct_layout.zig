@@ -1,93 +1,76 @@
 const std = @import("std");
-
+const revo = @import("revo");
 const types_mod = @import("types.zig");
 
-pub const Field = struct { name: []const u8, field_type: types_mod.TypeInfo, offset: u32, size: u32 };
-
-pub const StructDescriptor = struct {
+pub const FieldDef = struct {
     name: []const u8,
-    fields: []Field,
-    size: u32,
-    alignment: u32,
-
-    pub fn deinit(self: StructDescriptor, alloc: std.mem.Allocator) void {
-        for (self.fields) |f| alloc.free(f.name);
-        alloc.free(self.fields);
-        alloc.free(self.name);
-    }
-    pub fn getFieldOffset(self: StructDescriptor, name: []const u8) ?u32 {
-        for (self.fields) |f| if (std.mem.eql(u8, f.name, name)) return f.offset;
-        return null;
-    }
-    pub fn getFieldType(self: StructDescriptor, name: []const u8) ?types_mod.TypeInfo {
-        for (self.fields) |f| if (std.mem.eql(u8, f.name, name)) return f.field_type;
-        return null;
-    }
+    field_type: types_mod.TypeInfo,
+    type_name: ?[]const u8 = null,
+    default_val: ?revo.memory.Data = null,
 };
+
+fn typeNameToTypeInfo(name: []const u8) types_mod.TypeInfo {
+    if (std.mem.eql(u8, name, "int")) return .int;
+    if (std.mem.eql(u8, name, "float")) return .float;
+    if (std.mem.eql(u8, name, "string")) return .string;
+    if (std.mem.eql(u8, name, "bool")) return .bool;
+    if (std.mem.eql(u8, name, "void")) return .void;
+    return .any;
+}
 
 pub const StructLayouter = struct {
     alloc: std.mem.Allocator,
-    layouts: std.StringHashMap(StructDescriptor),
 
     pub fn init(alloc: std.mem.Allocator) StructLayouter {
-        return .{ .alloc = alloc, .layouts = std.StringHashMap(StructDescriptor).init(alloc) };
+        return .{ .alloc = alloc };
     }
+
     pub fn deinit(self: *StructLayouter) void {
-        var it = self.layouts.valueIterator();
-        while (it.next()) |d| d.deinit(self.alloc);
-        self.layouts.deinit();
+        _ = self;
     }
-    pub fn layoutStruct(self: *StructLayouter, name: []const u8, defs: []const FieldDef) !StructDescriptor {
-        var fields = try std.ArrayList(Field).initCapacity(self.alloc, defs.len);
+
+    pub fn registerType(self: *StructLayouter, vm: *revo.VM, name: []const u8, defs: []const FieldDef) !revo.StructTypeID {
+        var fields = try std.ArrayList(revo.vm.struct_mod.StructField).initCapacity(self.alloc, defs.len);
         defer fields.deinit(self.alloc);
-        var off: u32 = 0;
         for (defs) |d| {
-            const sz: u32 = switch (d.field_type) { // explicit type avoids comptime_int inference
-                .bool => 1,
-                .int => 8,
-                .float => 8,
-                .string => 16,
-                .atom => 8,
-                .void => 0,
-                else => 16,
-            };
-            const alignment = @min(8, sz);
-            const rem = off % alignment;
-            if (rem != 0) off += alignment - rem;
-            try fields.append(self.alloc, .{ .name = try self.alloc.dupe(u8, d.name), .field_type = d.field_type, .offset = off, .size = sz });
-            off += sz;
+            const type_atom = if (d.type_name) |tn| blk: {
+                break :blk try vm.internAtom(tn);
+            } else if (d.field_type != .any) blk: {
+                break :blk try vm.internAtom(types_mod.typeName(d.field_type));
+            } else null;
+            try fields.append(self.alloc, .{
+                .name_atom = try vm.internAtom(d.name),
+                .type_atom = type_atom,
+                .default_val = d.default_val,
+            });
         }
-        const rem = off % 8;
-        if (rem != 0) off += 8 - rem;
-        const desc = StructDescriptor{
-            .name = try self.alloc.dupe(u8, name),
-            .fields = try fields.toOwnedSlice(self.alloc),
-            .size = off,
-            .alignment = 8,
-        };
-        try self.layouts.put(name, desc);
-        return desc;
+        return try vm.struct_types.registerType(name, fields.items, std.StringHashMap(revo.memory.Data).init(vm.runtime.alloc));
     }
-    pub fn getLayout(self: StructLayouter, name: []const u8) ?StructDescriptor {
-        return self.layouts.get(name);
+
+    pub fn getFieldCount(self: *StructLayouter, vm: *revo.VM, type_id: revo.StructTypeID) ?usize {
+        _ = self;
+        return vm.struct_types.fieldCount(type_id);
     }
-    pub fn hasLayout(self: StructLayouter, name: []const u8) bool {
-        return self.layouts.contains(name);
+
+    pub fn getFieldTypes(self: *StructLayouter, vm: *revo.VM, type_id: revo.StructTypeID) ?[]const revo.vm.struct_mod.StructField {
+        _ = self;
+        const desc = vm.struct_types.getType(type_id) orelse return null;
+        return desc.fields;
+    }
+
+    pub const TypeLayout = struct {
+        fields: []const FieldDef,
+    };
+
+    pub fn getLayout(self: *StructLayouter, vm: *revo.VM, name: []const u8) ?TypeLayout {
+        const type_id = vm.struct_types.findTypeByName(name) orelse return null;
+        const desc = vm.struct_types.getType(type_id) orelse return null;
+        var field_defs = std.ArrayList(FieldDef).initCapacity(self.alloc, desc.fields.len) catch return null;
+        for (desc.fields) |f| {
+            const field_name = vm.atomName(f.name_atom);
+            const field_type = if (f.type_atom) |ta| typeNameToTypeInfo(vm.atomName(ta)) else types_mod.TypeInfo.any;
+            field_defs.appendAssumeCapacity(.{ .name = field_name, .field_type = field_type });
+        }
+        return TypeLayout{ .fields = field_defs.items };
     }
 };
-
-pub const FieldDef = struct { name: []const u8, field_type: types_mod.TypeInfo };
-
-test "struct layout: single field" {
-    var l = StructLayouter.init(std.testing.allocator);
-    defer l.deinit();
-    const d = try l.layoutStruct("Point", &.{.{ .name = "x", .field_type = .int }});
-    try std.testing.expect(d.fields.len == 1);
-    try std.testing.expect(d.fields[0].offset == 0);
-}
-test "struct layout: alignment padding" {
-    var l = StructLayouter.init(std.testing.allocator);
-    defer l.deinit();
-    const d = try l.layoutStruct("Mixed", &.{ .{ .name = "a", .field_type = .bool }, .{ .name = "b", .field_type = .int } });
-    try std.testing.expect(d.fields[1].offset == 8);
-}

@@ -16,12 +16,6 @@ pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLooku
         .table => {
             const table_id = object.asTable().?;
             const t = try self.tables.get(table_id);
-            if (key.asAtom()) |atom| {
-                if (try t.structFieldIndex(self, atom)) |field_idx| {
-                    if (field_idx < t.array.items.len)
-                        return .{ .value = t.array.items[field_idx], .from_meta = false };
-                }
-            }
             if (t.getRaw(key)) |value| {
                 return .{ .value = value, .from_meta = false };
             }
@@ -65,6 +59,22 @@ pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLooku
             const type_mt_id = self.metatables[@intFromEnum(mem.Type.tuple)] orelse return null;
             if (instance_mt_id != null and instance_mt_id.? == type_mt_id) return null;
             return resolveViaMetatable(self, object, key, type_mt_id);
+        },
+        .struct_val => {
+            const instance_id = object.asStructVal().?;
+            const instance = self.struct_instances.get(instance_id) catch return null;
+            const desc = self.struct_types.getType(instance.type_id) orelse return null;
+
+            if (key.asAtom()) |atom| {
+                // check methods first
+                if (desc.methods.get(self.atomName(atom))) |method| {
+                    return .{ .value = method, .from_meta = true };
+                }
+                if (desc.fieldIndex(atom)) |i| {
+                    return .{ .value = instance.fields[i], .from_meta = false };
+                }
+            }
+            return null;
         },
         else => {
             const mt_id = try self.getMetatableId(object) orelse return null;
@@ -188,10 +198,6 @@ pub fn setTableMetatable(self: *VM, id: mem.TableID, mt: ?mem.TableID) !void {
     } else {
         self.metatables[@intFromEnum(mem.Type.table)] = mt;
     }
-}
-
-pub fn setStructInstanceTable(self: *VM, id: mem.TableID, descriptor_id: mem.TableID) !void {
-    try self.setTableMetatable(id, descriptor_id);
 }
 
 pub fn getMetatable(self: *VM, val: Data) !?*revo.table.Table {

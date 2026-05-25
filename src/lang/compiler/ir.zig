@@ -196,6 +196,7 @@ pub const IrOp = enum {
     table_new,
     table_get,
     table_set,
+    struct_new,
     struct_get_offset,
     struct_set_offset,
     closure,
@@ -320,7 +321,8 @@ fn selectOpcode(op: IrOp, t: types_mod.TypeInfo) Opcode {
         .negate => .negate,
         .move => .move,
         .closure => .closure,
-        .struct_get_offset => .table_get,
-        .struct_set_offset => .table_set,
+        .struct_new => .struct_new,
+        .struct_get_offset => .struct_get_offset,
+        .struct_set_offset => .struct_set_offset,
     };
 }

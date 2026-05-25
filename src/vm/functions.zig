@@ -234,26 +234,17 @@ pub const FunctionPool = struct {
     pub fn mark(self: *FunctionPool, id: mem.FunctionID, vm: *revo.VM) void {
         if (id >= self.functions.items.len) return;
         if (self.function_marks.isSet(id)) return;
-        if (self.functions.items[id]) |*func| {
-            self.function_marks.set(id);
-            switch (func.*) {
-                .closure => |closure| {
-                    for (closure.upvalues) |upvalue_id| {
-                        self.markUpvalue(upvalue_id, vm);
-                    }
-                },
-                .native, .c_function => {},
-            }
-        }
+        if (self.functions.items[id] == null) return;
+        self.function_marks.set(id);
+        vm.pushMarkFunction(id);
     }
 
     pub fn markUpvalue(self: *FunctionPool, id: UpvalueID, vm: *revo.VM) void {
         if (id >= self.upvalues.items.len) return;
         if (self.upvalue_marks.isSet(id)) return;
-        if (self.upvalues.items[id]) |*upvalue| {
-            self.upvalue_marks.set(id);
-            if (upvalue.open_index == null) vm.markData(upvalue.closed);
-        }
+        if (self.upvalues.items[id] == null) return;
+        self.upvalue_marks.set(id);
+        vm.pushMarkUpvalue(id);
     }
 
     pub fn sweep(self: *FunctionPool) void {
@@ -287,7 +278,7 @@ pub const FunctionPool = struct {
         }
     }
 
-    pub fn bytes(self: *const FunctionPool) usize {
+    pub inline fn bytes(self: *const FunctionPool) usize {
         var total: usize = 0;
         for (self.functions.items) |maybe_f| {
             if (maybe_f) |f| {
@@ -303,6 +294,59 @@ pub const FunctionPool = struct {
                 total += 24;
         }
         return total;
+    }
+
+    pub fn clearMarks(self: *FunctionPool) void {
+        self.function_marks.unmanaged.unsetAll();
+        self.upvalue_marks.unmanaged.unsetAll();
+    }
+
+    pub fn capacity(self: *const FunctionPool) usize {
+        return self.functions.items.len;
+    }
+
+    pub fn sweepStep(self: *FunctionPool, cursor: usize, limit: usize) usize {
+        if (cursor >= self.functions.items.len) return 0;
+
+        const end = @min(cursor + limit, self.functions.items.len);
+        var processed: usize = 0;
+
+        for (cursor..end) |i| {
+            if (self.functions.items[i]) |*f| {
+                if (!self.function_marks.isSet(i)) {
+                    switch (f.*) {
+                        .closure => |closure| self.alloc.free(closure.upvalues),
+                        .native, .c_function => {},
+                    }
+                    self.functions.items[i] = null; // mark as dead/free
+                    self.function_dead.append(self.alloc, @intCast(i)) catch {};
+                }
+            }
+            processed += 1;
+        }
+
+        return processed;
+    }
+
+    pub fn upvalueCapacity(self: *const FunctionPool) usize {
+        return self.upvalues.items.len;
+    }
+
+    pub fn sweepUpvalueStep(self: *FunctionPool, cursor: usize, limit: usize) usize {
+        if (cursor >= self.upvalues.items.len) return 0;
+
+        const end = @min(cursor + limit, self.upvalues.items.len);
+        var processed: usize = 0;
+
+        for (cursor..end) |i| {
+            if (self.upvalues.items[i] != null and !self.upvalue_marks.isSet(i)) {
+                self.upvalues.items[i] = null;
+                self.upvalue_dead.append(self.alloc, @intCast(i)) catch {};
+            }
+            processed += 1;
+        }
+
+        return processed;
     }
 };
 

@@ -7,10 +7,12 @@ pub const AtomID = usize;
 pub const FunctionID = usize;
 pub const TableID = usize;
 pub const TupleID = usize;
+pub const StructTypeID = usize;
+pub const StructInstanceID = usize;
 
 // nanbox layout: numbers stored as raw f64; boxed values set BOX_MASK and hold tag+payload
 // canonicalize NaN to CANONICAL_NAN for stable bitwise checks
-pub const Type = enum(u4) { number = 0, string = 1, atom = 2, function = 3, table = 4, tuple = 5 };
+pub const Type = enum(u4) { number = 0, string = 1, atom = 2, function = 3, table = 4, tuple = 5, struct_val = 6, struct_type = 7 };
 
 const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 pub const BOX_MASK: u64 = 0x7FF0_0000_0000_0000;
@@ -51,6 +53,12 @@ pub const Data = struct {
         pub fn tuple(id: TupleID) Data {
             return Data.boxed(.tuple, id);
         }
+        pub fn structVal(id: StructInstanceID) Data {
+            return Data.boxed(.struct_val, id);
+        }
+        pub fn structType(id: StructTypeID) Data {
+            return Data.boxed(.struct_type, id);
+        }
     };
 
     pub const RenderMode = enum(u1) { display, debug };
@@ -72,7 +80,7 @@ pub const Data = struct {
     pub inline fn tag(self: Data) Type {
         if ((self.bits & BOX_MASK) != BOX_MASK) return .number;
         const raw = (self.bits >> TAG_SHIFT) & TAG_MASK;
-        if (raw > @intFromEnum(Type.tuple)) return .number;
+        if (raw > @intFromEnum(Type.struct_type)) return .number;
         return @enumFromInt(raw);
     }
 
@@ -97,6 +105,12 @@ pub const Data = struct {
     pub inline fn isTuple(self: Data) bool {
         return self.tag() == .tuple;
     }
+    pub inline fn isStructVal(self: Data) bool {
+        return self.tag() == .struct_val;
+    }
+    pub inline fn isStructType(self: Data) bool {
+        return self.tag() == .struct_type;
+    }
 
     pub inline fn asStr(self: Data) ?StringID {
         if ((self.bits & BOX_MASK) == BOX_MASK and ((self.bits >> TAG_SHIFT) & TAG_MASK) == @intFromEnum(Type.string))
@@ -119,6 +133,9 @@ pub const Data = struct {
     pub inline fn asNumber(self: Data) ?f64 {
         return self.asNum();
     }
+    pub inline fn unboxed(self: Data) u64 {
+        return @intCast(self.bits & PAYLOAD_MASK);
+    }
     pub fn asString(self: Data) ?StringID {
         return if (self.isString()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
@@ -133,6 +150,12 @@ pub const Data = struct {
     }
     pub fn asTuple(self: Data) ?TupleID {
         return if (self.isTuple()) @intCast(self.bits & PAYLOAD_MASK) else null;
+    }
+    pub fn asStructVal(self: Data) ?StructInstanceID {
+        return if (self.isStructVal()) @intCast(self.bits & PAYLOAD_MASK) else null;
+    }
+    pub fn asStructType(self: Data) ?StructTypeID {
+        return if (self.isStructType()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
 
     pub inline fn rawBits(self: Data) u64 {

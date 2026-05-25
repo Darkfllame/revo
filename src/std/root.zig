@@ -28,7 +28,6 @@ pub fn register_stdlib(vm: *revo.VM) !void {
         .{ .name = "debug", .f = define(&[_]TypeSpec{}, debug_) },
         .{ .name = "@range", .f = define(&[_]TypeSpec{ .number, .number, .number }, range_) },
         .{ .name = "@range_from", .f = define(&[_]TypeSpec{ .number, .number }, range_from_) },
-        .{ .name = "@struct_new", .f = define(&[_]TypeSpec{ .table, .table }, struct_new) },
         .{ .name = "unwrap", .f = define(&[_]TypeSpec{.tuple}, try_) },
         .{ .name = "@dotest", .f = define(&[_]TypeSpec{ .string, .function }, dotest) },
         .{ .name = "@dosuite", .f = define(&[_]TypeSpec{ .string, .function }, dosuite) },
@@ -420,6 +419,8 @@ pub fn typeof(d: Data) []const u8 {
         .function => "function",
         .table => "table",
         .tuple => "tuple",
+        .struct_val => "struct",
+        .struct_type => "type",
     };
 }
 
@@ -428,89 +429,6 @@ pub fn typeof(d: Data) []const u8 {
 /// possible values: nil, number, string, atom, function, table, tuple
 pub fn typeof_(args: []const Data, vm: *VM) !NativeResult {
     return .okData(Data.new.atom(try vm.internAtom(typeof(args[0]))));
-}
-
-fn typeMatchesStructField(expected: Data, value: Data, vm: *VM) bool {
-    const expected_atom = expected.asAtom() orelse return true;
-    const expected_name = vm.atomName(expected_atom);
-
-    if (std.mem.eql(u8, expected_name, "bool")) {
-        return if (value.asAtom()) |a| isBoolAtom(a) else false;
-    }
-    if (std.mem.eql(u8, expected_name, "integer")) return value.isNumber();
-    if (std.mem.eql(u8, expected_name, "float")) return value.isNumber();
-    return std.mem.eql(u8, expected_name, typeof(value));
-}
-
-fn panicFmt(vm: *VM, comptime fmt_str: []const u8, args: anytype) !NativeResult {
-    const message = try std.fmt.allocPrint(vm.runtime.alloc, fmt_str, args);
-    defer vm.runtime.alloc.free(message);
-    try vm.setPanicMessage(message);
-    return .panic();
-}
-
-fn struct_new(args: []const Data, vm: *VM) !NativeResult {
-    const descriptor_id = args[0].asTable().?;
-    const init_id = args[1].asTable().?;
-
-    const descriptor = try vm.tables.get(descriptor_id);
-
-    const fields_id = (descriptor.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__fields))) orelse return .other("invalid struct descriptor")).asTable() orelse
-        return .other("invalid struct descriptor, fields has to be a table!");
-
-    const defaults_id = (descriptor.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__defaults))) orelse
-        return .other("invalid struct descriptor, no defaults!")).asTable() orelse return .other("invalid struct descriptor");
-
-    const types_id = (descriptor.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__types))) orelse
-        return .other("invalid struct descriptor, no types!")).asTable() orelse return .other("invalid struct descriptor");
-
-    const name_data = descriptor.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__name))) orelse return .other("invalid struct descriptor");
-    const name = if (name_data.asString()) |id| vm.stringValue(id) else "<struct>";
-
-    // allocate first, then refetch pointers,,,, pool growth can invalidate table refs
-    const instance_id = try vm.tables.create();
-    const instance = try vm.tables.get(instance_id);
-    const init = try vm.tables.get(init_id);
-    const fields = try vm.tables.get(fields_id);
-    const defaults = try vm.tables.get(defaults_id);
-    const types = try vm.tables.get(types_id);
-
-    for (fields.hash_order.items) |field_data| {
-        const field_key = field_data;
-        const field_atom = field_key.asAtom().?;
-        const field_name = vm.atomName(field_atom);
-        _ = fields.getRaw(field_key) orelse return .other("invalid struct descriptor");
-
-        const value = init.getRaw(field_key) orelse defaults.getRaw(field_key) orelse {
-            return panicFmt(vm, "missing field `{s}` for struct `{s}`", .{ field_name, name });
-        };
-
-        if (types.getRaw(field_key)) |expected| {
-            if (!typeMatchesStructField(expected, value, vm)) {
-                return panicFmt(vm, "field `{s}` on `{s}` expected {s}, got {s}", .{
-                    field_name,
-                    name,
-                    if (expected.asAtom()) |atom| vm.atomName(atom) else dataToString(expected),
-                    typeof(value),
-                });
-            }
-        }
-
-        try instance.push(value);
-        try instance.putRaw(field_key, value);
-    }
-
-    for (init.hash_order.items) |field_data| {
-        if (fields.getRaw(field_data) == null) {
-            return panicFmt(vm, "unknown field `{s}` for struct `{s}`", .{
-                vm.atomName(field_data.asAtom().?),
-                name,
-            });
-        }
-    }
-
-    try vm.setStructInstanceTable(instance_id, descriptor_id);
-    return .okData(Data.new.table(instance_id));
 }
 
 /// > tostring(arg0: any) -> string
