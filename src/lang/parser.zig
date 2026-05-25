@@ -794,7 +794,7 @@ const Parser = struct {
 
             // branch field: name: type = default
             const field_name = try self.expectIdent();
-            var field: ast.StructField = .{ .name = field_name.text };
+            var field: ast.StructField = .{ .name = field_name.text, .name_span = field_name.span() };
             if (self.match(.colon)) field.type_name = (try self.expectIdent()).text;
             if (self.match(.assign)) field.default_value = try self.parseStatementExpression(0);
             end_span = if (field.default_value) |value| value.span else field_name.span();

@@ -267,14 +267,26 @@ pub fn compileStruct(self: *Compiler, expr: *const Node, name: []const u8, items
     const struct_layout_mod = @import("struct_layout.zig");
     var field_defs = try std.ArrayList(struct_layout_mod.FieldDef).initCapacity(self.alloc, items.len);
     defer field_defs.deinit(self.alloc);
+
+    var seen = std.StringHashMap(bool).init(self.alloc);
+    defer seen.deinit();
+
     for (items) |item| {
         if (item == .field) {
-            try field_defs.append(self.alloc, .{
-                .name = item.field.name,
-                .field_type = if (item.field.type_name) |tn| type_check.resolveTypeName(self, tn) else types_mod.TypeInfo.any,
-                .type_name = item.field.type_name,
-                .default_val = if (item.field.default_value) |dv| evalConstNode(self, dv) else null,
-            });
+            const fname = item.field.name;
+            if (seen.get(fname) != null) {
+                const msg = try std.fmt.allocPrint(self.alloc, "duplicate field `{s}` in struct `{s}`", .{fname, name});
+                var tmp_node: Node = .{ .span = item.field.name_span, .expr = .nil };
+                return self.fail(.ParseError, &tmp_node, msg);
+            } else {
+                try seen.put(fname, true);
+                try field_defs.append(self.alloc, .{
+                    .name = item.field.name,
+                    .field_type = if (item.field.type_name) |tn| type_check.resolveTypeName(self, tn) else types_mod.TypeInfo.any,
+                    .type_name = item.field.type_name,
+                    .default_val = if (item.field.default_value) |dv| evalConstNode(self, dv) else null,
+                });
+            }
         }
     }
     const type_id = if (field_defs.items.len > 0)

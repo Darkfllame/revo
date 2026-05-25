@@ -106,6 +106,7 @@ pub const TableEntry = struct {
 
 pub const StructField = struct {
     name: []const u8,
+    name_span: Span,
     type_name: ?[]const u8 = null,
     default_value: ?*Node = null,
 };
