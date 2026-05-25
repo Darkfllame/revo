@@ -93,7 +93,7 @@ pub fn regRelease(self: *Compiler) !void {
 
 fn stackEffect(op: Opcode) struct { pop: usize, push: usize } {
     return switch (op) {
-        .add, .sub, .mul, .div, .mod, .add_int, .sub_int, .mul_int, .div_int, .mod_int, .add_float, .sub_float, .mul_float, .div_float, .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float, .@"and", .@"or" => .{ .pop = 2, .push = 1 },
+        .add, .sub, .mul, .div, .mod, .add_int, .sub_int, .mul_int, .div_int, .mod_int, .div_float, .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .@"and", .@"or" => .{ .pop = 2, .push = 1 },
         .negate, .not, .negate_int, .negate_float => .{ .pop = 1, .push = 1 },
         .jump_if_false, .jump_if_true, .jump_if_not_nil_and_not_err, .jump_if_err => .{ .pop = 1, .push = 0 },
         .store_global, .store_global_const, .store_local, .store_upval, .bind_local => .{ .pop = 1, .push = 0 },
@@ -104,39 +104,39 @@ fn stackEffect(op: Opcode) struct { pop: usize, push: usize } {
         .table_get_atom, .tuple_get_const, .struct_get_offset => .{ .pop = 1, .push = 1 },
         .struct_new => .{ .pop = 0, .push = 1 },
         .join, .ret, .halt => .{ .pop = 1, .push = 0 },
-        .yield, .jump, .unwrap_result, .call, .call_closure, .call_field, .spawn, .tuple_new, .range_init, .range_next, .range_for, .move => .{ .pop = 0, .push = 0 },
+        .yield, .jump, .unwrap_result, .call, .call_field, .spawn, .tuple_new, .range_init, .range_next, .range_for, .move => .{ .pop = 0, .push = 0 },
     };
 }
 
 fn resultType(op: Opcode) revo.lang.compiler.types.TypeInfo {
     return switch (op) {
         .add_int, .sub_int, .mul_int, .div_int, .mod_int, .negate_int => .int,
-        .add_float, .sub_float, .mul_float, .div_float, .negate_float => .float,
-        .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float, .@"and", .@"or", .not => .bool,
+        .div_float, .negate_float => .float,
+        .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .@"and", .@"or", .not => .bool,
         .load_nil => .void,
         .load_small_int => .int,
-        .load_const, .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .table_get, .table_get_atom, .tuple_get, .tuple_get_const, .struct_get_offset, .struct_new, .call, .call_closure, .call_field, .spawn, .join, .range_next, .unwrap_result, .move => .any,
+        .load_const, .load_global, .load_stdlib_global, .load_local, .load_upval, .closure, .table_new, .table_get, .table_get_atom, .tuple_get, .tuple_get_const, .struct_get_offset, .struct_new, .call, .call_field, .spawn, .join, .range_next, .unwrap_result, .move => .any,
         else => .any,
     };
 }
 
 fn toIrOp(op: Opcode) revo.lang.compiler.ir.IrOp {
     return switch (op) {
-        .add, .add_int, .add_float => .add,
-        .sub, .sub_int, .sub_float => .sub,
-        .mul, .mul_int, .mul_float => .mul,
+        .add, .add_int => .add,
+        .sub, .sub_int => .sub,
+        .mul, .mul_int => .mul,
         .div, .div_int, .div_float => .div,
         .mod, .mod_int => .mod,
         .negate, .negate_int, .negate_float => .negate,
         .@"and" => .@"and",
         .@"or" => .@"or",
         .not => .not,
-        .eq, .eq_int, .eq_float => .eq,
-        .neq, .neq_int, .neq_float => .neq,
-        .lt, .lt_int, .lt_float => .lt,
-        .gt, .gt_int, .gt_float => .gt,
-        .lte, .lte_int, .lte_float => .lte,
-        .gte, .gte_int, .gte_float => .gte,
+        .eq, .eq_int => .eq,
+        .neq, .neq_int => .neq,
+        .lt, .lt_int => .lt,
+        .gt, .gt_int => .gt,
+        .lte, .lte_int => .lte,
+        .gte, .gte_int => .gte,
         .load_const => .load_const,
         .load_stdlib_global => .load_stdlib_global,
         .load_nil => .load_nil,
@@ -144,7 +144,7 @@ fn toIrOp(op: Opcode) revo.lang.compiler.ir.IrOp {
         .table_get => .table_get,
         .table_set => .table_set,
         .table_new => .table_new,
-        .call, .call_closure => .call,
+        .call => .call,
         .struct_new => .struct_new,
         .struct_get_offset => .struct_get_offset,
         .struct_set_offset => .struct_set_offset,
@@ -154,7 +154,7 @@ fn toIrOp(op: Opcode) revo.lang.compiler.ir.IrOp {
 
 fn recordIr(self: *Compiler, op: Opcode, i: Instruction, op_arg: Operand) !void {
     if (self.ir_ctx) |*ctx| switch (op) {
-        .add, .sub, .mul, .div, .mod, .add_int, .sub_int, .mul_int, .div_int, .mod_int, .add_float, .sub_float, .mul_float, .div_float, .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float, .@"and", .@"or" => try ctx.recordBinary(toIrOp(op), resultType(op), i),
+        .add, .sub, .mul, .div, .mod, .add_int, .sub_int, .mul_int, .div_int, .mod_int, .div_float, .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .@"and", .@"or" => try ctx.recordBinary(toIrOp(op), resultType(op), i),
         .negate, .not, .negate_int, .negate_float => try ctx.recordUnary(toIrOp(op), resultType(op), i),
         .load_const, .load_nil, .load_small_int => {}, // already recorded at call site
         .jump, .yield, .halt => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 0, 0, null),
@@ -168,7 +168,7 @@ fn recordIr(self: *Compiler, op: Opcode, i: Instruction, op_arg: Operand) !void 
         .table_set_atom, .struct_set_offset => try ctx.recordStackOp(toIrOp(op), resultType(op), i, 2, 0, null),
         .struct_set_method => try ctx.recordStackOp(.table_set, .any, i, 3, 0, null),
         .tuple_new => try ctx.recordStackOp(toIrOp(op), resultType(op), i, op_arg, 1, null),
-        .call, .call_closure => try ctx.recordStackOp(toIrOp(.call), resultType(op), i, op_arg + 1, 1, null),
+        .call => try ctx.recordStackOp(toIrOp(.call), resultType(op), i, op_arg + 1, 1, null),
         .call_field => {
             const argc = op_arg & ~@as(Operand, 1 << 15);
             try ctx.recordStackOp(toIrOp(.call), resultType(op), i, argc + 2, 1, null);
@@ -189,7 +189,7 @@ pub fn emit(self: *Compiler, op: Opcode, op_arg: Operand) !void {
 
     switch (op) {
         // binary: pop 2, push 1, result in c
-        .add, .sub, .mul, .div, .mod, .add_int, .sub_int, .mul_int, .div_int, .mod_int, .add_float, .sub_float, .mul_float, .div_float, .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float, .@"and", .@"or" => {
+        .add, .sub, .mul, .div, .mod, .add_int, .sub_int, .mul_int, .div_int, .mod_int, .div_float, .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .@"and", .@"or" => {
             std.debug.assert(d >= 2);
             i = .{ .op = op, .a = try toRegister(d - 2), .b = try toRegister(d - 2), .c = try toRegister(d - 1) };
             d -= 1;
@@ -287,7 +287,7 @@ pub fn emit(self: *Compiler, op: Opcode, op_arg: Operand) !void {
             i = .{ .op = op, .a = try toRegister(d - 1), .b = try toRegister(d - 1), .bx = op_arg };
         },
         // calls
-        .call, .call_closure, .spawn => {
+        .call, .spawn => {
             std.debug.assert(d >= op_arg + 1);
             const base = d - op_arg - 1;
             i = .{ .op = op, .a = try toRegister(base), .b = try toRegister(op_arg), .c = try toRegister(base) };
@@ -365,7 +365,7 @@ pub fn fail(self: *Compiler, kind: anytype, expr: *const Node, msg: []const u8) 
 
 pub fn appendRecorded(self: *Compiler, instr: Instruction) !void {
     const op_arg: Operand = switch (instr.op) {
-        .call, .call_closure, .call_field, .spawn => @intCast(instr.b),
+        .call, .call_field, .spawn => @intCast(instr.b),
         else => instr.bx,
     };
     if (self.ir_ctx != null) try recordIr(self, instr.op, instr, op_arg);

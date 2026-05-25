@@ -143,7 +143,7 @@ pub const Compiler = struct {
 
     pub fn compileRoot(self: *Compiler, expr: *const Node) InternalLowerError!void {
         try self.compileFn(&.{}, null, expr, "__main", null);
-        try emit.emit(self, .call_closure, 0);
+        try emit.emit(self, .call, 0);
         try emit.emit(self, .halt, 0);
     }
 
@@ -392,17 +392,12 @@ pub const Compiler = struct {
                     }
                 }
                 if (reordered_args.ptr != call.args.ptr) self.alloc.free(reordered_args);
-                // emit call_closure when callee has a known signature; enables a direct-closure fast-path
-                if (state_mod.findFnSignature(self, fn_name) != null) {
-                    try emit.emit(self, .call_closure, @intCast(call.args.len + @intFromBool(call.implicit_self)));
-                } else {
-                    try emit.emit(self, .call, @intCast(call.args.len + @intFromBool(call.implicit_self)));
-                }
+                try emit.emit(self, .call, @intCast(call.args.len + @intFromBool(call.implicit_self)));
             },
             .fn_expr => {
                 try self.compile(call.callee, true);
                 for (call.args) |arg| try self.compile(arg, true);
-                try emit.emit(self, .call_closure, @intCast(call.args.len + @intFromBool(call.implicit_self)));
+                try emit.emit(self, .call, @intCast(call.args.len + @intFromBool(call.implicit_self)));
             },
             else => {
                 try self.compile(call.callee, true);

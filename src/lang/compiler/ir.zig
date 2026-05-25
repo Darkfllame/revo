@@ -163,7 +163,7 @@ pub fn verifyIrBytecode(ctx: *IrContext, emitted: []const Instruction, alloc: st
     while (idx < lowered.len) : (idx += 1) {
         const ir_bc = lowered[idx];
         const em_bc = emitted[idx];
-        const call_parity = (ir_bc.op == .call) and (em_bc.op == .call or em_bc.op == .call_field or em_bc.op == .call_closure);
+        const call_parity = (ir_bc.op == .call) and (em_bc.op == .call or em_bc.op == .call_field);
         if (!call_parity and ir_bc.op != em_bc.op) {
             std.debug.print("opcode mismatch at {d}:\n\tir={any}\n\temit={any}\n", .{ idx, ir_bc.op, em_bc.op });
             return false;
@@ -275,17 +275,17 @@ fn selectOpcode(op: IrOp, t: types_mod.TypeInfo) Opcode {
     return switch (op) {
         .add => switch (t) {
             .int => .add_int,
-            .float => .add_float,
+            .float => .add_int,
             else => .add,
         },
         .sub => switch (t) {
             .int => .sub_int,
-            .float => .sub_float,
+            .float => .sub_int,
             else => .sub,
         },
         .mul => switch (t) {
             .int => .mul_int,
-            .float => .mul_float,
+            .float => .mul_int,
             else => .mul,
         },
         .div => switch (t) {

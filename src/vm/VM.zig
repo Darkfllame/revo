@@ -1949,36 +1949,6 @@ inline fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             regWrite(slots, base, instr.a, Data.new.num(@divTrunc(@as(i64, @intFromFloat(@as(f64, @bitCast(lhs.bits)))), @as(i64, @intFromFloat(rv)))));
         },
 
-        .add_float => {
-            const lhs = regRead(slots, base, instr.b);
-            const rhs = regRead(slots, base, instr.c);
-            if (self.debug_assert_types) {
-                std.debug.assert(lhs.isNumber());
-                std.debug.assert(rhs.isNumber());
-            }
-            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) + @as(f64, @bitCast(rhs.bits))));
-        },
-
-        .sub_float => {
-            const lhs = regRead(slots, base, instr.b);
-            const rhs = regRead(slots, base, instr.c);
-            if (self.debug_assert_types) {
-                std.debug.assert(lhs.isNumber());
-                std.debug.assert(rhs.isNumber());
-            }
-            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) - @as(f64, @bitCast(rhs.bits))));
-        },
-
-        .mul_float => {
-            const lhs = regRead(slots, base, instr.b);
-            const rhs = regRead(slots, base, instr.c);
-            if (self.debug_assert_types) {
-                std.debug.assert(lhs.isNumber());
-                std.debug.assert(rhs.isNumber());
-            }
-            regWrite(slots, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) * @as(f64, @bitCast(rhs.bits))));
-        },
-
         .div_float => {
             const lhs = regRead(slots, base, instr.b);
             const rhs = regRead(slots, base, instr.c);
@@ -1993,18 +1963,18 @@ inline fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
         inline .eq, .neq, .lt, .gt, .lte, .gte => |op| try compare_impl.evalCachedFast(slots, base, self, instr, op),
 
         // specialized typed comparison opcodes
-        inline .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .eq_float, .neq_float, .lt_float, .gt_float, .lte_float, .gte_float => |op| {
+        inline .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int => |op| {
             const lhs_val = regRead(slots, base, instr.b);
             const rhs_val = regRead(slots, base, instr.c);
             const lhs: f64 = @bitCast(lhs_val.bits);
             const rhs: f64 = @bitCast(rhs_val.bits);
             const result = switch (op) {
-                .eq_int, .eq_float => lhs == rhs,
-                .neq_int, .neq_float => lhs != rhs,
-                .lt_int, .lt_float => lhs < rhs,
-                .gt_int, .gt_float => lhs > rhs,
-                .lte_int, .lte_float => lhs <= rhs,
-                .gte_int, .gte_float => lhs >= rhs,
+                .eq_int => lhs == rhs,
+                .neq_int => lhs != rhs,
+                .lt_int => lhs < rhs,
+                .gt_int => lhs > rhs,
+                .lte_int => lhs <= rhs,
+                .gte_int => lhs >= rhs,
                 else => unreachable,
             };
             regWrite(slots, base, instr.a, Data.new.boolean(result));
@@ -2246,7 +2216,6 @@ inline fn evalRegister(self: *VM, instr: Instruction) EvalError!void {
             try self.storeUpvalueData(closure.upvalues[instr.bx], regRead(slots, base, instr.a));
         },
         .call => try self.callRegister(instr),
-        .call_closure => try self.callRegister(instr),
         .call_field => try self.callFieldRegister(instr),
         .ret => try self.returnRegister(instr),
         .spawn => try self.spawnRegister(instr),

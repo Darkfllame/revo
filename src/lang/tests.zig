@@ -2693,7 +2693,7 @@ test "type: binary int + int emits add_int" {
     try std.testing.expect(saw_add_int);
 }
 
-test "type: binary float + float emits add_float" {
+test "type: binary float + float emits add_int" {
     var vm = try VM.init(t.runtime());
     defer vm.deinit();
 
@@ -2708,11 +2708,11 @@ test "type: binary float + float emits add_float" {
     defer alloc.free(built.ok.instructions);
     defer alloc.free(built.ok.spans);
 
-    var saw_add_float = false;
+    var saw_add_int = false;
     for (built.ok.instructions) |inst| {
-        if (inst.op == .add_float) saw_add_float = true;
+        if (inst.op == .add_int) saw_add_int = true;
     }
-    try std.testing.expect(saw_add_float);
+    try std.testing.expect(saw_add_int);
 }
 
 test "type: negate int emits negate_int" {
