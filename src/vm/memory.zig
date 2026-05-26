@@ -9,10 +9,21 @@ pub const TableID = usize;
 pub const TupleID = usize;
 pub const StructTypeID = usize;
 pub const StructInstanceID = usize;
+pub const NamespaceID = usize;
 
 // nanbox layout: numbers stored as raw f64; boxed values set BOX_MASK and hold tag+payload
 // canonicalize NaN to CANONICAL_NAN for stable bitwise checks
-pub const Type = enum(u4) { number = 0, string = 1, atom = 2, function = 3, table = 4, tuple = 5, struct_val = 6, struct_type = 7 };
+pub const Type = enum(u4) {
+    number = 0,
+    string = 1,
+    atom = 2,
+    function = 3,
+    table = 4,
+    tuple = 5,
+    struct_val = 6,
+    struct_type = 7,
+    namespace = 8,
+};
 
 const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 pub const BOX_MASK: u64 = 0x7FF0_0000_0000_0000;
@@ -59,6 +70,9 @@ pub const Data = struct {
         pub fn structType(id: StructTypeID) Data {
             return Data.boxed(.struct_type, id);
         }
+        pub fn namespace(id: NamespaceID) Data {
+            return Data.boxed(.namespace, id);
+        }
     };
 
     pub const RenderMode = enum(u1) { display, debug };
@@ -80,7 +94,7 @@ pub const Data = struct {
     pub inline fn tag(self: Data) Type {
         if ((self.bits & BOX_MASK) != BOX_MASK) return .number;
         const raw = (self.bits >> TAG_SHIFT) & TAG_MASK;
-        if (raw > @intFromEnum(Type.struct_type)) return .number;
+        if (raw > @intFromEnum(Type.namespace)) return .number;
         return @enumFromInt(raw);
     }
 
@@ -110,6 +124,9 @@ pub const Data = struct {
     }
     pub inline fn isStructType(self: Data) bool {
         return self.tag() == .struct_type;
+    }
+    pub inline fn isNamespace(self: Data) bool {
+        return self.tag() == .namespace;
     }
 
     pub inline fn asStr(self: Data) ?StringID {
@@ -156,6 +173,9 @@ pub const Data = struct {
     }
     pub fn asStructType(self: Data) ?StructTypeID {
         return if (self.isStructType()) @intCast(self.bits & PAYLOAD_MASK) else null;
+    }
+    pub fn asNamespace(self: Data) ?NamespaceID {
+        return if (self.isNamespace()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
 
     pub inline fn rawBits(self: Data) u64 {

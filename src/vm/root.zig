@@ -7,6 +7,7 @@ pub const lookup = @import("lookup.zig");
 pub const memory = @import("memory.zig");
 pub const Data = memory.Data;
 pub const module = @import("module.zig");
+pub const namespace = @import("namespace.zig");
 pub const opcode = @import("opcode.zig");
 pub const Instruction = opcode.Instruction;
 pub const Opcode = opcode.Opcode;
@@ -40,6 +41,7 @@ test {
     _ = @import("interner.zig");
     _ = @import("memory.zig");
     _ = @import("module.zig");
+    _ = @import("namespace.zig");
     _ = @import("opcode.zig");
     _ = @import("table.zig");
     _ = @import("testing.zig");

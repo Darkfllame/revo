@@ -74,6 +74,21 @@ pub fn writeData(self: Data, writer: *std.Io.Writer, vm: *revo.VM, mode: Data.Re
             try writer.writeAll("#");
             try writer.writeAll(desc.name);
         },
+        .namespace => {
+            const ns_id = self.asNamespace().?;
+            const ns = vm.namespaces.get(ns_id) catch {
+                try writer.writeAll("<dead-namespace>");
+                return;
+            };
+            const exports = vm.tables.get(ns.exports) catch {
+                try writer.writeAll("<dead-namespace-exports>");
+                return;
+            };
+            if (mode == .debug) {
+                try writer.print("#ns<{s}> ", .{ns.path});
+            }
+            exports.write(writer, vm, mode) catch try writer.writeAll("<namespace-unprintable>");
+        },
     }
 }
 

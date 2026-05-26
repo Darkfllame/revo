@@ -1,7 +1,10 @@
 # modules example
 # module import and caching
 const mod = import("mod/counter")
+print("mod has", mod)
 mod.count = 41
+print("mod has", mod)
+# reloads now
 const same = import("mod/counter")
 print("same has", same)
 print(same.count)
