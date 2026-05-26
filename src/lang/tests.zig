@@ -1227,9 +1227,8 @@ test "import caches modules and reuses the same table" {
     try tmp.dir.writeFile(io, .{
         .sub_path = "counter.rv",
         .data =
-        \\ let state = {count = 0}
+        \\ pub let state = {count = 0}
         \\ state.count = state.count + 1
-        \\ state
         ,
     });
 
@@ -1238,9 +1237,9 @@ test "import caches modules and reuses the same table" {
 
     try t.top_number_in_dir(module_dir,
         \\ const a = import "counter"
-        \\ a.count = 41
+        \\ a.state.count = 41
         \\ const b = import "counter"
-        \\ b.count
+        \\ b.state.count
     , 41);
 }
 
@@ -1252,7 +1251,7 @@ test "import keeps module globals isolated from importer globals" {
         .sub_path = "answer.rv",
         .data =
         \\ let x = 41
-        \\ {answer = x}
+        \\ pub const answer = x
         ,
     });
 
@@ -1264,6 +1263,40 @@ test "import keeps module globals isolated from importer globals" {
         \\ const mod = import "answer"
         \\ x + mod.answer
     , 140);
+}
+
+test "import exposes only pub bindings" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "vis.rv",
+        .data =
+        \\ const hidden = 7
+        \\ pub const shown = 9
+        ,
+    });
+
+    const module_dir = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(module_dir);
+
+    try t.top_number_in_dir(module_dir,
+        \\ const mod = import "vis"
+        \\ mod.shown
+    , 9);
+
+    try t.top_number_in_dir(module_dir,
+        \\ const mod = import "vis"
+        \\ if mod.hidden == :undef 1 else 0
+    , 1);
+}
+
+test "pub bindings must be top-level in modules" {
+    try t.expectCompileErrorInModule(
+        \\ do
+        \\   pub const x = 1
+        \\ end
+    , .ParseError);
 }
 
 test "locals are still local" {
@@ -1509,7 +1542,7 @@ test "imported module assignment is private to module cache" {
         .sub_path = "private_state.rv",
         .data =
         \\ const y = 7
-        \\ {value = y}
+        \\ pub const value = y
         ,
     });
 

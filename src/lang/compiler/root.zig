@@ -66,6 +66,7 @@ pub fn lowerExprArtifactReport(
     vm: *VM,
     expr: *const Node,
     test_mode: bool,
+    module_mode: bool,
 ) !ArtifactResult {
     var arena = std.heap.ArenaAllocator.init(vm.runtime.alloc);
     defer arena.deinit();
@@ -73,6 +74,7 @@ pub fn lowerExprArtifactReport(
     var compiler = try Compiler.init(
         vm,
         test_mode,
+        module_mode,
         arena.allocator(),
         vm.runtime.alloc,
     );
@@ -98,6 +100,7 @@ pub const Compiler = struct {
     runtime_alloc: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     test_mode: bool,
+    module_mode: bool,
     instructions: std.ArrayList(Instruction),
     functions: std.ArrayList(FunctionState),
     slot_allocators: std.ArrayList(LocalSlot),
@@ -125,6 +128,7 @@ pub const Compiler = struct {
     pub fn init(
         vm: *VM,
         test_mode: bool,
+        module_mode: bool,
         arena: std.mem.Allocator,
         runtime_alloc: std.mem.Allocator,
     ) !Compiler {
@@ -135,6 +139,7 @@ pub const Compiler = struct {
             .runtime_alloc = runtime_alloc,
             .arena = std.heap.ArenaAllocator.init(arena),
             .test_mode = test_mode,
+            .module_mode = module_mode,
             .instructions = try std.ArrayList(Instruction).initCapacity(arena, 32),
             .functions = try std.ArrayList(FunctionState).initCapacity(arena, 4),
             .slot_allocators = try std.ArrayList(LocalSlot).initCapacity(arena, 4),
@@ -960,6 +965,7 @@ pub const Compiler = struct {
         var temp_compiler = try Compiler.init(
             self.vm,
             self.test_mode,
+            self.module_mode,
             self.alloc,
             self.runtime_alloc,
         );
@@ -1017,14 +1023,36 @@ pub const Compiler = struct {
         binding: Binding,
         kind: BindingKind,
     ) InternalLowerError!void {
-        if (binding.target.expr == .ident and kind != .global)
-            return values.compileLocalBinding(
+        const can_export_pub =
+            binding.is_pub and self.module_mode;
+
+        if (binding.is_pub and !self.isModuleTopLevelBinding()) {
+            return self.fail(
+                .ParseError,
+                binding.target,
+                "`pub` only allowed on top-level module bindings",
+            );
+        }
+        if (binding.is_pub and binding.target.expr != .ident) {
+            return self.fail(
+                .ParseError,
+                binding.target,
+                "`pub` requires identifier binding",
+            );
+        }
+
+        if (binding.target.expr == .ident and kind != .global) {
+            try values.compileLocalBinding(
                 self,
                 binding.target.expr.ident,
                 binding.value,
                 kind != .con,
                 binding.type_name,
             );
+            if (can_export_pub)
+                try self.emitPubExport(binding.target.expr.ident);
+            return;
+        }
 
         if (binding.target.expr == .ident) {
             const name = binding.target.expr.ident;
@@ -1045,6 +1073,8 @@ pub const Compiler = struct {
                 if (kind != .con) .store_global else .store_global_const,
                 try self.vm.internAtom(name),
             );
+            if (can_export_pub)
+                try self.emitPubExport(name);
             return;
         }
 
@@ -1060,6 +1090,31 @@ pub const Compiler = struct {
         try self.compile(binding.value, true);
         const src_idx = self.active_registers - 1;
         try values.bindPattern(self, binding.target, src_idx, kind);
+    }
+
+    // top-level module body is the root function + first scope only
+    fn isModuleTopLevelBinding(self: *Compiler) bool {
+        if (self.functions.items.len != 1) return false;
+        const fn_state = state_mod.currentFunctionState(self) orelse return false;
+        return fn_state.scope_starts.items.len == 1;
+    }
+
+    // export write:
+    // __module_pub_exports.<name> = <top_of_stack_value>
+    fn emitPubExport(self: *Compiler, name: []const u8) InternalLowerError!void {
+        std.debug.assert(self.active_registers > 0);
+        const value_reg: usize = self.active_registers - 1;
+        try emit.emit(self, .load_global, try self.vm.internAtom("__module_pub_exports"));
+
+        const table_reg: usize = self.active_registers - 1;
+        const instr: Instruction = .{
+            .op = .table_set_atom,
+            .a = try state_mod.toRegister(table_reg),
+            .c = try state_mod.toRegister(value_reg),
+            .bx = try self.vm.internAtom(name),
+        };
+        try emit.appendRecorded(self, instr);
+        try emit.regRelease(self);
     }
 
     pub fn compileFn(

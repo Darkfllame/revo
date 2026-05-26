@@ -256,6 +256,30 @@ pub fn expectCompileError(source: []const u8, expected: lang.LowerErrorKind) !vo
     }
 }
 
+pub fn expectCompileErrorInModule(source: []const u8, expected: lang.LowerErrorKind) !void {
+    var vm = try revo.VM.init(runtime());
+    defer vm.deinit();
+
+    const result = try lang.build(&vm, .{ .text = source }, .{
+        .install_debug_info = false,
+        .module_mode = true,
+    });
+    switch (result) {
+        .ok => |artifact| {
+            defer alloc.free(artifact.instructions);
+            defer alloc.free(artifact.spans);
+            return error.ExpectedCompileFailure;
+        },
+        .err => |failure| switch (failure) {
+            .lower => |lower| {
+                defer lang.deinitError(alloc, failure);
+                try std.testing.expectEqual(expected, lower.kind);
+            },
+            .parse => return error.ExpectedLowerFailure,
+        },
+    }
+}
+
 pub fn expectCompileFailure(
     source: []const u8,
     expected_kind: lang.LowerErrorKind,

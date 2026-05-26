@@ -1,0 +1,3 @@
+let b = import("./b.rv")
+
+print(fmt("%?", b))

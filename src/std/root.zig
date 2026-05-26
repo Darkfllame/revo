@@ -809,7 +809,7 @@ pub fn import(args: []const Data, vm: *VM) !NativeResult {
     errdefer vm.runtime.alloc.free(cache_key);
 
     try vm.loading_stack.append(vm.runtime.alloc, cache_key);
-    const result = vm.runModule(resolved_path, source) catch |err| {
+    const result = vm.runImportedModule(resolved_path, source) catch |err| {
         _ = vm.loading_stack.pop();
         return if (err == error.OutOfMemory) error.OutOfMemory else err;
     };

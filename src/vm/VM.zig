@@ -2946,6 +2946,7 @@ pub const getMetamethod = lookup.getMetamethod;
 pub const setMetatable = lookup.setMetatable;
 pub const setTableMetatable = lookup.setTableMetatable;
 pub const runModule = module.runModule;
+pub const runImportedModule = module.runImportedModule;
 const Scheduler = @import("scheduler.zig");
 const struct_mod = @import("struct.zig");
 const vm_exec = @import("exec.zig");

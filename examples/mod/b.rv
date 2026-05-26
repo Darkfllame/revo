@@ -1,0 +1,6 @@
+print("hi")
+pub const f = fn() 1
+
+fn g() 2 # asdf 
+pub const val = 10
+const val_priv = 12

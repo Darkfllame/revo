@@ -145,6 +145,7 @@ fn expandBinding(
         .target = try expandInEnv(vm, allocator, binding.target, env, mode),
         .type_name = binding.type_name,
         .value = try expandInEnv(vm, allocator, binding.value, env, mode),
+        .is_pub = binding.is_pub,
     } });
 }
 
@@ -268,16 +269,19 @@ fn walkExpr(
             .target = try ctx.walk(allocator, v.target, ctx),
             .type_name = v.type_name,
             .value = try ctx.walk(allocator, v.value, ctx),
+            .is_pub = v.is_pub,
         } }),
         .con_expr => |v| alloc(allocator, expr.span, .{ .con_expr = .{
             .target = try ctx.walk(allocator, v.target, ctx),
             .type_name = v.type_name,
             .value = try ctx.walk(allocator, v.value, ctx),
+            .is_pub = v.is_pub,
         } }),
         .global => |v| alloc(allocator, expr.span, .{ .global = .{
             .target = try ctx.walk(allocator, v.target, ctx),
             .type_name = v.type_name,
             .value = try ctx.walk(allocator, v.value, ctx),
+            .is_pub = v.is_pub,
         } }),
         .tuple => |items| alloc(allocator, expr.span, .{ .tuple = try ctx.walkSlice(allocator, items, ctx) }),
         .tuple_pattern => |items| alloc(allocator, expr.span, .{ .tuple_pattern = try ctx.walkSlice(allocator, items, ctx) }),
@@ -408,7 +412,12 @@ fn runCompileTimeProc(parent_vm: *revo.VM, root: *Node, proc_name: []const u8) E
     var vm = revo.VM.init(parent_vm.runtime) catch return error.ProcCompileFailed;
     errdefer vm.deinit();
 
-    const artifact_report = compiler.lowerExprArtifactReport(&vm, root, false) catch return error.ProcCompileFailed;
+    const artifact_report = compiler.lowerExprArtifactReport(
+        &vm,
+        root,
+        false,
+        false,
+    ) catch return error.ProcCompileFailed;
     const artifact = switch (artifact_report) {
         .ok => |ok| ok,
         .err => |failure| {
