@@ -579,6 +579,7 @@ pub fn compilePatternChecks(
                     else => {},
                 }
                 const depth_before = self.active_registers;
+                const slot_before = self.slot_allocators.items[self.slot_allocators.items.len - 1];
                 try emitStorageLoad(self, subject);
                 try emit.emit(self, .tuple_get_const, idx);
                 // avoids re-indexing in nested checks
@@ -590,6 +591,7 @@ pub fn compilePatternChecks(
                 for (nested_fails) |jump_idx| try fail_jumps.append(self.alloc, jump_idx);
                 self.alloc.free(nested_fails);
                 self.active_registers = depth_before;
+                self.slot_allocators.items[self.slot_allocators.items.len - 1] = slot_before;
             }
         },
         else => {
