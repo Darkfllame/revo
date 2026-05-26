@@ -419,12 +419,12 @@ pub fn createNamespace(self: *VM, path: []const u8, exports_table: mem.TableID) 
 pub fn namespaceExportsTable(self: *VM, value: Data) !mem.TableID {
     if (value.asTable()) |table_id| return table_id;
     const ns_id = value.asNamespace() orelse return error.TypeError;
-    const ns = try self.namespaces.get(ns_id);
+    const ns = self.namespaces.get(ns_id) catch return error.TypeError;
     return ns.exports;
 }
 
 pub fn setNamespaceExports(self: *VM, ns_id: mem.NamespaceID, exports_table: mem.TableID) !void {
-    const ns = try self.namespaces.get(ns_id);
+    const ns = self.namespaces.get(ns_id) catch return;
     ns.exports = exports_table;
 }
 

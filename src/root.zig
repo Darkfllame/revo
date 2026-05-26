@@ -190,6 +190,7 @@ pub const table = vm.table;
 pub const tuple = vm.tuple;
 pub const functions = vm.functions;
 pub const module = vm.module;
+pub const namespace = vm.namespace;
 pub const opcode = vm.opcode;
 pub const bytecode = vm.bytecode;
 pub const Data = memory.Data;

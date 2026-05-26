@@ -125,7 +125,8 @@ pub fn runCompiledImportedModuleReport(
     try vm.seedBootstrapGlobals(&vm.globals);
     const exports_atom = try vm.internAtom("__module_pub_exports");
     const exports_table = try vm.tables.create();
-    try vm.globals.put(exports_atom, Data.new.table(exports_table));
+    const ns = try vm.createNamespace(source_path, exports_table);
+    try vm.globals.put(exports_atom, ns);
 
     const module_state = try revo.VM.Fiber.init(vm.runtime.alloc, vm.currentFiber().id, program);
     var module_state_with_debug = module_state;
@@ -139,7 +140,7 @@ pub fn runCompiledImportedModuleReport(
 
     const result = try vm.runReport();
     if (result == .ok) {
-        const exports_value = vm.globals.get(exports_atom) orelse Data.new.table(exports_table);
+        const exports_value = vm.globals.get(exports_atom) orelse ns;
         previous_state.result = exports_value;
     }
     return result;

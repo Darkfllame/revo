@@ -214,6 +214,7 @@ pub const Expr = union(enum) {
 pub const Node = struct {
     span: Span,
     expr: Expr,
+    synthetic_block: bool = false,
 
     pub fn print(self: *const Node, writer: *std.Io.Writer) anyerror!void {
         return self.printAt(writer, null);

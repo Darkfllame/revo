@@ -216,7 +216,13 @@ pub fn mergeWithDefaults(allocator: std.mem.Allocator, defaults: *Node, user: *N
         else => try items.append(allocator, defaults),
     }
     switch (user.expr) {
-        .block => |block| try items.appendSlice(allocator, block),
+        .block => |block| {
+            if (user.synthetic_block) {
+                try items.appendSlice(allocator, block);
+            } else {
+                try items.append(allocator, user);
+            }
+        },
         else => try items.append(allocator, user),
     }
     const span = ast.Span.merge(defaults.span, user.span);

@@ -106,7 +106,9 @@ const Parser = struct {
         const exprs = try self.parseExprListUntil(.eof);
         const eof = try self.expect(.eof);
         if (exprs.len == 1) return exprs[0];
-        return self.allocExpr(ast.spanFromNodes(exprs, eof.span()), .{ .block = exprs });
+        const node = try self.allocExpr(ast.spanFromNodes(exprs, eof.span()), .{ .block = exprs });
+        node.synthetic_block = true;
+        return node;
     }
 
     /// starts with a prefix node, then consumes infix/postfix ops while binding power allows
