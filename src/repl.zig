@@ -318,76 +318,44 @@ pub const Session = struct {
             .err => false,
         };
 
-        if (parse_ok) {
-            const snip_build = revo.lang.build(self.vm, .{ .name = "<repl>", .text = snippet }, .{}) catch |err| {
-                try out.print("repl build error: {}\n", .{err});
-                return true;
-            };
-
-            switch (snip_build) {
-                .ok => |artifact| {
-                    defer self.gpa.free(artifact.instructions);
-                    defer self.gpa.free(artifact.spans);
-
-                    self.vm.setProgramDebugInfo(artifact.spans, snippet, "<repl>") catch {};
-
-                    const run_result = revo.module.runCompiledSessionReport(self.vm, "<repl>", artifact.instructions) catch |err| {
-                        try out.print("runtime error: {}\n", .{err});
-                        self.clearSnippet();
-                        return true;
-                    };
-
-                    switch (run_result) {
-                        .ok => try self.printResult(out),
-                        .err => |failure| {
-                            try self.printRuntimeFailure(out, failure);
-                            self.clearSnippet();
-                        },
-                    }
-                },
-                .err => {
-                    // shouldn't normally happen since parse succeeded???
-                    try out.print("repl build error: {}\n", .{snip_build.err});
-                },
-            }
-        } else {
-            // incomplete fragment so accumulate and try building the whole block
+        const source = if (parse_ok) snippet else blk: {
             try self.source_acc.appendSlice(self.gpa, line);
             try self.source_acc.append(self.gpa, '\n');
+            break :blk self.source_acc.items;
+        };
 
-            const build_result = revo.lang.build(self.vm, .{ .name = "<repl>", .text = self.source_acc.items }, .{}) catch |build_err| {
-                try out.print("repl build error: {}\n", .{build_err});
+        const build_result = revo.lang.build(self.vm, .{ .name = "<repl>", .text = source }, .{}) catch |err| {
+            try out.print("repl build error: {}\n", .{err});
+            return true;
+        };
+
+        const artifact = switch (build_result) {
+            .ok => |ok| ok,
+            .err => |lang_err| {
+                try self.printBuildError(out, lang_err);
                 return true;
-            };
+            },
+        };
+        defer self.gpa.free(artifact.instructions);
+        defer self.gpa.free(artifact.spans);
 
-            const artifact = switch (build_result) {
-                .ok => |ok| ok,
-                .err => |err2| {
-                    try self.printBuildError(out, err2);
-                    return true;
-                },
-            };
-            defer self.gpa.free(artifact.instructions);
-            defer self.gpa.free(artifact.spans);
+        self.vm.setProgramDebugInfo(artifact.spans, source, "<repl>") catch {};
 
-            self.vm.setProgramDebugInfo(artifact.spans, self.source_acc.items, "<repl>") catch {};
+        const run_result = revo.module.runCompiledSessionReport(self.vm, "<repl>", artifact.instructions) catch |err| {
+            try out.print("runtime error: {}\n", .{err});
+            self.clearSnippet();
+            return true;
+        };
 
-            const run_result = revo.module.runCompiledSessionReport(self.vm, "<repl>", artifact.instructions) catch |run_err| {
-                try out.print("runtime error: {}\n", .{run_err});
+        switch (run_result) {
+            .ok => {
+                if (!parse_ok) self.source_acc.clearRetainingCapacity();
+                try self.printResult(out);
+            },
+            .err => |failure| {
+                try self.printRuntimeFailure(out, failure);
                 self.clearSnippet();
-                return true;
-            };
-
-            switch (run_result) {
-                .ok => {
-                    self.source_acc.clearRetainingCapacity();
-                    try self.printResult(out);
-                },
-                .err => |failure| {
-                    try self.printRuntimeFailure(out, failure);
-                    self.clearSnippet();
-                },
-            }
+            },
         }
 
         return true;

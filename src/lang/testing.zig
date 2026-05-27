@@ -78,17 +78,11 @@ fn runTopModuleChecked(vm: *revo.VM, source: []const u8, source_name: []const u8
 }
 
 fn printLangError(source: []const u8, failure: lang.Error) void {
-    var buf = std.Io.Writer.Allocating.init(alloc);
-    defer buf.deinit();
-    lang.renderError(alloc, &buf.writer, .{ .text = source }, failure) catch return;
-    std.debug.print("{s}", .{buf.written()});
+    revo.printBuildError(alloc, .{ .text = source }, failure);
 }
 
 fn printRuntimeFailure(source: []const u8, failure: revo.EvalFailure) void {
-    var buf = std.Io.Writer.Allocating.init(alloc);
-    defer buf.deinit();
-    failure.render(alloc, &buf.writer, source) catch return;
-    std.debug.print("{s}", .{buf.written()});
+    revo.printEvalError(alloc, source, failure);
 }
 
 pub fn topResult(source: []const u8, module_dir: ?[]const u8) !TopResult {

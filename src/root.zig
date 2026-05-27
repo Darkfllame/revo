@@ -47,11 +47,7 @@ pub const Runtime = struct {
         return switch (build_result) {
             .ok => |art| art,
             .err => |err| {
-                var buf = std.Io.Writer.Allocating.init(self.alloc);
-                defer buf.deinit();
-                try lang.renderError(self.alloc, &buf.writer, .{ .name = name, .text = source }, err);
-                std.debug.print("{s}", .{buf.written()});
-                lang.deinitError(self.alloc, err);
+                printBuildError(self.alloc, .{ .name = name, .text = source }, err);
                 return error.CompilationError;
             },
         };
@@ -178,6 +174,21 @@ pub fn renderFailureAt(
     message: []const u8,
 ) !void {
     try diagnostic.renderAt(alloc, writer, source_name, source, span, message, &.{}, &.{});
+}
+
+pub fn printBuildError(gpa: std.mem.Allocator, source_info: lang.Source, err: lang.Error) void {
+    var buf = std.Io.Writer.Allocating.init(gpa);
+    defer buf.deinit();
+    lang.renderError(gpa, &buf.writer, source_info, err) catch {};
+    std.debug.print("{s}", .{buf.written()});
+    lang.deinitError(gpa, err);
+}
+
+pub fn printEvalError(gpa: std.mem.Allocator, source: []const u8, failure: EvalFailure) void {
+    var buf = std.Io.Writer.Allocating.init(gpa);
+    defer buf.deinit();
+    failure.render(gpa, &buf.writer, source) catch {};
+    std.debug.print("{s}", .{buf.written()});
 }
 
 test {

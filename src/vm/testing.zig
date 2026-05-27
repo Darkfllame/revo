@@ -2,12 +2,7 @@ const std = @import("std");
 const revo = @import("revo");
 const vm_mod = @import("VM.zig");
 
-pub fn runtime() revo.Runtime {
-    return .{
-        .alloc = std.heap.page_allocator,
-        .io = std.testing.io,
-    };
-}
+pub const runtime = revo.lang.testing.runtime;
 
 pub fn run(vm: *vm_mod.VM) !void {
     const result = try vm.runReport();
@@ -15,10 +10,7 @@ pub fn run(vm: *vm_mod.VM) !void {
         .ok => {},
         .err => |failure| {
             if (vm.currentDebugSource()) |source| {
-                var buf = std.Io.Writer.Allocating.init(vm.runtime.alloc);
-                defer buf.deinit();
-                try failure.render(vm.runtime.alloc, &buf.writer, source);
-                std.debug.print("{s}", .{buf.written()});
+                revo.printEvalError(vm.runtime.alloc, source, failure);
             } else {
                 std.debug.print("error: {s}\n", .{failure.message});
             }

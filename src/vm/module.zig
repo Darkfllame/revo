@@ -15,11 +15,7 @@ pub fn runModuleReport(vm: *revo.VM, source_path: []const u8, source: []const u8
     const artifact = switch (try lang.build(vm, .{ .name = source_path, .text = source }, .{})) {
         .ok => |ok| ok,
         .err => |lang_err| {
-            var buf = std.Io.Writer.Allocating.init(vm.runtime.alloc);
-            defer buf.deinit();
-            lang.renderError(vm.runtime.alloc, &buf.writer, .{ .name = source_path, .text = source }, lang_err) catch {};
-            std.debug.print("{s}", .{buf.written()});
-            lang.deinitError(vm.runtime.alloc, lang_err);
+            revo.printBuildError(vm.runtime.alloc, .{ .name = source_path, .text = source }, lang_err);
             return error.ParseError;
         },
     };
@@ -40,11 +36,7 @@ pub fn runImportedModuleReport(vm: *revo.VM, source_path: []const u8, source: []
     })) {
         .ok => |ok| ok,
         .err => |lang_err| {
-            var buf = std.Io.Writer.Allocating.init(vm.runtime.alloc);
-            defer buf.deinit();
-            lang.renderError(vm.runtime.alloc, &buf.writer, .{ .name = source_path, .text = source }, lang_err) catch {};
-            std.debug.print("{s}", .{buf.written()});
-            lang.deinitError(vm.runtime.alloc, lang_err);
+            revo.printBuildError(vm.runtime.alloc, .{ .name = source_path, .text = source }, lang_err);
             return error.ParseError;
         },
     };
@@ -53,47 +45,51 @@ pub fn runImportedModuleReport(vm: *revo.VM, source_path: []const u8, source: []
     return runCompiledImportedModuleReport(vm, source_path, artifact.instructions);
 }
 
+fn swapFiberAndRun(vm: *revo.VM, source_path: []const u8, program: []const revo.Instruction) !struct { result: revo.EvalResult, prev: revo.VM.Fiber } {
+    try vm.setProgramSourceName(source_path);
+
+    const module_dir = std.fs.path.dirname(source_path) orelse ".";
+    const prev_module_dir = vm.module_dir;
+    vm.module_dir = module_dir;
+    defer vm.module_dir = prev_module_dir;
+
+    const fiber = try revo.VM.Fiber.init(vm.runtime.alloc, vm.currentFiber().id, program);
+    var fiber_wd = fiber;
+    fiber_wd.debug_info_id = vm.pending_debug_info_id;
+
+    const prev = vm.swapFiber(fiber_wd);
+    const result = try vm.runReport();
+    return .{ .result = result, .prev = prev };
+}
+
 pub fn runCompiledModuleReport(
     vm: *revo.VM,
     source_path: []const u8,
     program: []const revo.Instruction,
 ) !revo.EvalResult {
-    try vm.setProgramSourceName(source_path);
+    const mg = revo.VM.Globals.init(vm.runtime.alloc);
+    const mcg = @TypeOf(vm.const_globals).init(vm.runtime.alloc);
 
-    const module_globals = revo.VM.Globals.init(vm.runtime.alloc);
-    const module_const_globals = @TypeOf(vm.const_globals).init(vm.runtime.alloc);
-
-    const module_dir = std.fs.path.dirname(source_path) orelse ".";
-    const previous_module_dir = vm.module_dir;
-    vm.module_dir = module_dir;
-    defer vm.module_dir = previous_module_dir;
-
-    const previous_globals = vm.globals;
-    const previous_const_globals = vm.const_globals;
-    vm.globals = module_globals;
-    vm.const_globals = module_const_globals;
+    const pg = vm.globals;
+    const pcg = vm.const_globals;
+    vm.globals = mg;
+    vm.const_globals = mcg;
     defer {
         vm.globals.deinit();
         vm.const_globals.deinit();
-        vm.globals = previous_globals;
-        vm.const_globals = previous_const_globals;
+        vm.globals = pg;
+        vm.const_globals = pcg;
     }
 
     try vm.seedBootstrapGlobals(&vm.globals);
 
-    const module_state = try revo.VM.Fiber.init(vm.runtime.alloc, vm.currentFiber().id, program);
-    var module_state_with_debug = module_state;
-    module_state_with_debug.debug_info_id = vm.pending_debug_info_id;
-
-    var previous_state = vm.swapFiber(module_state_with_debug);
+    var r = try swapFiberAndRun(vm, source_path, program);
     defer {
-        var finished_state = vm.swapFiber(previous_state);
-        revo.VM.Fiber.deinit(&finished_state, vm.runtime.alloc);
+        var finished = vm.swapFiber(r.prev);
+        revo.VM.Fiber.deinit(&finished, vm.runtime.alloc);
     }
-
-    const result = try vm.runReport();
-    if (result == .ok) previous_state.result = vm.currentResult();
-    return result;
+    if (r.result == .ok) r.prev.result = vm.currentResult();
+    return r.result;
 }
 
 pub fn runCompiledImportedModuleReport(
@@ -101,25 +97,18 @@ pub fn runCompiledImportedModuleReport(
     source_path: []const u8,
     program: []const revo.Instruction,
 ) !revo.EvalResult {
-    try vm.setProgramSourceName(source_path);
+    const mg = revo.VM.Globals.init(vm.runtime.alloc);
+    const mcg = @TypeOf(vm.const_globals).init(vm.runtime.alloc);
 
-    const module_globals = revo.VM.Globals.init(vm.runtime.alloc);
-    const module_const_globals = @TypeOf(vm.const_globals).init(vm.runtime.alloc);
-
-    const module_dir = std.fs.path.dirname(source_path) orelse ".";
-    const previous_module_dir = vm.module_dir;
-    vm.module_dir = module_dir;
-    defer vm.module_dir = previous_module_dir;
-
-    const previous_globals = vm.globals;
-    const previous_const_globals = vm.const_globals;
-    vm.globals = module_globals;
-    vm.const_globals = module_const_globals;
+    const pg = vm.globals;
+    const pcg = vm.const_globals;
+    vm.globals = mg;
+    vm.const_globals = mcg;
     defer {
         vm.globals.deinit();
         vm.const_globals.deinit();
-        vm.globals = previous_globals;
-        vm.const_globals = previous_const_globals;
+        vm.globals = pg;
+        vm.const_globals = pcg;
     }
 
     try vm.seedBootstrapGlobals(&vm.globals);
@@ -128,22 +117,16 @@ pub fn runCompiledImportedModuleReport(
     const ns = try vm.createNamespace(source_path, exports_table);
     try vm.globals.put(exports_atom, ns);
 
-    const module_state = try revo.VM.Fiber.init(vm.runtime.alloc, vm.currentFiber().id, program);
-    var module_state_with_debug = module_state;
-    module_state_with_debug.debug_info_id = vm.pending_debug_info_id;
-
-    var previous_state = vm.swapFiber(module_state_with_debug);
+    var r = try swapFiberAndRun(vm, source_path, program);
     defer {
-        var finished_state = vm.swapFiber(previous_state);
-        revo.VM.Fiber.deinit(&finished_state, vm.runtime.alloc);
+        var finished = vm.swapFiber(r.prev);
+        revo.VM.Fiber.deinit(&finished, vm.runtime.alloc);
     }
-
-    const result = try vm.runReport();
-    if (result == .ok) {
+    if (r.result == .ok) {
         const exports_value = vm.globals.get(exports_atom) orelse ns;
-        previous_state.result = exports_value;
+        r.prev.result = exports_value;
     }
-    return result;
+    return r.result;
 }
 
 /// run compiled code in the current vm globals or constglobals context
@@ -153,30 +136,14 @@ pub fn runCompiledSessionReport(
     source_path: []const u8,
     program: []const revo.Instruction,
 ) !revo.EvalResult {
-    try vm.setProgramSourceName(source_path);
-
-    const module_dir = std.fs.path.dirname(source_path) orelse ".";
-    const previous_module_dir = vm.module_dir;
-    vm.module_dir = module_dir;
-    defer vm.module_dir = previous_module_dir;
-
     try vm.seedBootstrapGlobals(&vm.globals);
-
-    const module_state = try revo.VM.Fiber.init(vm.runtime.alloc, vm.currentFiber().id, program);
-    var module_state_with_debug = module_state;
-    module_state_with_debug.debug_info_id = vm.pending_debug_info_id;
-
-    var previous_state = vm.swapFiber(module_state_with_debug);
+    var r = try swapFiberAndRun(vm, source_path, program);
     defer {
-        var finished_state = vm.swapFiber(previous_state);
-        revo.VM.Fiber.deinit(&finished_state, vm.runtime.alloc);
+        var finished = vm.swapFiber(r.prev);
+        revo.VM.Fiber.deinit(&finished, vm.runtime.alloc);
     }
-
-    const result = try vm.runReport();
-    if (result == .ok) {
-        previous_state.result = vm.currentResult();
-    }
-    return result;
+    if (r.result == .ok) r.prev.result = vm.currentResult();
+    return r.result;
 }
 
 test "module message setters clear previous values" {
