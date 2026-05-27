@@ -102,7 +102,9 @@ pub const Data = struct {
         return self.tag() == t;
     }
     pub inline fn isNumber(self: Data) bool {
-        return self.tag() == .number;
+        if ((self.bits & BOX_MASK) != BOX_MASK) return true;
+        const raw = (self.bits >> TAG_SHIFT) & TAG_MASK;
+        return raw > @intFromEnum(Type.module);
     }
     pub inline fn isString(self: Data) bool {
         return self.tag() == .string;
@@ -138,7 +140,8 @@ pub const Data = struct {
     // inline numeric accessors used in hot paths
     // asNum -> ?f64, as_number -> error-union
     pub inline fn asNum(self: Data) ?f64 {
-        return if (self.tag() == .number) @bitCast(self.bits) else null;
+        if (!self.isNumber()) return null;
+        return @bitCast(self.bits);
     }
 
     pub inline fn as_number(self: Data) !f64 {
@@ -149,28 +152,28 @@ pub const Data = struct {
     pub inline fn unboxed(self: Data) u64 {
         return @intCast(self.bits & PAYLOAD_MASK);
     }
-    pub fn asString(self: Data) ?StringID {
+    pub inline fn asString(self: Data) ?StringID {
         return if (self.isString()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
-    pub fn asAtom(self: Data) ?AtomID {
+    pub inline fn asAtom(self: Data) ?AtomID {
         return if (self.isAtom()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
-    pub fn asFunction(self: Data) ?FunctionID {
+    pub inline fn asFunction(self: Data) ?FunctionID {
         return if (self.isFunction()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
-    pub fn asTable(self: Data) ?TableID {
+    pub inline fn asTable(self: Data) ?TableID {
         return if (self.isTable()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
-    pub fn asTuple(self: Data) ?TupleID {
+    pub inline fn asTuple(self: Data) ?TupleID {
         return if (self.isTuple()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
-    pub fn asStructVal(self: Data) ?StructInstanceID {
+    pub inline fn asStructVal(self: Data) ?StructInstanceID {
         return if (self.isStructVal()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
-    pub fn asStructType(self: Data) ?StructTypeID {
+    pub inline fn asStructType(self: Data) ?StructTypeID {
         return if (self.isStructType()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
-    pub fn asNamespace(self: Data) ?NamespaceID {
+    pub inline fn asNamespace(self: Data) ?NamespaceID {
         return if (self.isNamespace()) @intCast(self.bits & PAYLOAD_MASK) else null;
     }
 

@@ -26,7 +26,7 @@ pub const StructDescriptor = struct {
         self.methods.deinit();
     }
 
-    pub fn fieldIndex(self: *const StructDescriptor, name_atom: memory.AtomID) ?usize {
+    pub inline fn fieldIndex(self: *const StructDescriptor, name_atom: memory.AtomID) ?usize {
         return self.field_index.get(name_atom);
     }
 };
@@ -61,7 +61,7 @@ pub const StructTypePool = struct {
         return id;
     }
 
-    pub fn getType(self: *StructTypePool, id: StructTypeID) ?*StructDescriptor {
+    pub inline fn getType(self: *StructTypePool, id: StructTypeID) ?*StructDescriptor {
         if (id >= self.types.items.len) return null;
         return &self.types.items[id];
     }
@@ -158,7 +158,7 @@ pub const StructInstancePool = struct {
         return id;
     }
 
-    pub fn get(self: *StructInstancePool, id: StructInstanceID) !*StructInstance {
+    pub inline fn get(self: *StructInstancePool, id: StructInstanceID) !*StructInstance {
         if (id >= self.instances.items.len) return error.InvalidStruct;
         if (self.instances.items[id]) |*s| return s;
         return error.InvalidStruct;
