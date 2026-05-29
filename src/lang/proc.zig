@@ -149,10 +149,9 @@ fn expandBinding(
         .target = try expandInEnv(vm, allocator, binding.target, env, mode),
         .type_name = binding.type_name,
         .value = try expandInEnv(vm, allocator, binding.value, env, mode),
-        .is_pub = binding.is_pub,
         .mutable = binding.mutable,
     } };
-    return ast.allocNode(allocator, span, ast.setPub(constructed, binding.is_pub));
+    return ast.allocNode(allocator, span, constructed);
 }
 
 fn maybeExpandCall(
@@ -259,8 +258,6 @@ fn runCompileTimeProc(parent_vm: *revo.VM, root: *Node, proc_name: []const u8) E
         &vm,
         root,
         false,
-        false,
-        null,
     ) catch return error.ProcCompileFailed;
     const artifact = switch (artifact_report) {
         .ok => |ok| ok,

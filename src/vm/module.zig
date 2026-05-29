@@ -25,28 +25,9 @@ pub fn runModuleReport(vm: *revo.VM, source_path: []const u8, source: []const u8
 }
 
 pub fn runImportedModule(vm: *revo.VM, source_path: []const u8, source: []const u8) !revo.Data {
-    const result = try runImportedModuleReport(vm, source_path, source);
+    const result = try runModuleReport(vm, source_path, source);
     if (result == .err) return error.RuntimeFailure;
     return vm.currentFiber().result;
-}
-
-pub fn runImportedModuleReport(vm: *revo.VM, source_path: []const u8, source: []const u8) !revo.EvalResult {
-    const entries_table = try vm.tables.create();
-    const ns_id = try vm.createNamespace(source_path, entries_table);
-
-    const artifact = switch (try lang.build(vm, .{ .name = source_path, .text = source }, .{
-        .module_mode = true,
-        .module_namespace = ns_id,
-    })) {
-        .ok => |ok| ok,
-        .err => |lang_err| {
-            revo.printBuildError(vm.runtime.alloc, .{ .name = source_path, .text = source }, lang_err);
-            return error.ParseError;
-        },
-    };
-    defer vm.runtime.alloc.free(artifact.instructions);
-    defer vm.runtime.alloc.free(artifact.spans);
-    return runCompiledImportedModuleReport(vm, source_path, artifact.instructions, ns_id);
 }
 
 fn swapFiberAndRun(vm: *revo.VM, source_path: []const u8, program: []const revo.Instruction) !struct { result: revo.EvalResult, prev: revo.VM.Fiber } {
@@ -71,21 +52,12 @@ pub fn runCompiledModuleReport(
     source_path: []const u8,
     program: []const revo.Instruction,
 ) !revo.EvalResult {
-    const mg = revo.VM.Globals.init(vm.runtime.alloc);
-    const mcg = @TypeOf(vm.const_globals).init(vm.runtime.alloc);
+    try vm.setProgramSourceName(source_path);
 
-    const pg = vm.globals;
-    const pcg = vm.const_globals;
-    vm.globals = mg;
-    vm.const_globals = mcg;
-    defer {
-        vm.globals.deinit();
-        vm.const_globals.deinit();
-        vm.globals = pg;
-        vm.const_globals = pcg;
-    }
-
-    try vm.seedBootstrapGlobals(&vm.globals);
+    const module_dir = std.fs.path.dirname(source_path) orelse ".";
+    const prev_module_dir = vm.module_dir;
+    vm.module_dir = module_dir;
+    defer vm.module_dir = prev_module_dir;
 
     var r = try swapFiberAndRun(vm, source_path, program);
     defer {
@@ -96,40 +68,6 @@ pub fn runCompiledModuleReport(
     return r.result;
 }
 
-pub fn runCompiledImportedModuleReport(
-    vm: *revo.VM,
-    source_path: []const u8,
-    program: []const revo.Instruction,
-    ns_id: revo.NamespaceID,
-) !revo.EvalResult {
-    const mg = revo.VM.Globals.init(vm.runtime.alloc);
-    const mcg = @TypeOf(vm.const_globals).init(vm.runtime.alloc);
-
-    const pg = vm.globals;
-    const pcg = vm.const_globals;
-    vm.globals = mg;
-    vm.const_globals = mcg;
-    defer {
-        vm.globals.deinit();
-        vm.const_globals.deinit();
-        vm.globals = pg;
-        vm.const_globals = pcg;
-    }
-
-    try vm.seedBootstrapGlobals(&vm.globals);
-    const ns = Data.new.module(ns_id);
-
-    var r = try swapFiberAndRun(vm, source_path, program);
-    defer {
-        var finished = vm.swapFiber(r.prev);
-        revo.VM.Fiber.deinit(&finished, vm.runtime.alloc);
-    }
-    if (r.result == .ok) {
-        r.prev.result = ns;
-    }
-    return r.result;
-}
-
 /// run compiled code in the current vm globals or constglobals context
 /// intended for repl
 pub fn runCompiledSessionReport(
@@ -137,7 +75,13 @@ pub fn runCompiledSessionReport(
     source_path: []const u8,
     program: []const revo.Instruction,
 ) !revo.EvalResult {
-    try vm.seedBootstrapGlobals(&vm.globals);
+    try vm.setProgramSourceName(source_path);
+
+    const module_dir = std.fs.path.dirname(source_path) orelse ".";
+    const prev_module_dir = vm.module_dir;
+    vm.module_dir = module_dir;
+    defer vm.module_dir = prev_module_dir;
+
     var r = try swapFiberAndRun(vm, source_path, program);
     defer {
         var finished = vm.swapFiber(r.prev);
@@ -172,7 +116,7 @@ test "module message setters clear previous values" {
     try std.testing.expect(vm.runtime_message == null);
 }
 
-test "module cache reloads changed files" {
+test "module hot reload cache" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -180,7 +124,7 @@ test "module cache reloads changed files" {
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "hot.rv",
         .data =
-        \\ pub const value = 1
+        \\ 1
         ,
     });
 
@@ -192,7 +136,7 @@ test "module cache reloads changed files" {
 
     const code =
         \\ const ns = import "hot"
-        \\ ns.value
+        \\ ns
     ;
 
     var vm = try revo.VM.init(testing.runtime());
@@ -215,148 +159,10 @@ test "module cache reloads changed files" {
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "hot.rv",
         .data =
-        \\ pub const value = 2
+        \\ 2
         ,
     });
 
     _ = try runCompiledSessionReport(&vm, source_name, artifact.instructions);
     try std.testing.expectEqual(Data.new.num(2), vm.mainResult());
-}
-
-pub const NamespaceID = usize;
-
-pub const Namespace = struct {
-    path: []const u8,
-    entries: revo.memory.TableID,
-};
-
-pub const NamespacePool = struct {
-    alloc: std.mem.Allocator,
-    modules: std.ArrayList(?Namespace),
-    marks: std.DynamicBitSet,
-    dead: std.ArrayList(NamespaceID),
-
-    pub fn init(alloc: std.mem.Allocator) !NamespacePool {
-        return .{
-            .alloc = alloc,
-            .modules = try std.ArrayList(?Namespace).initCapacity(alloc, 4),
-            .marks = try std.DynamicBitSet.initEmpty(alloc, 64),
-            .dead = try std.ArrayList(NamespaceID).initCapacity(alloc, 0),
-        };
-    }
-
-    pub fn deinit(self: *NamespacePool) void {
-        for (self.modules.items) |*maybe_ns| {
-            if (maybe_ns.*) |*ns| self.alloc.free(ns.path);
-        }
-        self.modules.deinit(self.alloc);
-        self.marks.deinit();
-        self.dead.deinit(self.alloc);
-    }
-
-    pub fn create(self: *NamespacePool, path: []const u8, entries: revo.memory.TableID) !NamespaceID {
-        const owned_path = try self.alloc.dupe(u8, path);
-        errdefer self.alloc.free(owned_path);
-
-        if (self.dead.pop()) |id| {
-            self.modules.items[id] = .{
-                .path = owned_path,
-                .entries = entries,
-            };
-            return id;
-        }
-
-        const id: NamespaceID = @intCast(self.modules.items.len);
-        try self.modules.append(self.alloc, .{
-            .path = owned_path,
-            .entries = entries,
-        });
-        if (id >= self.marks.capacity()) {
-            try self.marks.resize(self.modules.items.len, false);
-        }
-        return id;
-    }
-
-    pub fn get(self: *NamespacePool, id: NamespaceID) !*Namespace {
-        if (id >= self.modules.items.len) return error.InvalidNamespace;
-        if (self.modules.items[id]) |*ns| return ns;
-        return error.InvalidNamespace;
-    }
-
-    pub fn mark(self: *NamespacePool, id: NamespaceID, vm: *revo.VM) void {
-        if (id >= self.modules.items.len) return;
-        if (self.modules.items[id] == null) return;
-        if (self.marks.isSet(id)) return;
-        self.marks.set(id);
-        vm.pushMarkNamespace(id);
-    }
-
-    pub fn sweep(self: *NamespacePool) void {
-        const max_dead = self.modules.items.len;
-        self.dead.ensureTotalCapacity(self.alloc, max_dead) catch return;
-        self.dead.items.len = 0;
-        for (self.modules.items, 0..) |*maybe_ns, idx| {
-            if (maybe_ns.* == null) continue;
-            if (self.marks.isSet(idx)) continue;
-            self.alloc.free(maybe_ns.*.?.path);
-            maybe_ns.* = null;
-            self.dead.appendAssumeCapacity(@intCast(idx));
-        }
-        self.marks.unmanaged.unsetAll();
-    }
-
-    pub fn sweepStep(self: *NamespacePool, cursor: usize, limit: usize) usize {
-        if (cursor >= self.modules.items.len) return 0;
-        const end = @min(cursor + limit, self.modules.items.len);
-        var processed: usize = 0;
-        var i = cursor;
-        while (i < end) : (i += 1) {
-            processed += 1;
-            const maybe_ns = self.modules.items[i];
-            if (maybe_ns == null) continue;
-            if (self.marks.isSet(i)) continue;
-            self.alloc.free(maybe_ns.?.path);
-            self.modules.items[i] = null;
-            self.dead.append(self.alloc, @intCast(i)) catch {};
-        }
-        return processed;
-    }
-
-    pub fn clearMarks(self: *NamespacePool) void {
-        self.marks.unmanaged.unsetAll();
-    }
-
-    pub fn capacity(self: *const NamespacePool) usize {
-        return self.modules.items.len;
-    }
-
-    pub fn bytes(self: *const NamespacePool) usize {
-        var total: usize = 0;
-        for (self.modules.items) |maybe_ns| {
-            if (maybe_ns) |ns| total += ns.path.len + @sizeOf(Namespace);
-        }
-        return total;
-    }
-};
-
-test "pub declarations seen in imported namespace" {
-    var vm = try revo.VM.init(testing.runtime());
-    defer vm.deinit();
-    const res = try runImportedModuleReport(&vm, "test.rv",
-        \\ pub const x = 42
-        \\ const y = 99
-    );
-    try std.testing.expect(res == .ok);
-    const ns = vm.mainFiber().result;
-    try std.testing.expect(ns.asNamespace() != null);
-}
-
-test "private declarations do not leak from imported namespace" {
-    var vm = try revo.VM.init(testing.runtime());
-    defer vm.deinit();
-    const res = try runImportedModuleReport(&vm, "test.rv",
-        \\ pub const pub_var = 42
-        \\ const priv_var = 99
-    );
-    try std.testing.expect(res == .ok);
 }

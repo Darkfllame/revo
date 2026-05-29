@@ -67,8 +67,6 @@ pub fn lowerExprArtifactReport(
     vm: *VM,
     expr: *const Node,
     test_mode: bool,
-    module_mode: bool,
-    module_namespace: ?memory.NamespaceID,
 ) !ArtifactResult {
     var arena = std.heap.ArenaAllocator.init(vm.runtime.alloc);
     defer arena.deinit();
@@ -76,15 +74,10 @@ pub fn lowerExprArtifactReport(
     var compiler = try Compiler.init(
         vm,
         test_mode,
-        module_mode,
         arena.allocator(),
         vm.runtime.alloc,
     );
     defer compiler.deinit();
-
-    if (module_namespace) |ns_id| {
-        compiler.module_namespace = ns_id;
-    }
 
     compiler.compileRoot(expr) catch |err| switch (err) {
         error.LoweringFailed => return .{ .err = compiler.failure.? },
@@ -106,7 +99,6 @@ pub const Compiler = struct {
     runtime_alloc: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     test_mode: bool,
-    module_mode: bool,
     instructions: std.ArrayList(Instruction),
     functions: std.ArrayList(FunctionState),
     slot_allocators: std.ArrayList(LocalSlot),
@@ -130,12 +122,10 @@ pub const Compiler = struct {
     use_ir_first: bool = false,
     upvalue_cache: std.AutoHashMap(usize, usize) = undefined,
     type_aliases: std.StringHashMap(types.TypeInfo),
-    module_namespace: ?revo.NamespaceID = null,
 
     pub fn init(
         vm: *VM,
         test_mode: bool,
-        module_mode: bool,
         arena: std.mem.Allocator,
         runtime_alloc: std.mem.Allocator,
     ) !Compiler {
@@ -146,7 +136,6 @@ pub const Compiler = struct {
             .runtime_alloc = runtime_alloc,
             .arena = std.heap.ArenaAllocator.init(arena),
             .test_mode = test_mode,
-            .module_mode = module_mode,
             .instructions = try std.ArrayList(Instruction).initCapacity(arena, 32),
             .functions = try std.ArrayList(FunctionState).initCapacity(arena, 4),
             .slot_allocators = try std.ArrayList(LocalSlot).initCapacity(arena, 4),
@@ -228,7 +217,6 @@ pub const Compiler = struct {
     pub fn compileValue(self: *Compiler, expr: *const Node) InternalLowerError!void {
         switch (expr.expr) {
             .binding => |binding| try self.compileBinding(binding, .con),
-            .module_decl => |m| try self.compile(m.body, true),
             .number => |n| {
                 const value = n.value;
                 // int literal?
@@ -387,10 +375,8 @@ pub const Compiler = struct {
             },
             .if_expr => |v| try flow.compileIf(self, v.condition, v.then_expr, v.else_expr),
             .decl => |d| {
-                var mutable_inner = d.inner;
-                switch (mutable_inner.expr) {
+                switch (d.inner.expr) {
                     .binding => |*b| {
-                        b.is_pub = d.is_pub;
                         const kind: values.BindingKind = switch (d.kind) {
                             .con => .con,
                             .let => .let,
@@ -399,32 +385,9 @@ pub const Compiler = struct {
                         };
                         return try self.compileBinding(b.*, kind);
                     },
-                    .module_decl => |*m| {
-                        m.is_pub = d.is_pub;
-                        var slot: ?revo.LocalSlot = null;
-                        if (!ast.isDiscardName(m.name)) {
-                            const local_slot = try state_mod.declareLocal(self, m.name, false);
-                            state_mod.markLocalInitialized(self, local_slot);
-                            state_mod.reserveLocalSlots(self);
-                            slot = local_slot;
-                        }
-                        try self.compileMod(m.name, m.body);
-                        const value_reg = self.active_registers - 1;
-                        if (slot) |s| {
-                            try emit.regDupe(self);
-                            if (m.is_pub) {
-                                try self.emitPubExportFrom(m.name, value_reg);
-                            }
-                            try emit.emit(self, .bind_local, s);
-                        } else if (m.is_pub) {
-                            try self.emitPubExportFrom(m.name, value_reg);
-                        }
-                        if (m.is_pub) try emit.nil(self);
-                        return;
-                    },
                     else => {},
                 }
-                return self.compile(mutable_inner, true);
+                return self.compile(d.inner, true);
             },
             .assign_expr => |assign| try values.compileAssign(self, assign.target, assign.value),
             .block => |exprs| try self.compileBlock(exprs),
@@ -1154,7 +1117,6 @@ pub const Compiler = struct {
         var temp_compiler = try Compiler.init(
             self.vm,
             self.test_mode,
-            self.module_mode,
             self.alloc,
             self.runtime_alloc,
         );
@@ -1188,60 +1150,6 @@ pub const Compiler = struct {
         try emit.@"const"(self, self.comp_vm.mainResult());
     }
 
-    pub fn compileMod(self: *Compiler, name: []const u8, expr: *Node) InternalLowerError!void {
-        const source_name = self.vm.currentDebugSourceName() orelse "<mod>";
-        const nested_source = try std.fmt.allocPrint(self.alloc, "{s}::{s}", .{ source_name, name });
-        defer self.alloc.free(nested_source);
-
-        const entries_table = try self.vm.tables.create();
-        const ns_id = try self.vm.createNamespace(nested_source, entries_table);
-
-        var temp_compiler = try Compiler.init(
-            self.vm,
-            self.test_mode,
-            true,
-            self.alloc,
-            self.runtime_alloc,
-        );
-        temp_compiler.module_namespace = ns_id;
-        defer temp_compiler.deinit();
-
-        temp_compiler.compileRoot(expr) catch |err| switch (err) {
-            error.LoweringFailed => {
-                if (temp_compiler.failure) |nested_failure| self.failure = nested_failure else unreachable;
-                return error.LoweringFailed;
-            },
-            else => return err,
-        };
-
-        const artifact = try temp_compiler.finishArtifact();
-        defer self.vm.runtime.alloc.free(artifact.instructions);
-        defer self.vm.runtime.alloc.free(artifact.spans);
-
-        const result = try VM.module.runCompiledImportedModuleReport(
-            self.comp_vm,
-            nested_source,
-            artifact.instructions,
-            ns_id,
-        );
-        if (result == .err) {
-            const eval_failure = result.err;
-            self.failure = .{
-                .kind = .ParseError,
-                .span = eval_failure.span orelse expr.span,
-                .message = eval_failure.message,
-                .owned = false,
-                .source_name = eval_failure.source_name,
-            };
-            return error.LoweringFailed;
-        }
-
-        // Get the module result directly from the main fiber's result field
-        // (not from the stack, which may have leftover values)
-        const mod_result = self.comp_vm.mainFiber().result;
-        try emit.@"const"(self, mod_result);
-    }
-
     pub fn compileBlock(self: *Compiler, exprs: []const *Node) InternalLowerError!void {
         if (exprs.len == 0) return emit.nil(self);
         var pushed_scope = false;
@@ -1267,37 +1175,14 @@ pub const Compiler = struct {
         binding: Binding,
         kind: BindingKind,
     ) InternalLowerError!void {
-        const can_export_pub =
-            binding.is_pub and self.module_mode;
-
-        if (binding.is_pub and self.module_namespace == null) {
-            return self.fail(
-                .ParseError,
-                binding.target,
-                "`pub` only allowed in modules",
-            );
-        }
-        if (binding.is_pub and binding.target.expr != .ident) {
-            return self.fail(
-                .ParseError,
-                binding.target,
-                "`pub` requires identifier binding",
-            );
-        }
-
         if (binding.target.expr == .ident and kind != .global) {
-            try values.compileLocalBinding(
+            return values.compileLocalBinding(
                 self,
                 binding.target.expr.ident,
                 binding.value,
                 kind != .con,
                 binding.type_name,
             );
-            if (can_export_pub) {
-                try self.emitPubExport(binding.target.expr.ident);
-                try emit.nil(self);
-            }
-            return;
         }
 
         if (binding.target.expr == .ident) {
@@ -1326,10 +1211,6 @@ pub const Compiler = struct {
                 if (kind != .con) .store_global else .store_global_const,
                 try self.vm.internAtom(name),
             );
-            if (can_export_pub) {
-                try self.emitPubExport(name);
-                try emit.nil(self);
-            }
             return;
         }
 
@@ -1345,37 +1226,6 @@ pub const Compiler = struct {
         try self.compile(binding.value, true);
         const src_idx = self.active_registers - 1;
         try values.bindPattern(self, binding.target, src_idx, kind);
-    }
-
-    // top-level module body is the root function + first scope only
-    fn isModuleTopLevelBinding(self: *Compiler) bool {
-        if (self.functions.items.len != 1) return false;
-        const fn_state = state_mod.currentFunctionState(self) orelse return false;
-        return fn_state.scope_starts.items.len == 1;
-    }
-
-    // export write:
-    // namespace.<name> = <top_of_stack_value>
-    fn emitPubExport(self: *Compiler, name: []const u8) InternalLowerError!void {
-        std.debug.assert(self.active_registers > 0);
-        try self.emitPubExportFrom(name, self.active_registers - 1);
-    }
-
-    fn emitPubExportFrom(self: *Compiler, name: []const u8, value_reg: usize) InternalLowerError!void {
-        std.debug.assert(self.active_registers > 0);
-        const ns_id = self.module_namespace orelse return;
-        const ns = self.vm.modules.get(ns_id) catch return;
-        try emit.@"const"(self, Data.new.table(ns.entries));
-
-        const table_reg: usize = self.active_registers - 1;
-        const instr: Instruction = .{
-            .op = .table_set_atom,
-            .a = try state_mod.toRegister(table_reg),
-            .c = try state_mod.toRegister(value_reg),
-            .bx = try self.vm.internAtom(name),
-        };
-        try emit.appendRecorded(self, instr);
-        try emit.regRelease(self);
     }
 
     pub fn compileFn(

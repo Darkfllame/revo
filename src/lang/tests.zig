@@ -1236,8 +1236,9 @@ test "import caches modules and reuses the same table" {
     try tmp.dir.writeFile(io, .{
         .sub_path = "counter.rv",
         .data =
-        \\ pub let state = {count = 0}
+        \\ let state = {count = 0}
         \\ state.count = state.count + 1
+        \\ state
         ,
     });
 
@@ -1246,9 +1247,9 @@ test "import caches modules and reuses the same table" {
 
     try t.top_number_in_dir(module_dir,
         \\ const a = import "counter"
-        \\ a.state.count = 41
+        \\ a.count = 41
         \\ const b = import "counter"
-        \\ b.state.count
+        \\ b.count
     , 41);
 }
 
@@ -1260,7 +1261,8 @@ test "import keeps module globals isolated from importer globals" {
         .sub_path = "answer.rv",
         .data =
         \\ let x = 41
-        \\ pub const answer = x
+        \\ const answer = x
+        \\ answer
         ,
     });
 
@@ -1269,12 +1271,12 @@ test "import keeps module globals isolated from importer globals" {
 
     try t.top_number_in_dir(module_dir,
         \\ let x = 99
-        \\ const ns = import "answer"
-        \\ x + ns.answer
+        \\ const ans = import "answer"
+        \\ x + ans
     , 140);
 }
 
-test "import exposes only pub bindings" {
+test "import returns module value" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1282,7 +1284,8 @@ test "import exposes only pub bindings" {
         .sub_path = "vis.rv",
         .data =
         \\ const hidden = 7
-        \\ pub const shown = 9
+        \\ const shown = 9
+        \\ shown
         ,
     });
 
@@ -1291,62 +1294,8 @@ test "import exposes only pub bindings" {
 
     try t.top_number_in_dir(module_dir,
         \\ const ns = import "vis"
-        \\ ns.shown
+        \\ ns
     , 9);
-
-    try t.top_number_in_dir(module_dir,
-        \\ const ns = import "vis"
-        \\ if ns.hidden == :undef 1 else 0
-    , 1);
-}
-
-test "mod defines nested namespace" {
-    try t.top_number(
-        \\ mod utils do
-        \\   pub const answer = 41
-        \\   const hidden = 7
-        \\ end
-        \\ utils.answer + if module_keys(utils):contains?(:answer) 1 else 0 + if module_keys(utils):contains?(:hidden) 100 else 0
-    , 42);
-}
-
-test "module introspection exposes nested path" {
-    try t.top_true(
-        \\ mod utils do
-        \\   pub const answer = 41
-        \\ end
-        \\ module_path(utils):contains?("::utils")
-    );
-}
-
-test "pub mod exports nested namespace" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.writeFile(io, .{
-        .sub_path = "outer.rv",
-        .data =
-        \\ pub mod utils do
-        \\   pub const answer = 41
-        \\ end
-        ,
-    });
-
-    const module_dir = try tmp.dir.realPathFileAlloc(io, ".", alloc);
-    defer alloc.free(module_dir);
-
-    try t.top_number_in_dir(module_dir,
-        \\ const outer = import "outer"
-        \\ outer.utils.answer
-    , 41);
-}
-
-test "pub bindings must be top-level in modules" {
-    try t.expectCompileErrorInModule(
-        \\ do
-        \\   pub const x = 1
-        \\ end
-    , .ParseError);
 }
 
 test "locals are still local" {
@@ -1592,7 +1541,8 @@ test "imported module assignment is private to module cache" {
         .sub_path = "private_state.rv",
         .data =
         \\ const y = 7
-        \\ pub const value = y
+        \\ const value = y
+        \\ value
         ,
     });
 
@@ -1601,7 +1551,7 @@ test "imported module assignment is private to module cache" {
 
     try t.top_number_in_dir(module_dir,
         \\ const m = import "private_state"
-        \\ m.value
+        \\ m
     , 7);
 
     try t.expectRuntimeErrorInDir(module_dir,

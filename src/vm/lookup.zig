@@ -27,20 +27,6 @@ pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLooku
             const type_mt_id = self.metatables[@intFromEnum(mem.Type.table)] orelse return null;
             return resolveViaMetatable(self, object, key, type_mt_id);
         },
-        .module => {
-            const exports_id = try self.moduleExportsTable(object);
-            const t = try self.tables.get(exports_id);
-            if (t.getRaw(key)) |value| {
-                return .{ .value = value, .from_meta = false };
-            }
-            if (t.metatable) |mt_id| {
-                if (try resolveViaMetatable(self, object, key, mt_id)) |resolved| {
-                    return resolved;
-                }
-            }
-            const type_mt_id = self.metatables[@intFromEnum(mem.Type.module)] orelse return null;
-            return resolveViaMetatable(self, object, key, type_mt_id);
-        },
         .tuple => {
             const tuple_id = object.asTuple().?;
             var instance_mt_id: ?@TypeOf(self.metatables[0].?) = null;

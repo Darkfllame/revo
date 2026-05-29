@@ -28,8 +28,6 @@ pub const TokenType = enum {
     ident,
     kw_const,
     kw_let,
-    kw_pub,
-    kw_mod,
     kw_macro,
     kw_test,
     kw_suite,
@@ -99,8 +97,7 @@ pub const TokenType = enum {
         .{ "const", .kw_const },
         .{ "global", .kw_global },
         .{ "let", .kw_let },
-        .{ "pub", .kw_pub },
-        .{ "mod", .kw_mod },
+
         .{ "comp", .kw_comp },
         .{ "proc", .kw_proc },
         .{ "macro", .kw_macro },

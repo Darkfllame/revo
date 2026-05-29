@@ -74,21 +74,6 @@ pub fn writeData(self: Data, writer: *std.Io.Writer, vm: *revo.VM, mode: Data.Re
             try writer.writeAll("#");
             try writer.writeAll(desc.name);
         },
-        .module => {
-            const ns_id = self.asNamespace().?;
-            const ns = vm.modules.get(ns_id) catch {
-                try writer.writeAll("<dead-module>");
-                return;
-            };
-            const entries = vm.tables.get(ns.entries) catch {
-                try writer.writeAll("<dead-module-exports>");
-                return;
-            };
-            if (mode == .debug) {
-                try writer.print("#ns<{s}> ", .{ns.path});
-            }
-            entries.write(writer, vm, mode) catch try writer.writeAll("<module-unprintable>");
-        },
     }
 }
 

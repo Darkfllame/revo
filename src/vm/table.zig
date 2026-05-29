@@ -190,7 +190,6 @@ pub const Table = struct {
             .tuple => a.asTuple().? == b.asTuple().?,
             .struct_val => a.asStructVal().? == b.asStructVal().?,
             .struct_type => a.asStructType().? == b.asStructType().?,
-            .module => a.asNamespace().? == b.asNamespace().?,
         };
     }
 

@@ -56,7 +56,7 @@ pub fn inferExprType(self: *Compiler, expr: *const Node) TypeInfo {
         .orelse_expr => |v| inferOrelseType(self, v),
         .comp_block, .import_expr, .test_block, .test_suite, .macro_expr, .proc_macro => .any,
         .range_literal, .match_expr, .assign_expr => .any,
-        .decl, .binding, .module_decl => .void,
+        .decl, .binding => .void,
         .tuple_pattern => .any,
         .struct_def => |def| .{ .struct_type = def.name },
         .type_alias => .void,

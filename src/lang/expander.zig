@@ -90,7 +90,7 @@ fn expandInEnv(allocator: std.mem.Allocator, expr: *Node, env: *MacroEnv) Expand
             });
         },
         .binding => |binding| expandCon(allocator, expr.span, binding, env),
-        .decl => |d| ast.allocNode(allocator, expr.span, .{ .decl = .{ .inner = try expandInEnv(allocator, d.inner, env), .kind = d.kind, .is_pub = d.is_pub } }),
+        .decl => |d| ast.allocNode(allocator, expr.span, .{ .decl = .{ .inner = try expandInEnv(allocator, d.inner, env), .kind = d.kind } }),
         .call => |call| maybeExpandCall(allocator, expr.span, call.callee, call.args, call.implicit_self, env),
         .ident => |name| expandIdent(expr, name, env),
         else => ast.walkExpr(allocator, expr, ExpandCtx, .{ .env = env }),
@@ -107,7 +107,6 @@ fn expandCon(allocator: std.mem.Allocator, span: Span, binding: ast.Binding, env
         .target = try expandInEnv(allocator, binding.target, env),
         .type_name = binding.type_name,
         .value = try expandInEnv(allocator, binding.value, env),
-        .is_pub = binding.is_pub,
         .mutable = binding.mutable,
     } });
 }
@@ -311,22 +310,16 @@ const AstSubstituter = struct {
                 .assign_expr = .{ .target = try self.substitute(a.target), .value = try self.substitute(a.value) },
             }),
             .binding => |b| {
-                const constructed: ast.Expr = .{ .binding = .{
+                try self.alloc(node.span, .{ .binding = .{
                     .target = try self.substitute(b.target),
                     .type_name = b.type_name,
                     .value = try self.substitute(b.value),
-                    .is_pub = b.is_pub,
                     .mutable = b.mutable,
-                } };
-                try self.alloc(node.span, ast.setPub(constructed, b.is_pub));
+                } });
             },
             .import_expr => |i| try self.alloc(node.span, .{
                 .import_expr = try self.substitute(i),
             }),
-            .module_decl => |m| {
-                const constructed: ast.Expr = .{ .module_decl = .{ .name = m.name, .body = try self.substitute(m.body) } };
-                try self.alloc(node.span, ast.setPub(constructed, m.is_pub));
-            },
 
             .number, .string, .multiline_string, .hash, .nil, .range_literal, .tuple_pattern, .macro_expr => node,
         };

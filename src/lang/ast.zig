@@ -120,8 +120,6 @@ pub const DeclKind = enum {
     con,
     let,
     global,
-    mod,
-    fn_decl,
     struct_decl,
     type_alias_decl,
 };
@@ -129,7 +127,6 @@ pub const DeclKind = enum {
 pub const DeclNode = struct {
     inner: *Node,
     kind: DeclKind,
-    is_pub: bool = false,
 };
 
 pub const MatchMatcher = union(enum) {
@@ -147,15 +144,10 @@ pub const Binding = struct {
     target: *Node,
     type_name: ?[]const u8 = null,
     value: *Node,
-    is_pub: bool = false,
     mutable: bool = false,
 
     fn printAt(self: *const Binding, writer: *std.Io.Writer, comptime tag: []const u8, depth: ?usize) anyerror!void {
-        if (self.is_pub) {
-            try writer.print("(pub {s}", .{tag});
-        } else {
-            try writer.print("({s}", .{tag});
-        }
+        try writer.print("({s}", .{tag});
         if (depth) |d| {
             try writer.writeByte('\n');
             try writeIndent(writer, d + 1);
@@ -176,15 +168,6 @@ pub const Binding = struct {
         try writer.writeByte(')');
     }
 };
-
-pub fn setPub(expr: Expr, is_pub: bool) Expr {
-    if (!is_pub) return expr;
-    return switch (expr) {
-        .binding => |b| .{ .binding = .{ .target = b.target, .type_name = b.type_name, .value = b.value, .is_pub = true, .mutable = b.mutable } },
-        .module_decl => |m| .{ .module_decl = .{ .name = m.name, .body = m.body, .is_pub = true } },
-        else => expr,
-    };
-}
 
 pub const Expr = union(enum) {
     number: NumberLiteral, // (:number, 123) or (:number, 123.0)
@@ -209,7 +192,6 @@ pub const Expr = union(enum) {
         doc: ?[]const u8 = null,
     },
     binding: Binding,
-    module_decl: struct { name: []const u8, body: *Node, is_pub: bool = false },
     decl: DeclNode,
     // ill probably ignore node's span field for now just do its expr
     // (:assign_expr, (:ident, "aaa"), (:ident, "bbb"))
@@ -465,14 +447,6 @@ pub const Node = struct {
                 try writer.writeAll("(import");
                 try sep(writer, depth, 1);
                 try path.printAt(writer, child(depth));
-                try close(writer, depth);
-            },
-            .module_decl => |m| {
-                try writer.writeAll("(mod ");
-                if (m.is_pub) try writer.writeAll("pub ");
-                try writer.writeAll(m.name);
-                try sep(writer, depth, 1);
-                try m.body.printAt(writer, child(depth));
                 try close(writer, depth);
             },
             .comp_block => |cb| {
@@ -1025,8 +999,7 @@ pub fn walkExpr(
         .import_expr => |v| allocNode(allocator, expr.span, .{
             .import_expr = try ctx.walk(allocator, v, ctx),
         }),
-        .decl => |d| allocNode(allocator, expr.span, .{ .decl = .{ .inner = try ctx.walk(allocator, d.inner, ctx), .kind = d.kind, .is_pub = d.is_pub } }),
-        .module_decl => |v| allocNode(allocator, expr.span, setPub(.{ .module_decl = .{ .name = v.name, .body = try ctx.walk(allocator, v.body, ctx) } }, v.is_pub)),
+        .decl => |d| allocNode(allocator, expr.span, .{ .decl = .{ .inner = try ctx.walk(allocator, d.inner, ctx), .kind = d.kind } }),
 
         .comp_block => |cb| allocNode(allocator, expr.span, .{ .comp_block = .{
             .expr = try ctx.walk(allocator, cb.expr, ctx),
@@ -1036,7 +1009,7 @@ pub fn walkExpr(
             .target = try ctx.walk(allocator, v.target, ctx),
             .value = try ctx.walk(allocator, v.value, ctx),
         } }),
-        .binding => |v| allocNode(allocator, expr.span, setPub(.{ .binding = .{ .target = try ctx.walk(allocator, v.target, ctx), .type_name = v.type_name, .value = try ctx.walk(allocator, v.value, ctx), .is_pub = v.is_pub, .mutable = v.mutable } }, v.is_pub)),
+        .binding => |v| allocNode(allocator, expr.span, .{ .binding = .{ .target = try ctx.walk(allocator, v.target, ctx), .type_name = v.type_name, .value = try ctx.walk(allocator, v.value, ctx), .mutable = v.mutable } }),
 
         .tuple => |items| allocNode(allocator, expr.span, .{
             .tuple = try walkSliceWith(allocator, items, Transform, ctx),

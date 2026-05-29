@@ -237,7 +237,6 @@ pub const TableID = memory.TableID;
 pub const TupleID = memory.TupleID;
 pub const StructTypeID = memory.StructTypeID;
 pub const StructInstanceID = memory.StructInstanceID;
-pub const NamespaceID = memory.NamespaceID;
 pub const Entry = memory.Entry;
 pub const ProgramCounter = vm.ProgramCounter;
 pub const ConstantID = vm.ConstantID;

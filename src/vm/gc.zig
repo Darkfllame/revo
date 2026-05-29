@@ -27,7 +27,6 @@ pub fn maybeCollectGarbage(self: *VM) void {
             const live_bytes = self.tables.bytes() +
                 self.tuples.bytes() +
                 self.functions.bytes() +
-                self.modules.bytes() +
                 self.strings.bytes();
 
             self.gc_threshold = @max(32 * 1024, live_bytes * self.gc_pause_factor);
@@ -40,7 +39,6 @@ pub fn maybeCollectGarbage(self: *VM) void {
     self.tuples.clearMarks();
     self.functions.clearMarks();
     self.struct_instances.clearMarks();
-    self.modules.clearMarks();
     self.strings.clearMarks();
 
     markRoots(self);
@@ -56,7 +54,6 @@ pub fn maybeCollectGarbage(self: *VM) void {
         const live_bytes = self.tables.bytes() +
             self.tuples.bytes() +
             self.functions.bytes() +
-            self.modules.bytes() +
             self.strings.bytes();
         self.gc_threshold = @max(32 * 1024, live_bytes * self.gc_pause_factor);
     }
@@ -136,21 +133,6 @@ pub fn doIncrementalSweep(self: *VM) void {
                 );
                 if (count == 0 or
                     self.gc_sweep_state.cursor >= self.struct_instances.capacity())
-                {
-                    self.gc_sweep_state.phase = .modules;
-                    self.gc_sweep_state.cursor = 0;
-                } else {
-                    self.gc_sweep_state.cursor += count;
-                    processed += count;
-                }
-            },
-            .modules => {
-                const count = self.modules.sweepStep(
-                    self.gc_sweep_state.cursor,
-                    step_limit - processed,
-                );
-                if (count == 0 or
-                    self.gc_sweep_state.cursor >= self.modules.capacity())
                 {
                     self.gc_sweep_state.phase = .strings;
                     self.gc_sweep_state.cursor = 0;
@@ -234,12 +216,6 @@ pub fn processMarkStack(self: *VM) void {
                 for (instance.fields) |entry|
                     pushMark(self, entry);
             },
-            .module => |id| {
-                if (id >= self.modules.modules.items.len)
-                    continue;
-                const ns = self.modules.modules.items[id] orelse continue;
-                self.tables.mark(ns.entries, self);
-            },
         }
     }
     self.gc_mark_stack.clearRetainingCapacity();
@@ -293,7 +269,7 @@ pub inline fn markRoots(self: *VM) void {
 
 pub inline fn pushMark(self: *VM, data: revo.Data) void {
     switch (data.tag()) {
-        .string, .table, .tuple, .function, .struct_val, .module => {
+        .string, .table, .tuple, .function, .struct_val => {
             self.gc_mark_stack.append(self.runtime.alloc, .{ .data = data }) catch return;
         },
         else => {},
@@ -320,10 +296,6 @@ pub inline fn pushMarkStructInstance(self: *VM, id: anytype) void {
     self.gc_mark_stack.append(self.runtime.alloc, .{ .struct_instance = id }) catch return;
 }
 
-pub inline fn pushMarkNamespace(self: *VM, id: anytype) void {
-    self.gc_mark_stack.append(self.runtime.alloc, .{ .module = id }) catch return;
-}
-
 pub inline fn markDataImpl(self: *VM, data: revo.Data) void {
     switch (data.tag()) {
         .string => self.strings.mark(data.asString().?),
@@ -341,10 +313,6 @@ pub inline fn markDataImpl(self: *VM, data: revo.Data) void {
         ),
         .struct_val => self.struct_instances.mark(
             data.asStructVal().?,
-            self,
-        ),
-        .module => self.modules.mark(
-            data.asNamespace().?,
             self,
         ),
         else => {},
@@ -368,10 +336,6 @@ pub fn markData(self: *VM, data: revo.Data) void {
         ),
         .struct_val => self.struct_instances.mark(
             data.asStructVal().?,
-            self,
-        ),
-        .module => self.modules.mark(
-            data.asNamespace().?,
             self,
         ),
         else => {},
