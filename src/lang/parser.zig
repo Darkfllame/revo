@@ -73,6 +73,7 @@ pub fn parseTokens(allocator: std.mem.Allocator, tokens: []const Token) anyerror
 
 pub fn parseTokensReport(alloc: std.mem.Allocator, tokens: []const Token) anyerror!ParseResult {
     var parser = Parser{ .alloc = alloc, .tokens = tokens };
+    try parser.initErrors();
     const expr = parser.parse() catch |err| switch (err) {
         error.UnexpectedToken => {
             const token = parser.peek();
@@ -106,6 +107,9 @@ pub fn parseTokensReport(alloc: std.mem.Allocator, tokens: []const Token) anyerr
         },
         else => return err,
     };
+    if (parser.hasErrors()) {
+        return .{ .err = try parser.finishFailure() };
+    }
     return .{ .ok = expr };
 }
 
@@ -119,14 +123,63 @@ const Parser = struct {
     stop_token: ?TokenType = null,
     allow_bare_calls: bool = true, // permit `f "str"`, disabled in pattern positions
     stop_on_stmt_start: bool = false, // treat statement-starting tokens as expr boundaries
+    errors: std.ArrayList(diagnostic.Part) = undefined,
+    errors_inited: bool = false,
+    first_error_kind: ?Kind = null,
+    first_error_message: []const u8 = "",
+    had_errors: bool = false,
+
+    fn initErrors(self: *Parser) !void {
+        self.errors = try std.ArrayList(diagnostic.Part).initCapacity(self.alloc, 8);
+        self.errors_inited = true;
+    }
 
     fn parse(self: *Parser) anyerror!*Node {
         const exprs = try self.parseExprListUntil(.eof);
-        const eof = try self.expect(.eof);
+        if (!self.check(.eof)) {
+            const token = self.peek();
+            try self.recordError(.UnexpectedToken, "unexpected token", token.span());
+            self.pos = self.tokens.len - 1;
+        }
+        const eof = self.peek();
         if (exprs.len == 1) return exprs[0];
         const node = try self.allocExpr(ast.spanFromNodes(exprs, eof.span()), .{ .block = exprs });
         node.synthetic_block = true;
         return node;
+    }
+
+    fn hasErrors(self: *Parser) bool {
+        return self.had_errors;
+    }
+
+    fn finishFailure(self: *Parser) anyerror!ParseFailure {
+        const parts = try self.errors.toOwnedSlice(self.alloc);
+        return .{
+            .kind = self.first_error_kind orelse .LexUnknown,
+            .report = .{
+                .parts = parts,
+                .message = self.first_error_message,
+            },
+        };
+    }
+
+    fn recordError(self: *Parser, kind: Kind, message: []const u8, span: ast.Span) !void {
+        self.had_errors = true;
+        if (self.first_error_kind == null) {
+            self.first_error_kind = kind;
+            self.first_error_message = message;
+        }
+        try self.errors.append(self.alloc, .{ .@"error" = message });
+        try self.errors.append(self.alloc, .{ .span = .{ .span = span, .role = .primary } });
+    }
+
+    fn syncToNextStatement(self: *Parser, terminator: TokenType) void {
+        if (self.check(terminator) or self.check(.eof)) return;
+        self.pos = @min(self.pos + 1, self.tokens.len - 1);
+        while (!self.check(terminator) and !self.check(.eof)) {
+            if (self.peekStartsExpression()) break;
+            self.pos += 1;
+        }
     }
 
     /// starts with a prefix node, then consumes infix/postfix ops while binding power allows
@@ -1120,7 +1173,17 @@ const Parser = struct {
         errdefer exprs.deinit(self.alloc);
 
         while (!self.check(terminator) and !self.check(.eof)) {
-            try exprs.append(self.alloc, try self.parseStatementExpression(0));
+            const start_pos = self.pos;
+            const expr = self.parseStatementExpression(0) catch |err| switch (err) {
+                error.UnexpectedToken, error.ExpectedIdentifier, error.ExpectedMatchArm => {
+                    try self.recordSyntaxError(err, self.peek());
+                    self.syncToNextStatement(terminator);
+                    if (self.pos == start_pos) self.pos = @min(self.pos + 1, self.tokens.len - 1);
+                    continue;
+                },
+                else => return err,
+            };
+            try exprs.append(self.alloc, expr);
             if (self.pos >= self.tokens.len) break;
         }
 
@@ -1133,7 +1196,15 @@ const Parser = struct {
         errdefer items.deinit(self.alloc);
 
         while (!self.check(terminator)) {
-            try items.append(self.alloc, try self.parseExpression(0));
+            const item = self.parseExpression(0) catch |err| switch (err) {
+                error.UnexpectedToken, error.ExpectedIdentifier, error.ExpectedMatchArm => {
+                    try self.recordSyntaxError(err, self.peek());
+                    self.syncToNextStatement(terminator);
+                    continue;
+                },
+                else => return err,
+            };
+            try items.append(self.alloc, item);
             if (self.pos >= self.tokens.len) break;
             if (!self.match(.comma)) break;
         }
@@ -1153,6 +1224,22 @@ const Parser = struct {
         return self.allocExpr(span, .{
             .range_literal = .{ .start = start, .step = step, .end = end },
         });
+    }
+
+    fn recordSyntaxError(self: *Parser, err: anyerror, token: Token) !void {
+        const kind: Kind = switch (err) {
+            error.UnexpectedToken => .UnexpectedToken,
+            error.ExpectedIdentifier => .ExpectedIdentifier,
+            error.ExpectedMatchArm => .ExpectedMatchArm,
+            else => return err,
+        };
+        const message: []const u8 = switch (err) {
+            error.UnexpectedToken => "unexpected token",
+            error.ExpectedIdentifier => "expected identifier",
+            error.ExpectedMatchArm => "match expression requires at least one arm",
+            else => return err,
+        };
+        try self.recordError(kind, message, token.span());
     }
 
     // token starts expression check for error messages

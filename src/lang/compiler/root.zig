@@ -81,7 +81,7 @@ pub fn lowerExprArtifactReport(
 
     compiler.compileRoot(expr) catch |err| switch (err) {
         error.LoweringFailed => {
-            const failure = compiler.failure orelse return error.LoweringFailed;
+            const failure = try compiler.finishFailure() orelse return error.LoweringFailed;
             const report = try failure.report.copy(vm.runtime.diag_alloc);
             return .{ .err = .{
                 .kind = failure.kind,
@@ -119,6 +119,7 @@ pub const Compiler = struct {
     failure_message_owned: bool = false,
     failure_parts: [16]diagnostic.Part = undefined,
     failure_part_len: usize = 0,
+    failure_reports: std.ArrayList(LowerFailure),
     spans: std.ArrayList(ast.Span),
     active_span: ast.Span = .{
         .start = 0,
@@ -150,6 +151,7 @@ pub const Compiler = struct {
             .instructions = try std.ArrayList(Instruction).initCapacity(arena, 32),
             .functions = try std.ArrayList(FunctionState).initCapacity(arena, 4),
             .slot_allocators = try std.ArrayList(LocalSlot).initCapacity(arena, 4),
+            .failure_reports = try std.ArrayList(LowerFailure).initCapacity(arena, 4),
             .spans = try std.ArrayList(ast.Span).initCapacity(arena, 32),
             .break_jumps = try std.ArrayList(usize).initCapacity(arena, 16),
             .loop_result_regs = try std.ArrayList(usize).initCapacity(arena, 8),
@@ -166,6 +168,7 @@ pub const Compiler = struct {
         for (self.functions.items) |*s| s.deinit(self.alloc);
         self.functions.deinit(self.alloc);
         self.slot_allocators.deinit(self.alloc);
+        self.failure_reports.deinit(self.alloc);
         self.instructions.deinit(self.alloc);
         self.spans.deinit(self.alloc);
         self.break_jumps.deinit(self.alloc);
@@ -203,6 +206,7 @@ pub const Compiler = struct {
 
     pub fn compileRoot(self: *Compiler, expr: *const Node) InternalLowerError!void {
         try self.compileFn(&.{}, null, expr, "__main", null);
+        if (self.failure_reports.items.len != 0 or self.failure != null) return error.LoweringFailed;
         try emit.emit(self, .call, 0);
         try emit.emit(self, .halt, 0);
     }
@@ -1192,13 +1196,12 @@ pub const Compiler = struct {
         defer temp_compiler.deinit();
         temp_compiler.compileRoot(expr) catch |err| switch (err) {
             error.LoweringFailed => {
-                if (temp_compiler.failure) |nested_failure| {
-                    const report = try nested_failure.report.copy(self.runtime_alloc);
-                    self.failure = .{
-                        .kind = nested_failure.kind,
-                        .report = report,
-                    };
-                } else unreachable;
+                const nested_failure = try temp_compiler.finishFailure() orelse unreachable;
+                const report = try nested_failure.report.copy(self.runtime_alloc);
+                self.failure = .{
+                    .kind = nested_failure.kind,
+                    .report = report,
+                };
                 return error.LoweringFailed;
             },
             else => return err,
@@ -1253,7 +1256,14 @@ pub const Compiler = struct {
         for (exprs, 0..) |expr, idx| {
             self.upvalue_cache.clearRetainingCapacity();
             const before = self.active_registers;
-            try self.compile(expr, true);
+            self.compile(expr, true) catch |err| switch (err) {
+                error.LoweringFailed => {
+                    try self.recordFailure();
+                    self.active_registers = before;
+                    continue;
+                },
+                else => return err,
+            };
             if (idx + 1 < exprs.len and self.active_registers > before) try emit.regRelease(self);
         }
         if (pushed_scope) state_mod.popScope(self);
@@ -1402,6 +1412,7 @@ pub const Compiler = struct {
             const inferred_type_str = try self.alloc.dupe(u8, types.typeName(inferred_type));
             sig.return_type = inferred_type_str;
         }
+        if (self.failure_reports.items.len != 0 or self.failure != null) return error.LoweringFailed;
         if (self.active_registers == 0) try emit.nil(self);
         if (loop_sym) |sym| try flow.emitLoopRecurse(self, params.len, sym) else try emit.emit(self, .ret, 1);
 
@@ -1491,6 +1502,40 @@ pub const Compiler = struct {
             },
         };
         return error.LoweringFailed;
+    }
+
+    fn recordFailure(self: *Compiler) !void {
+        const current = self.failure orelse return;
+        const copied = try current.report.copy(self.alloc);
+        try self.failure_reports.append(self.alloc, .{
+            .kind = current.kind,
+            .report = copied,
+        });
+        self.failure = null;
+    }
+
+    fn finishFailure(self: *Compiler) !?LowerFailure {
+        if (self.failure != null) try self.recordFailure();
+        if (self.failure_reports.items.len == 0) return null;
+        if (self.failure_reports.items.len == 1) return self.failure_reports.items[0];
+
+        var total_parts: usize = 0;
+        for (self.failure_reports.items) |failure| total_parts += failure.report.parts.len;
+        var parts = try std.ArrayList(diagnostic.Part).initCapacity(self.alloc, total_parts);
+        for (self.failure_reports.items) |failure| {
+            try parts.appendSlice(self.alloc, failure.report.parts);
+        }
+
+        const first = self.failure_reports.items[0];
+        return .{
+            .kind = first.kind,
+            .report = .{
+                .parts = try parts.toOwnedSlice(self.alloc),
+                .message = "",
+                .source_name = first.report.source_name,
+                .source = first.report.source,
+            },
+        };
     }
 
     fn validateReturnType(self: *Compiler, val: *const Node) !void {

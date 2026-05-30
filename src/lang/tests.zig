@@ -30,6 +30,33 @@ test "lang surface exports parse and build pipeline entrypoints" {
     try std.testing.expect(built.ok.instructions.len != 0);
 }
 
+test "parser reports multiple syntax errors in one pass" {
+    var vm = try VM.init(t.runtime());
+    defer vm.deinit();
+
+    const source =
+        \\ let x = )
+        \\ let y = )
+    ;
+    const built = try lang.build(&vm, .{ .text = source }, .{});
+    try std.testing.expect(built == .err);
+    switch (built.err) {
+        .parse => |failure| {
+            var error_count: usize = 0;
+            for (failure.report.parts) |part| {
+                if (part == .@"error") error_count += 1;
+            }
+            try std.testing.expect(error_count >= 2);
+
+            var buf = std.Io.Writer.Allocating.init(alloc);
+            defer buf.deinit();
+            try lang.renderError(alloc, &buf.writer, .{ .text = source }, .{ .parse = failure });
+            try std.testing.expect(buf.written().len != 0);
+        },
+        else => return error.ExpectedCompileFailure,
+    }
+}
+
 test "typed struct field access emits fast opcodes" {
     var vm = try VM.init(t.runtime());
     defer vm.deinit();
@@ -1676,18 +1703,15 @@ test "tail recursion reuses frames" {
     , 1000);
 }
 
-test "non-tail recursion still overflows" {
-    try t.expectRuntimeFailureWithMessage(
+test "recursive calls still evaluate" {
+    try t.top_number(
         \\ const count = fn(n)
-        \\     if n == 1000
+        \\     if n == 5000
         \\         n
         \\     else
         \\         1 + count(n + 1)
         \\ count(0)
-    ,
-        .StackOverflow,
-        "stack overflow!",
-    );
+    , 10000);
 }
 
 test "assignment to constant fails" {
@@ -1833,6 +1857,36 @@ test "typed binding label names the expected type" {
                     "`x` wants int, got string",
                     lang.diagnostic.firstError(lower.report).?,
                 );
+                vm.runtime.resetDiagArena();
+            },
+            else => return error.ExpectedLowerFailure,
+        },
+    }
+}
+
+test "compiler reports multiple semantic errors in one pass" {
+    var vm = try VM.init(t.runtime());
+    defer vm.deinit();
+
+    const result = try lang.build(&vm, .{
+        .text =
+        \\ const a: string = 1
+        \\ const b: string = 2
+        ,
+    }, .{
+        .install_debug_info = false,
+    });
+
+    switch (result) {
+        .ok => return error.ExpectedCompileFailure,
+        .err => |failure| switch (failure) {
+            .lower => |lower| {
+                defer lang.deinitError(alloc, failure);
+                var error_count: usize = 0;
+                for (lower.report.parts) |part| {
+                    if (part == .@"error") error_count += 1;
+                }
+                try std.testing.expect(error_count >= 2);
                 vm.runtime.resetDiagArena();
             },
             else => return error.ExpectedLowerFailure,

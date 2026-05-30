@@ -147,61 +147,50 @@ pub fn renderReport(
 ) !void {
     const source_name = report.source_name orelse "<source>";
     const source = report.source orelse "";
-    const header = if (report.message.len != 0) report.message else firstError(report);
-
-    if (header) |message| {
-        try pretty.printError(alloc, writer, "{s}", .{message});
+    if (report.parts.len == 0 and report.message.len != 0) {
+        try pretty.printError(alloc, writer, "{s}", .{report.message});
+        return;
     }
 
+    var error_seen = false;
+    var trace_seen = false;
+    var trace_idx: usize = 0;
     for (report.parts) |part| {
         switch (part) {
-            .@"error" => {},
-            .span => |span| if (span.role == .primary) {
-                try renderSpanBlock(
+            .@"error" => |message| {
+                if (error_seen) try writer.writeByte('\n');
+                try pretty.printError(alloc, writer, "{s}", .{message});
+                error_seen = true;
+            },
+            .span => |span| switch (span.role) {
+                .primary => try renderSpanBlock(
                     alloc,
                     writer,
                     span.source_name orelse source_name,
                     span.source orelse source,
                     span.span,
                     if (span.message.len == 0) null else span.message,
-                );
+                ),
+                .secondary => try renderSecondarySpan(
+                    writer,
+                    span.source_name orelse source_name,
+                    span.span,
+                    if (span.message.len == 0) null else span.message,
+                ),
+                else => {},
             },
-            else => {},
-        }
-    }
-
-    for (report.parts) |part| {
-        if (part != .span) continue;
-        const span = part.span;
-        if (span.role != .secondary) continue;
-        try renderSecondarySpan(
-            writer,
-            span.source_name orelse source_name,
-            span.span,
-            if (span.message.len == 0) null else span.message,
-        );
-    }
-
-    for (report.parts) |part| {
-        switch (part) {
             .tip => |tip| try writer.print("  = tip: {s}\n", .{tip}),
             .warn => |warn| try writer.print("  = warning: {s}\n", .{warn}),
             .note => |note| try writer.print("  = note: {s}\n", .{note}),
-            else => {},
+            .trace => |frame| {
+                if (!trace_seen) {
+                    try writer.writeAll("\nstack trace:\n");
+                    trace_seen = true;
+                }
+                try renderTrace(writer, frame, trace_idx);
+                trace_idx += 1;
+            },
         }
-    }
-
-    var trace_seen = false;
-    var trace_idx: usize = 0;
-    for (report.parts) |part| {
-        if (part != .trace) continue;
-        const frame = part.trace;
-        if (!trace_seen) {
-            try writer.writeAll("\nstack trace:\n");
-            trace_seen = true;
-        }
-        try renderTrace(writer, frame, trace_idx);
-        trace_idx += 1;
     }
 }
 
@@ -507,12 +496,13 @@ fn renderSpanBlock(
             const span_here = cl.span_end -| cl.span_start;
             const clamped = @min(span_here, cl.text.len -| (col - 1));
             const highlight = @max(clamped, 1);
+            const pad = if (col > 2) col - 2 else 0;
 
             const ul_bracket = if (is_first and is_last) "    " else if (is_last) "    " else " |  ";
             try writeBlankLineNumber(writer, line_width);
             try writer.writeAll(" |");
             try writer.writeAll(ul_bracket);
-            for (1..col-2) |_| try writer.writeByte(' ');
+            for (0..pad) |_| try writer.writeByte(' ');
             if (is_first and is_last) {
                 try writer.writeByte('^');
                 if (highlight > 1) {
