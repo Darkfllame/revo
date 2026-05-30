@@ -1,0 +1,4 @@
+let a = { ["aa"] = 2, ["bb"] = 3 }
+
+for y in a:keys()
+  print("got", y)
