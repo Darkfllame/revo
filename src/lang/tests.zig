@@ -1676,6 +1676,20 @@ test "tail recursion reuses frames" {
     , 1000);
 }
 
+test "non-tail recursion still overflows" {
+    try t.expectRuntimeFailureWithMessage(
+        \\ const count = fn(n)
+        \\     if n == 1000
+        \\         n
+        \\     else
+        \\         1 + count(n + 1)
+        \\ count(0)
+    ,
+        .StackOverflow,
+        "stack overflow!",
+    );
+}
+
 test "assignment to constant fails" {
     try t.expectRuntimeFailureWithMessage(
         \\ const a = 1

@@ -470,7 +470,6 @@ test "repl handles commands" {
 }
 
 test "repl keeps globals after runtime failure" {
-    if (true) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -486,7 +485,6 @@ test "repl keeps globals after runtime failure" {
 }
 
 test "repl can call a global function later" {
-    if (true) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
