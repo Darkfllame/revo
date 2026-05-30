@@ -52,6 +52,10 @@ const splash_texts = [_][]const u8{
             break :blk "intel is better";
         } else if (std.mem.count(u8, cpu, "intel") > 0) {
             break :blk "amd is better";
+        } else if (std.mem.count(u8, cpu, "cortex") > 0) {
+            break :blk "risc-v is better";
+        } else if (std.mem.startsWith(u8, cpu, "rv")) {
+            break :blk "arm is better";
         } else if (std.mem.count(u8, cpu, "apple") > 0) {
             break :blk "how's it feel to share ram with vram";
         }
