@@ -198,7 +198,7 @@ pub fn compileFor(
         return self.fail(.UnsupportedSyntax, iter, msg);
     }
 
-    if (iter.expr == .range_literal) { // fast path - no runtime type dispatch
+    if (iter.expr == .range_literal) {
         const range_info = iter.expr.range_literal;
         return compileForRange(self, params, body, range_info.start, range_info.step, range_info.end);
     }
@@ -207,62 +207,65 @@ pub fn compileFor(
     var loop = try LoopScopeT.init(self);
     defer loop.deinit();
 
-    // hidden slots - not visible to user code
-    const iter_slot: Operand = @intCast(self.slot_allocators.items[self.slot_allocators.items.len - 1]);
-    self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
+    // pin
+    try self.compile(iter, true);
+    const iter_slot: LocalSlot = @intCast(self.active_registers - 1);
     const iter_storage: VarStorage = .{ .local = iter_slot };
 
-    const idx_slot: Operand = @intCast(self.slot_allocators.items[self.slot_allocators.items.len - 1]);
-    self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
+    // idx <- 0
+    try emit.emit(self, .load_small_int, 0);
+    const idx_slot: LocalSlot = @intCast(self.active_registers - 1);
     const idx_storage: VarStorage = .{ .local = idx_slot };
 
-    var value_storage: VarStorage = undefined;
-    var index_storage: VarStorage = undefined;
+    reserveRegisters(self, @intCast(iter_slot + 1));
+    reserveRegisters(self, @intCast(idx_slot + 1));
+
+    const needs_index = params.len == 2 and !ast.isDiscardName(params[1].name);
+    var value_storage: ?VarStorage = null;
+    var index_storage: ?VarStorage = null;
     if (!ast.isDiscardName(params[0].name)) {
-        const value_slot: Operand = @intCast(self.slot_allocators.items[self.slot_allocators.items.len - 1]);
-        self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
+        const value_slot = try state.declareLocal(self, params[0].name, true);
+        state.markLocalInitialized(self, value_slot);
         value_storage = .{ .local = value_slot };
     }
-    if (params.len == 2 and !ast.isDiscardName(params[1].name)) {
-        const index_slot: Operand = @intCast(self.slot_allocators.items[self.slot_allocators.items.len - 1]);
-        self.slot_allocators.items[self.slot_allocators.items.len - 1] += 1;
+    if (needs_index) {
+        const index_slot = try state.declareLocal(self, params[1].name, true);
+        state.markLocalInitialized(self, index_slot);
         index_storage = .{ .local = index_slot };
     }
 
-    try self.compile(iter, true);
-    try emitStorageStore(self, iter_storage, false);
-    try emit.@"const"(self, Data.new.num(0));
-    try emitStorageStore(self, idx_storage, false);
-
     const loop_check: ProgramCounter = @intCast(self.instructions.items.len);
 
-    try emitStorageLoad(self, idx_storage); // idx < iter.len
+    // condition: idx < iter.len
+    try emitStorageLoad(self, idx_storage);
     try emitStorageLoad(self, iter_storage);
     try emit.@"const"(self, Data.new.atom(try self.vm.internAtom("len")));
-    try emit.emit(self, .call_field, 0);
+    try emit.emit(self, .call_field, (@as(Operand, 1) << 15) | 0);
     try emit.emit(self, .lt, 0);
     const end_jump = try emit.jump(self, .jump_if_false);
 
+    // leaves 1 result on stack at active_registers - 1
     try emitForValueLoad(self, iter_storage, idx_storage);
-    if (!ast.isDiscardName(params[0].name)) {
-        try emitStorageStore(self, value_storage, false);
-    }
-    try emit.regRelease(self);
 
-    if (params.len == 2) {
-        try emitStorageLoad(self, idx_storage);
-        if (!ast.isDiscardName(params[1].name)) {
-            try emitStorageStore(self, index_storage, false);
-        }
+    if (value_storage) |storage| {
+        try emitStorageStore(self, storage, false);
+    } else {
         try emit.regRelease(self);
     }
+    if (needs_index) {
+        try emitStorageLoad(self, idx_storage);
+        if (index_storage) |storage| {
+            try emitStorageStore(self, storage, false);
+        } else {
+            try emit.regRelease(self);
+        }
+    }
 
-    if (iter_storage == .local) reserveRegisters(self, @intCast(iter_storage.local + 1)); // pin iter
-    if (idx_storage == .local) reserveRegisters(self, @intCast(idx_storage.local + 1)); // pin idx
+    state.reserveLocalSlots(self);
 
     try self.compile(body, true);
 
-    // normalise result -- mirrors range loop body
+    // normalise result into loop result slot
     const body_result_reg: Register = @intCast(self.active_registers - 1);
     const loop_result_reg: Register = @intCast(self.loop_result_regs.items[self.loop_result_regs.items.len - 1]);
     if (body_result_reg != loop_result_reg) {
@@ -271,14 +274,16 @@ pub fn compileFor(
     }
     try emit.regRelease(self);
 
-    try emitStorageLoad(self, idx_storage); // idx += 1
-    try emit.@"const"(self, Data.new.num(1));
+    // idx += 1
+    try emitStorageLoad(self, idx_storage);
+    try emit.emit(self, .load_small_int, 1);
     try emit.emit(self, .add, 0);
     try emitStorageStore(self, idx_storage, false);
+
     try emit.emit(self, .jump, loop_check);
 
     emit.patchJump(self, end_jump);
-    // collapse to result
+
     self.active_registers = self.loop_result_regs.items[self.loop_result_regs.items.len - 1] + 1;
 }
 

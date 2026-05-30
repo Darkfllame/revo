@@ -1809,6 +1809,7 @@ pub inline fn evalRegister(
     const base = fiber.frames.items[fiber.frames.items.len - 1].base;
     const slots = fiber.slots.items;
     const alloc = self.runtime.alloc;
+    // std.debug.print("{any}\n", .{instr});
 
     switch (instr.op) {
         .move => {
