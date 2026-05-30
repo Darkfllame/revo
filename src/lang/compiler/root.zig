@@ -1452,15 +1452,16 @@ pub const Compiler = struct {
         self.failure_message = owned_msg;
         self.failure_message_owned = owned_msg.ptr != message.ptr;
 
-        std.debug.assert(extra_parts.len + 1 <= self.failure_parts.len);
         self.failure_parts[0] = diagnostic.Part{ .@"error" = owned_msg };
         var part_len: usize = 1;
         if (primary_span) |span| {
             self.failure_parts[1] = .{ .span = span };
             part_len += 1;
         }
-        for (extra_parts, 0..) |part, idx| self.failure_parts[part_len + idx] = part;
-        self.failure_part_len = part_len + extra_parts.len;
+        const available = self.failure_parts.len - part_len;
+        const extra_len = @min(extra_parts.len, available);
+        for (extra_parts[0..extra_len], 0..) |part, idx| self.failure_parts[part_len + idx] = part;
+        self.failure_part_len = part_len + extra_len;
         self.failure = .{
             .kind = kind,
             .report = .{
