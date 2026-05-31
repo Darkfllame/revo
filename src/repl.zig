@@ -383,18 +383,24 @@ pub const Session = struct {
             break :blk self.source_acc.items;
         };
 
-        const build_result = self.workspace.analyzeSource(self.gpa, "<repl>", source, .{}) catch |err| {
-            try out.print("repl build error: {}\n", .{err});
+        const file_id = self.workspace.open("<repl>", source) catch |err| {
+            try out.print("repl open error: {}\n", .{err});
             return true;
         };
 
-        const artifact = switch (build_result) {
-            .ok => |ok| ok,
-            .err => |lang_err| {
-                try self.printBuildError(out, source, lang_err);
-                return true;
-            },
+        var analysis = self.workspace.analyzeDetailed(self.gpa, file_id, .{}) catch |err| {
+            try out.print("repl build error: {}\n", .{err});
+            return true;
         };
+        defer analysis.deinit(self.gpa);
+
+        if (analysis.diagnostics) |lang_err| {
+            try self.printBuildError(out, source, lang_err);
+            return true;
+        }
+
+        const artifact = analysis.artifact.?;
+        analysis.artifact = null;
         defer self.gpa.free(artifact.instructions);
         defer self.gpa.free(artifact.spans);
 

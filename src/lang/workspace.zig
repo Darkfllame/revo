@@ -26,6 +26,25 @@ const CacheEntry = struct {
     artifact: lang.Artifact,
 };
 
+pub const Analysis = struct {
+    snapshot: Snapshot,
+    artifact: ?lang.Artifact = null,
+    diagnostics: ?lang.Error = null,
+    cached: bool = false,
+    dependencies: []FileId = &.{},
+
+    pub fn deinit(self: *Analysis, alloc: std.mem.Allocator) void {
+        if (self.artifact) |artifact| {
+            alloc.free(artifact.instructions);
+            alloc.free(artifact.spans);
+        }
+        if (self.diagnostics) |err| {
+            lang.deinitError(alloc, err);
+        }
+        alloc.free(self.dependencies);
+    }
+};
+
 pub const Workspace = struct {
     alloc: std.mem.Allocator,
     vm: *VM,
@@ -147,6 +166,22 @@ pub const Workspace = struct {
         id: FileId,
         opts: lang.BuildOptions,
     ) !lang.BuildResult {
+        var analysis = try self.analyzeDetailed(alloc, id, opts);
+        if (analysis.artifact) |artifact| {
+            analysis.artifact = null;
+            defer analysis.deinit(alloc);
+            return .{ .ok = artifact };
+        }
+        defer analysis.deinit(alloc);
+        return .{ .err = analysis.diagnostics.? };
+    }
+
+    pub fn analyzeDetailed(
+        self: *Workspace,
+        alloc: std.mem.Allocator,
+        id: FileId,
+        opts: lang.BuildOptions,
+    ) !Analysis {
         const snap = self.snapshot(id) orelse return error.FileNotOpen;
         if (self.cache.get(id)) |cached| {
             if (cached.version == snap.version and sameOpts(cached.opts, opts)) {
@@ -155,7 +190,12 @@ pub const Workspace = struct {
                 if (opts.install_debug_info) {
                     try self.vm.setProgramDebugInfo(artifact.spans, snap.text, snap.name);
                 }
-                return .{ .ok = artifact };
+                return .{
+                    .snapshot = snap,
+                    .artifact = artifact,
+                    .cached = true,
+                    .dependencies = try self.copyDeps(id),
+                };
             }
         }
 
@@ -175,9 +215,19 @@ pub const Workspace = struct {
                 try self.putCache(id, snap.version, opts, cache_artifact);
                 const copy = try copyArtifact(alloc, artifact);
                 errdefer deinitArtifact(alloc, copy);
-                break :blk .{ .ok = copy };
+                break :blk .{
+                    .snapshot = snap,
+                    .artifact = copy,
+                    .cached = false,
+                    .dependencies = try self.copyDeps(id),
+                };
             },
-            .err => |err| .{ .err = err },
+            .err => |err| .{
+                .snapshot = snap,
+                .diagnostics = err,
+                .cached = false,
+                .dependencies = try self.copyDeps(id),
+            },
         };
     }
 
@@ -305,7 +355,6 @@ pub const Workspace = struct {
             for (old_deps) |dep| {
                 if (!containsId(new_deps, dep)) try self.removeReverseDep(dep, id);
             }
-            self.alloc.free(old_deps);
         }
 
         if (new_deps.len != 0) {
@@ -315,6 +364,10 @@ pub const Workspace = struct {
             try self.dependencies.put(id, new_deps);
         } else {
             self.alloc.free(new_deps);
+        }
+
+        if (old_deps.len != 0) {
+            self.alloc.free(old_deps);
         }
     }
 
@@ -385,6 +438,11 @@ pub const Workspace = struct {
         while (it.next()) |entry| self.alloc.free(entry.value_ptr.*);
         self.dependencies.clearRetainingCapacity();
         self.reverse_deps.clearRetainingCapacity();
+    }
+
+    fn copyDeps(self: *Workspace, id: FileId) ![]FileId {
+        const deps = self.dependencies.get(id) orelse return self.alloc.alloc(FileId, 0);
+        return self.alloc.dupe(FileId, deps);
     }
 
     fn entryPtr(self: *Workspace, id: FileId) !*FileEntry {
@@ -556,4 +614,24 @@ test "workspace invalidates dependent caches" {
 
     try std.testing.expect(ws.cache.get(b) == null);
     try std.testing.expect(ws.cache.get(c) == null);
+}
+
+test "analysis returns snapshot and artifact" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var vm = try VM.init(.{ .alloc = alloc, .io = std.testing.io });
+    defer vm.deinit();
+
+    var ws = try Workspace.init(&vm, alloc);
+    defer ws.deinit();
+
+    const id = try ws.open("<test>", "1 + 1");
+    var analysis = try ws.analyzeDetailed(alloc, id, .{});
+    defer analysis.deinit(alloc);
+
+    try std.testing.expectEqualStrings("<test>", analysis.snapshot.name);
+    try std.testing.expect(analysis.artifact != null);
+    try std.testing.expect(analysis.diagnostics == null);
 }

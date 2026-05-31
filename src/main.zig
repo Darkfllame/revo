@@ -226,19 +226,22 @@ fn compileSource(init: std.process.Init, vm: *VM, gpa: Allocator, source_name: [
     var ws = try revo.lang.Workspace.init(vm, gpa);
     defer ws.deinit();
 
-    const build_result = ws.analyzeSource(gpa, source_name, source_text, .{ .test_mode = test_mode }) catch |err| {
+    const file_id = try ws.open(source_name, source_text);
+    var analysis = ws.analyzeDetailed(gpa, file_id, .{ .test_mode = test_mode }) catch |err| {
         printError(init, "compilation - {}", .{err});
         return error.CompilationError;
     };
+    defer analysis.deinit(gpa);
 
-    return switch (build_result) {
-        .ok => |art| art,
-        .err => |lang_err| {
-            handleBuildError(init, gpa, source_name, source_text, lang_err);
-            vm.runtime.resetDiagArena();
-            return error.CompilationError;
-        },
-    };
+    if (analysis.diagnostics) |lang_err| {
+        handleBuildError(init, gpa, source_name, source_text, lang_err);
+        vm.runtime.resetDiagArena();
+        return error.CompilationError;
+    }
+
+    const artifact = analysis.artifact.?;
+    analysis.artifact = null;
+    return artifact;
 }
 
 fn printResult(vm: *VM) !void {
