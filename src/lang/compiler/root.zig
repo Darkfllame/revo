@@ -822,6 +822,7 @@ pub const Compiler = struct {
         sig: *const FunctionState.FnSig,
     ) ![]const *Node {
         var has_named = false;
+        var had_error = false;
         for (args) |arg| {
             if (isNamedParam(arg) != null) {
                 has_named = true;
@@ -831,7 +832,14 @@ pub const Compiler = struct {
                     "positional argument cannot follow named argument",
                     .{},
                 );
-                return self.fail(.ParseError, arg, msg);
+                try self.appendFailureReport(.ParseError, &.{
+                    .{ .@"error" = msg },
+                    .{ .span = .{
+                        .span = arg.span,
+                        .role = .primary,
+                    } },
+                });
+                had_error = true;
             }
         }
 
@@ -857,7 +865,16 @@ pub const Compiler = struct {
                                 "parameter `{s}` specified multiple times",
                                 .{param_name},
                             );
-                            return self.fail(.ParseError, arg, msg);
+                            try self.appendFailureReport(.ParseError, &.{
+                                .{ .@"error" = msg },
+                                .{ .span = .{
+                                    .span = arg.span,
+                                    .role = .primary,
+                                } },
+                            });
+                            had_error = true;
+                            found = true;
+                            break;
                         }
                         param_seen[param_idx] = true;
                         reordered[param_idx] = arg;
@@ -878,7 +895,14 @@ pub const Compiler = struct {
                             ),
                         },
                     );
-                    return self.fail(.ParseError, arg, msg);
+                    try self.appendFailureReport(.ParseError, &.{
+                        .{ .@"error" = msg },
+                        .{ .span = .{
+                            .span = arg.span,
+                            .role = .primary,
+                        } },
+                    });
+                    had_error = true;
                 }
             } else {
                 if (positional_idx >= sig.param_names.len) {
@@ -887,7 +911,15 @@ pub const Compiler = struct {
                         "too many positional arguments",
                         .{},
                     );
-                    return self.fail(.ParseError, arg, msg);
+                    try self.appendFailureReport(.ParseError, &.{
+                        .{ .@"error" = msg },
+                        .{ .span = .{
+                            .span = arg.span,
+                            .role = .primary,
+                        } },
+                    });
+                    had_error = true;
+                    continue;
                 }
                 reordered[positional_idx] = arg;
                 param_seen[positional_idx] = true;
@@ -895,6 +927,7 @@ pub const Compiler = struct {
             }
         }
 
+        if (had_error) return error.LoweringFailed;
         return reordered;
     }
 
