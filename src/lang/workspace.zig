@@ -24,6 +24,7 @@ const CacheEntry = struct {
     version: u32,
     opts: lang.BuildOptions,
     artifact: lang.Artifact,
+    symbols: []Symbol,
 };
 
 pub const Analysis = struct {
@@ -31,6 +32,7 @@ pub const Analysis = struct {
     artifact: ?lang.Artifact = null,
     diagnostics: ?lang.Error = null,
     cached: bool = false,
+    symbols: []Symbol = &.{},
     dependencies: []FileId = &.{},
 
     pub fn deinit(self: *Analysis, alloc: std.mem.Allocator) void {
@@ -41,7 +43,46 @@ pub const Analysis = struct {
         if (self.diagnostics) |err| {
             lang.deinitError(alloc, err);
         }
+        alloc.free(self.symbols);
         alloc.free(self.dependencies);
+    }
+};
+
+pub const Position = struct {
+    line: u32,
+    character: u32,
+};
+
+pub const Range = struct {
+    start: Position,
+    end: Position,
+};
+
+pub const Location = struct {
+    file_id: FileId,
+    name: []const u8,
+    range: Range,
+};
+
+pub const SymbolKind = enum {
+    binding,
+    function,
+    struct_type,
+    type_alias,
+};
+
+pub const Symbol = struct {
+    name: []const u8,
+    kind: SymbolKind,
+    range: Range,
+};
+
+pub const Hover = struct {
+    text: []u8,
+    range: Range,
+
+    pub fn deinit(self: *Hover, alloc: std.mem.Allocator) void {
+        alloc.free(self.text);
     }
 };
 
@@ -194,6 +235,7 @@ pub const Workspace = struct {
                     .snapshot = snap,
                     .artifact = artifact,
                     .cached = true,
+                    .symbols = try copySymbols(alloc, cached.symbols),
                     .dependencies = try self.copyDeps(id),
                 };
             }
@@ -203,6 +245,8 @@ pub const Workspace = struct {
             .name = snap.name,
             .text = snap.text,
         }, opts);
+        const symbols = try self.collectSymbols(snap, opts);
+        errdefer self.alloc.free(symbols);
 
         return switch (build_result) {
             .ok => |artifact| blk: {
@@ -211,14 +255,17 @@ pub const Workspace = struct {
                 errdefer deinitArtifact(self.alloc, cache_artifact);
                 const deps = try self.collectDeps(snap, opts);
                 errdefer self.alloc.free(deps);
+                const cache_symbols = try copySymbols(self.alloc, symbols);
+                errdefer self.alloc.free(cache_symbols);
                 try self.updateDeps(id, deps);
-                try self.putCache(id, snap.version, opts, cache_artifact);
+                try self.putCache(id, snap.version, opts, cache_artifact, cache_symbols);
                 const copy = try copyArtifact(alloc, artifact);
                 errdefer deinitArtifact(alloc, copy);
                 break :blk .{
                     .snapshot = snap,
                     .artifact = copy,
                     .cached = false,
+                    .symbols = try copySymbols(alloc, symbols),
                     .dependencies = try self.copyDeps(id),
                 };
             },
@@ -226,6 +273,7 @@ pub const Workspace = struct {
                 .snapshot = snap,
                 .diagnostics = err,
                 .cached = false,
+                .symbols = try copySymbols(alloc, symbols),
                 .dependencies = try self.copyDeps(id),
             },
         };
@@ -242,20 +290,76 @@ pub const Workspace = struct {
         return self.analyze(alloc, id, opts);
     }
 
+    pub fn diagnostics(self: *Workspace, alloc: std.mem.Allocator, id: FileId, opts: lang.BuildOptions) !?lang.Error {
+        var analysis = try self.analyzeDetailed(alloc, id, opts);
+        defer analysis.deinit(alloc);
+        return analysis.diagnostics;
+    }
+
+    pub fn documentSymbols(self: *Workspace, alloc: std.mem.Allocator, id: FileId, opts: lang.BuildOptions) ![]Symbol {
+        var analysis = try self.analyzeDetailed(alloc, id, opts);
+        defer analysis.deinit(alloc);
+        return try copySymbols(alloc, analysis.symbols);
+    }
+
+    pub fn definition(self: *Workspace, alloc: std.mem.Allocator, id: FileId, pos: Position, opts: lang.BuildOptions) !?Location {
+        var analysis = try self.analyzeDetailed(alloc, id, opts);
+        defer analysis.deinit(alloc);
+        const snap = analysis.snapshot;
+        const name = wordAtPosition(snap.text, pos) orelse return null;
+        return bestLocation(self, alloc, name, id, pos, opts);
+    }
+
+    pub fn hover(self: *Workspace, alloc: std.mem.Allocator, id: FileId, pos: Position, opts: lang.BuildOptions) !?Hover {
+        var analysis = try self.analyzeDetailed(alloc, id, opts);
+        defer analysis.deinit(alloc);
+        const snap = analysis.snapshot;
+        const name = wordAtPosition(snap.text, pos) orelse return null;
+        const def = try self.definition(alloc, id, pos, opts) orelse return null;
+        const text = try std.fmt.allocPrint(alloc, "{s} at {s}:{d}:{d}", .{
+            name,
+            def.name,
+            def.range.start.line,
+            def.range.start.character,
+        });
+        return .{
+            .text = text,
+            .range = def.range,
+        };
+    }
+
+    pub fn references(self: *Workspace, alloc: std.mem.Allocator, id: FileId, pos: Position, opts: lang.BuildOptions) ![]Location {
+        var analysis = try self.analyzeDetailed(alloc, id, opts);
+        defer analysis.deinit(alloc);
+        const snap = analysis.snapshot;
+        const name = wordAtPosition(snap.text, pos) orelse return self.alloc.alloc(Location, 0);
+        var out = try std.ArrayList(Location).initCapacity(alloc, 4);
+        errdefer out.deinit(alloc);
+
+        try self.collectReferencesInFile(alloc, id, name, &out, opts);
+        const deps_it = try self.dependencyClosure(alloc, id);
+        defer alloc.free(deps_it);
+        for (deps_it) |dep| try self.collectReferencesInFile(alloc, dep, name, &out, opts);
+        return out.toOwnedSlice(alloc);
+    }
+
     fn putCache(
         self: *Workspace,
         id: FileId,
         version: u32,
         opts: lang.BuildOptions,
         artifact: lang.Artifact,
+        symbols: []Symbol,
     ) !void {
         const entry = CacheEntry{
             .version = version,
             .opts = opts,
             .artifact = artifact,
+            .symbols = symbols,
         };
         if (self.cache.getPtr(id)) |slot| {
             deinitArtifact(self.alloc, slot.artifact);
+            self.alloc.free(slot.symbols);
             slot.* = entry;
         } else {
             try self.cache.put(id, entry);
@@ -278,6 +382,7 @@ pub const Workspace = struct {
 
         if (self.cache.fetchRemove(id)) |kv| {
             deinitArtifact(self.alloc, kv.value.artifact);
+            self.alloc.free(kv.value.symbols);
         }
 
         if (self.reverse_deps.get(id)) |dependents| {
@@ -428,6 +533,7 @@ pub const Workspace = struct {
         var it = self.cache.iterator();
         while (it.next()) |entry| {
             deinitArtifact(self.alloc, entry.value_ptr.artifact);
+            self.alloc.free(entry.value_ptr.symbols);
         }
     }
 
@@ -443,6 +549,126 @@ pub const Workspace = struct {
     fn copyDeps(self: *Workspace, id: FileId) ![]FileId {
         const deps = self.dependencies.get(id) orelse return self.alloc.alloc(FileId, 0);
         return self.alloc.dupe(FileId, deps);
+    }
+
+    fn dependencyClosure(self: *Workspace, alloc: std.mem.Allocator, id: FileId) ![]FileId {
+        var visited = std.AutoHashMap(FileId, void).init(alloc);
+        defer visited.deinit();
+
+        var out = try std.ArrayList(FileId).initCapacity(alloc, 4);
+        errdefer out.deinit(alloc);
+
+        try self.collectDependencyClosure(id, alloc, &visited, &out);
+        return out.toOwnedSlice(alloc);
+    }
+
+    fn collectDependencyClosure(
+        self: *Workspace,
+        id: FileId,
+        alloc: std.mem.Allocator,
+        visited: *std.AutoHashMap(FileId, void),
+        out: *std.ArrayList(FileId),
+    ) !void {
+        const deps = self.dependencies.get(id) orelse return;
+        for (deps) |dep| {
+            if (visited.contains(dep)) continue;
+            try visited.put(dep, {});
+            try out.append(alloc, dep);
+            try self.collectDependencyClosure(dep, alloc, visited, out);
+        }
+    }
+
+    fn collectSymbols(self: *Workspace, snap: Snapshot, opts: lang.BuildOptions) ![]Symbol {
+        var arena = std.heap.ArenaAllocator.init(self.alloc);
+        defer arena.deinit();
+
+        const parsed = try lang.parse(arena.allocator(), .{
+            .name = snap.name,
+            .text = snap.text,
+        }, .{
+            .include_default_macros = opts.include_default_macros,
+        });
+
+        const root = switch (parsed) {
+            .ok => |ok| ok.root,
+            .err => return self.alloc.alloc(Symbol, 0),
+        };
+
+        var out = try std.ArrayList(Symbol).initCapacity(self.alloc, 8);
+        errdefer out.deinit(self.alloc);
+        var visitor = SymbolVisitor{ .alloc = self.alloc, .out = &out };
+        visitor.visit(root);
+        return out.toOwnedSlice(self.alloc);
+    }
+
+    fn collectReferencesInFile(
+        self: *Workspace,
+        alloc: std.mem.Allocator,
+        id: FileId,
+        name: []const u8,
+        out: *std.ArrayList(Location),
+        opts: lang.BuildOptions,
+    ) !void {
+        const snap = self.snapshot(id) orelse return;
+        _ = opts;
+        var pos: usize = 0;
+        while (wordIndexOf(snap.text, name, pos)) |idx| {
+            const start = offsetToPosition(snap.text, idx);
+            const end = offsetToPosition(snap.text, idx + name.len);
+            try out.append(alloc, .{
+                .file_id = id,
+                .name = snap.name,
+                .range = .{ .start = start, .end = end },
+            });
+            pos = idx + name.len;
+        }
+    }
+
+    fn bestLocation(
+        self: *Workspace,
+        alloc: std.mem.Allocator,
+        name: []const u8,
+        id: FileId,
+        pos: Position,
+        opts: lang.BuildOptions,
+    ) !?Location {
+        var best: ?Location = null;
+        try self.pickBestFromFile(alloc, id, name, pos, opts, &best);
+        if (best != null) return best;
+
+        const deps = try self.dependencyClosure(alloc, id);
+        defer alloc.free(deps);
+        for (deps) |dep| {
+            try self.pickBestFromFile(alloc, dep, name, pos, opts, &best);
+            if (best != null) return best;
+        }
+
+        return null;
+    }
+
+    fn pickBestFromFile(
+        self: *Workspace,
+        alloc: std.mem.Allocator,
+        id: FileId,
+        name: []const u8,
+        pos: Position,
+        opts: lang.BuildOptions,
+        best: *?Location,
+    ) !void {
+        var analysis = try self.analyzeDetailed(alloc, id, opts);
+        defer analysis.deinit(alloc);
+        for (analysis.symbols) |sym| {
+            if (!std.mem.eql(u8, sym.name, name)) continue;
+            if (positionBefore(sym.range.start, pos)) {
+                if (best.* == null or positionBefore(best.*.?.range.start, sym.range.start)) {
+                    best.* = .{
+                        .file_id = id,
+                        .name = self.snapshot(id).?.name,
+                        .range = sym.range,
+                    };
+                }
+            }
+        }
     }
 
     fn entryPtr(self: *Workspace, id: FileId) !*FileEntry {
@@ -468,6 +694,110 @@ fn deinitArtifact(alloc: std.mem.Allocator, artifact: lang.Artifact) void {
     alloc.free(artifact.instructions);
     alloc.free(artifact.spans);
 }
+
+fn copySymbols(alloc: std.mem.Allocator, symbols: []const Symbol) ![]Symbol {
+    return alloc.dupe(Symbol, symbols);
+}
+
+fn positionBefore(a: Position, b: Position) bool {
+    return a.line < b.line or (a.line == b.line and a.character <= b.character);
+}
+
+fn offsetToPosition(text: []const u8, offset: usize) Position {
+    var line: u32 = 1;
+    var col: u32 = 1;
+    var i: usize = 0;
+    while (i < offset and i < text.len) : (i += 1) {
+        if (text[i] == '\n') {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    return .{ .line = line, .character = col };
+}
+
+fn wordAtPosition(text: []const u8, pos: Position) ?[]const u8 {
+    const offset = positionToOffset(text, pos) orelse return null;
+    if (offset >= text.len) return null;
+    var start = offset;
+    while (start > 0 and isWordChar(text[start - 1])) start -= 1;
+    var end = offset;
+    while (end < text.len and isWordChar(text[end])) end += 1;
+    if (end <= start) return null;
+    return text[start..end];
+}
+
+fn wordIndexOf(text: []const u8, name: []const u8, start: usize) ?usize {
+    if (name.len == 0) return null;
+    var idx = start;
+    while (idx + name.len <= text.len) : (idx += 1) {
+        if (!std.mem.eql(u8, text[idx .. idx + name.len], name)) continue;
+        const before_ok = idx == 0 or !isWordChar(text[idx - 1]);
+        const after_ok = idx + name.len == text.len or !isWordChar(text[idx + name.len]);
+        if (before_ok and after_ok) return idx;
+    }
+    return null;
+}
+
+fn positionToOffset(text: []const u8, pos: Position) ?usize {
+    var line: u32 = 1;
+    var col: u32 = 1;
+    for (text, 0..) |ch, idx| {
+        if (line == pos.line and col == pos.character) return idx;
+        if (ch == '\n') {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    if (line == pos.line and col == pos.character) return text.len;
+    return null;
+}
+
+fn isWordChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
+const SymbolVisitor = struct {
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(Symbol),
+
+    pub fn visit(self: *@This(), node: *const lang.Node) void {
+        switch (node.expr) {
+            .decl => |d| switch (d.inner.expr) {
+                .binding => |b| self.addBinding(b),
+                .struct_def => |def| self.addName(def.name, .struct_type, node.span),
+                .type_alias => |t| self.addName(t.name, .type_alias, node.span),
+                else => {},
+            },
+            .binding => |b| self.addBinding(b),
+            .struct_def => |def| self.addName(def.name, .struct_type, node.span),
+            .type_alias => |t| self.addName(t.name, .type_alias, node.span),
+            else => {},
+        }
+        lang.ast.walkAST(SymbolVisitor, self, node);
+    }
+
+    fn addBinding(self: *@This(), b: lang.ast.Binding) void {
+        if (b.target.expr == .ident) {
+            self.addName(b.target.expr.ident, .binding, b.target.span);
+        }
+    }
+
+    fn addName(self: *@This(), name: []const u8, kind: SymbolKind, span: lang.Span) void {
+        self.out.append(self.alloc, .{
+            .name = name,
+            .kind = kind,
+            .range = .{
+                .start = .{ .line = span.line, .character = @intCast(span.column) },
+                .end = .{ .line = span.line, .character = @intCast(span.column + 1) },
+            },
+        }) catch {};
+    }
+};
 
 fn containsId(items: []const FileId, id: FileId) bool {
     for (items) |item|
@@ -634,4 +964,56 @@ test "analysis returns snapshot and artifact" {
     try std.testing.expectEqualStrings("<test>", analysis.snapshot.name);
     try std.testing.expect(analysis.artifact != null);
     try std.testing.expect(analysis.diagnostics == null);
+}
+
+test "workspace query surface" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var vm = try VM.init(.{ .alloc = alloc, .io = std.testing.io });
+    defer vm.deinit();
+
+    var ws = try Workspace.init(&vm, alloc);
+    defer ws.deinit();
+
+    const source =
+        \\ const x = 1
+        \\ x
+    ;
+    const id = try ws.open("<test>", source);
+
+    const syms = try ws.documentSymbols(alloc, id, .{});
+    defer alloc.free(syms);
+    try std.testing.expect(syms.len != 0);
+    try std.testing.expectEqualStrings("x", syms[0].name);
+
+    const def = try ws.definition(alloc, id, .{ .line = 2, .character = 1 }, .{});
+    try std.testing.expect(def != null);
+    try std.testing.expectEqualStrings("<test>", def.?.name);
+
+    const refs = try ws.references(alloc, id, .{ .line = 2, .character = 1 }, .{});
+    defer alloc.free(refs);
+    try std.testing.expect(refs.len >= 2);
+
+    var hov = try ws.hover(alloc, id, .{ .line = 2, .character = 1 }, .{});
+    try std.testing.expect(hov != null);
+    defer if (hov) |*h| h.deinit(alloc);
+    try std.testing.expect(std.mem.indexOf(u8, hov.?.text, "x at") != null);
+}
+
+test "workspace diagnostics query" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var vm = try VM.init(.{ .alloc = alloc, .io = std.testing.io });
+    defer vm.deinit();
+
+    var ws = try Workspace.init(&vm, alloc);
+    defer ws.deinit();
+
+    const id = try ws.open("<test>", "const x =");
+    const diag = try ws.diagnostics(alloc, id, .{});
+    try std.testing.expect(diag != null);
 }

@@ -1,0 +1,16 @@
+let start = time.now()
+
+const n: int = 25
+let x: int = 0
+
+for _ in 0..n
+  for _ in 0..n
+    for _ in 0..n
+      for _ in 0..n
+        for _ in 0..n
+          for _ in 0..n
+            x+=1
+
+print(x)
+
+print!("took %v", (time.now() - start)/1000)
