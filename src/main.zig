@@ -235,6 +235,7 @@ fn compileSource(init: std.process.Init, vm: *VM, gpa: Allocator, source_name: [
 
     if (analysis.diagnostics) |lang_err| {
         handleBuildError(init, gpa, source_name, source_text, lang_err);
+        analysis.diagnostics = null;
         vm.runtime.resetDiagArena();
         return error.CompilationError;
     }

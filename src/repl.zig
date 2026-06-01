@@ -396,6 +396,7 @@ pub const Session = struct {
 
         if (analysis.diagnostics) |lang_err| {
             try self.printBuildError(out, source, lang_err);
+            analysis.diagnostics = null;
             return true;
         }
 
