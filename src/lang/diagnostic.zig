@@ -543,7 +543,7 @@ fn renderSpanBlock(
             const span_here = cl.span_end -| cl.span_start;
             const clamped = @min(span_here, cl.text.len -| (col - 1));
             const highlight = @max(clamped, 1);
-            const pad = if (col > 2) col - 2 else 0;
+            const pad = if (col > 1) col - 1 else 0;
             const ul_bracket_spaces: usize = if (is_first and is_last) 2 else if (is_last) 2 else 2;
             try writeBlankLineNumber(writer, line_width);
             try writer.writeByte(' ');

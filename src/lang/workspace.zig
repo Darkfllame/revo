@@ -304,7 +304,7 @@ pub const Workspace = struct {
 
         return switch (build_result) {
             .ok => |artifact| blk: {
-                errdefer deinitArtifact(vm.runtime.alloc, artifact);
+                defer deinitArtifact(vm.runtime.alloc, artifact);
                 const cache_artifact = try copyArtifact(self.alloc, artifact);
                 errdefer deinitArtifact(self.alloc, cache_artifact);
                 const cache_symbols = try copySymbols(self.alloc, symbols);
