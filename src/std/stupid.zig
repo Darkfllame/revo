@@ -69,6 +69,7 @@ pub fn build(args: []const Data, vm: *VM) !NativeResult {
             },
             .expand => |e| return root.resultTuple(vm, .err, try vm.ownDataString(revo.lang.diagnostic.firstError(e.report).?)),
             .parse => |e| return root.resultTuple(vm, .err, try vm.ownDataString(revo.lang.diagnostic.firstError(e.report).?)),
+            .semantic => |e| return root.resultTuple(vm, .err, try vm.ownDataString(revo.lang.diagnostic.firstError(e.report).?)),
         },
     }
 }

@@ -882,6 +882,12 @@ fn copyError(
             report.source = try alloc.dupe(u8, source);
             break :blk .{ .lower = .{ .kind = failure.kind, .report = report } };
         },
+        .semantic => |failure| blk: {
+            var report = try failure.report.copy(alloc);
+            report.source_name = try alloc.dupe(u8, source_name);
+            report.source = try alloc.dupe(u8, source);
+            break :blk .{ .semantic = .{ .kind = failure.kind, .report = report } };
+        },
     };
 }
 

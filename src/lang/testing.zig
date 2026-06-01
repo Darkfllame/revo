@@ -252,6 +252,7 @@ pub fn expectCompileError(source: []const u8, expected: lang.LowerErrorKind) !vo
             },
             .expand => return error.ExpectedLowerFailure,
             .parse => return error.ExpectedLowerFailure,
+            .semantic => return error.ExpectedLowerFailure,
         },
     }
 }
@@ -278,6 +279,7 @@ pub fn expectCompileFailure(
         .err => |failure| switch (failure) {
             .parse => return error.ExpectedLowerFailure,
             .expand => return error.ExpectedLowerFailure,
+            .semantic => return error.ExpectedLowerFailure,
             .lower => |lower| {
                 try std.testing.expectEqual(expected_kind, lower.kind);
                 const span = lang.diagnostic.primarySpan(lower.report).?;

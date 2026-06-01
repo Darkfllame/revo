@@ -63,6 +63,7 @@ pub const TraceFrame = diagnostic.TraceFrame;
 pub const Label = diagnostic.Label;
 pub const Note = diagnostic.Note;
 pub const Severity = diagnostic.Severity;
+pub const semantic = @import("semantic.zig");
 pub const docs = @import("docs.zig");
 pub const Token = lexer.Token;
 pub const TokenType = lexer.TokenType;
@@ -78,6 +79,7 @@ test {
     _ = @import("parser.zig");
     _ = @import("testing.zig");
     _ = @import("tests.zig");
+    _ = @import("semantic.zig");
     _ = @import("lang_pipeline.zig");
     _ = @import("workspace.zig");
 }

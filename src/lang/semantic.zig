@@ -19,7 +19,7 @@ pub fn analyze(
     if (checker.errors.items.len == 0) return null;
 
     const report = try checker.finishReport();
-    return .{ .lower = .{ .kind = .ParseError, .report = report } };
+    return .{ .semantic = .{ .kind = .ParseError, .report = report } };
 }
 
 const Scope = struct {

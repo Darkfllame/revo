@@ -78,6 +78,7 @@ pub const Error = union(enum) {
     parse: parser.ParseFailure,
     expand: ExpandFailure,
     lower: compiler.LowerFailure,
+    semantic: compiler.LowerFailure,
 };
 
 pub const ParseResult = Result(Parsed, parser.ParseFailure);
@@ -182,6 +183,12 @@ pub fn renderError(allocator: std.mem.Allocator, writer: *std.Io.Writer, source:
             report.source = source.text;
             break :blk diagnostic.renderReport(allocator, writer, report);
         },
+        .semantic => |failure| blk: {
+            var report = failure.report;
+            report.source_name = report.source_name orelse source.name;
+            report.source = source.text;
+            break :blk diagnostic.renderReport(allocator, writer, report);
+        },
     };
 }
 
@@ -191,6 +198,7 @@ pub fn deinitError(alloc: std.mem.Allocator, err: Error) void {
         .parse => |*failure| failure.report.deinit(alloc),
         .expand => |*failure| failure.report.deinit(alloc),
         .lower => |*failure| failure.report.deinit(alloc),
+        .semantic => |*failure| failure.report.deinit(alloc),
     }
 }
 
