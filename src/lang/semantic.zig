@@ -131,8 +131,8 @@ const SemanticChecker = struct {
         if (std.mem.eql(u8, name, "float")) return .float;
         if (std.mem.eql(u8, name, "number")) return .{
             .@"union" = &.{
-                .{ .name = "", .types = &.{ .int } },
-                .{ .name = "", .types = &.{ .float } },
+                .{ .name = "", .types = &.{.int} },
+                .{ .name = "", .types = &.{.float} },
             },
         };
         if (std.mem.eql(u8, name, "string")) return .string;
@@ -427,11 +427,11 @@ const SemanticChecker = struct {
                 const expected = sig.params[i];
                 if (!types_mod.canCoerce(actual, expected)) {
                     const msg = try std.fmt.allocPrint(self.alloc, "argument {d} to `{s}` expects {s}, got {s}", .{
-                            i + 1,
-                            call.callee.expr.ident,
-                            types_mod.typeName(expected),
-                            types_mod.typeName(actual),
-                        });
+                        i + 1,
+                        call.callee.expr.ident,
+                        types_mod.typeName(expected),
+                        types_mod.typeName(actual),
+                    });
                     try self.appendError(msg, call.args[i].span, "bad call arg");
                 }
             }

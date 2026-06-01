@@ -33,6 +33,7 @@ const InspectCacheEntry = struct {
     opts: lang.BuildOptions,
     symbols: []Symbol,
     dependencies: []FileId,
+    diagnostics: ?lang.Error = null,
 };
 
 pub const Analysis = struct {
@@ -222,6 +223,14 @@ pub const Workspace = struct {
         };
     }
 
+    pub fn currentVersion(self: *Workspace, id: FileId) ?u32 {
+        return self.snapshot(id).?.version;
+    }
+
+    pub fn isStale(self: *Workspace, id: FileId, version: u32) bool {
+        return !(self.currentVersion(id) == version);
+    }
+
     pub fn analyze(
         self: *Workspace,
         alloc: std.mem.Allocator,
@@ -403,39 +412,14 @@ pub const Workspace = struct {
         const snap = self.snapshot(id) orelse return error.FileNotOpen;
         if (self.inspect_cache.get(id)) |cached| {
             if (cached.version == snap.version and sameOpts(cached.opts, opts)) {
-                // cache hit: still parse n run semantic for fresh diagnostics,
-                // but reuse cached syms and deps
-                var arena = std.heap.ArenaAllocator.init(self.alloc);
-                defer arena.deinit();
-
-                const parsed = try lang.parse(arena.allocator(), .{
-                    .name = snap.name,
-                    .text = snap.text,
-                }, .{ .include_default_macros = opts.include_default_macros });
-
-                if (parsed == .err) {
-                    self.removeDeps(id);
-                    var report = try parsed.err.report.copy(alloc);
-                    report.source_name = try alloc.dupe(u8, snap.name);
-                    report.source = try alloc.dupe(u8, snap.text);
-                    return .{
-                        .snapshot = snap,
-                        .diagnostics = .{ .parse = .{
-                            .kind = parsed.err.kind,
-                            .report = report,
-                        } },
-                        .cached = true,
-                        .symbols = try copySymbols(alloc, cached.symbols),
-                        .dependencies = try self.copyDeps(id),
-                    };
-                }
-
-                const root = parsed.ok.root;
-                const semantic_error = try semantic.analyze(alloc, root, snap.name, snap.text);
+                const cached_diag = if (cached.diagnostics) |diag|
+                    try copyError(alloc, diag, snap.name, snap.text)
+                else
+                    null;
                 return .{
                     .snapshot = snap,
+                    .diagnostics = cached_diag,
                     .cached = true,
-                    .diagnostics = semantic_error,
                     .symbols = try copySymbols(alloc, cached.symbols),
                     .dependencies = try self.copyDeps(id),
                 };
@@ -457,12 +441,17 @@ pub const Workspace = struct {
             var report = try parsed.err.report.copy(alloc);
             report.source_name = try alloc.dupe(u8, snap.name);
             report.source = try alloc.dupe(u8, snap.text);
+            const parse_error: lang.Error = .{ .parse = .{ .kind = parsed.err.kind, .report = report } };
+            const cache_diag = try copyError(self.alloc, parse_error, snap.name, snap.text);
+            errdefer lang.deinitError(self.alloc, cache_diag);
+            const empty_syms = try self.alloc.alloc(Symbol, 0);
+            errdefer self.alloc.free(empty_syms);
+            const empty_deps = try self.alloc.alloc(FileId, 0);
+            errdefer self.alloc.free(empty_deps);
+            try self.putInspectCache(id, snap.version, opts, empty_syms, empty_deps, cache_diag);
             return .{
                 .snapshot = snap,
-                .diagnostics = .{ .parse = .{
-                    .kind = parsed.err.kind,
-                    .report = report,
-                } },
+                .diagnostics = parse_error,
                 .cached = false,
                 .symbols = try self.alloc.alloc(Symbol, 0),
                 .dependencies = try self.alloc.alloc(FileId, 0),
@@ -476,11 +465,16 @@ pub const Workspace = struct {
         errdefer self.alloc.free(deps);
         try self.updateDeps(id, deps);
         const semantic_error = try semantic.analyze(alloc, root, snap.name, snap.text);
+        const cache_diag = if (semantic_error) |err|
+            try copyError(self.alloc, err, snap.name, snap.text)
+        else
+            null;
+        errdefer if (cache_diag) |d| lang.deinitError(self.alloc, d);
         const cache_symbols = try copySymbols(self.alloc, symbols);
         errdefer self.alloc.free(cache_symbols);
         const cache_deps = try self.copyDeps(id);
         errdefer self.alloc.free(cache_deps);
-        try self.putInspectCache(id, snap.version, opts, cache_symbols, cache_deps);
+        try self.putInspectCache(id, snap.version, opts, cache_symbols, cache_deps, cache_diag);
 
         if (semantic_error) |err| {
             return .{
@@ -544,6 +538,7 @@ pub const Workspace = struct {
         if (self.inspect_cache.fetchRemove(id)) |kv| {
             self.alloc.free(kv.value.symbols);
             self.alloc.free(kv.value.dependencies);
+            if (kv.value.diagnostics) |diag| lang.deinitError(self.alloc, diag);
         }
 
         if (self.reverse_deps.get(id)) |dependents| {
@@ -688,6 +683,9 @@ pub const Workspace = struct {
         while (inspect_it.next()) |entry| {
             self.alloc.free(entry.value_ptr.symbols);
             self.alloc.free(entry.value_ptr.dependencies);
+            if (entry.value_ptr.diagnostics) |diag| {
+                lang.deinitError(self.alloc, diag);
+            }
         }
     }
 
@@ -712,16 +710,19 @@ pub const Workspace = struct {
         opts: lang.BuildOptions,
         symbols: []Symbol,
         dependencies: []FileId,
+        diag: ?lang.Error,
     ) !void {
         const entry = InspectCacheEntry{
             .version = version,
             .opts = opts,
             .symbols = symbols,
             .dependencies = dependencies,
+            .diagnostics = diag,
         };
         if (self.inspect_cache.getPtr(id)) |slot| {
             self.alloc.free(slot.symbols);
             self.alloc.free(slot.dependencies);
+            if (slot.diagnostics) |cached_d| lang.deinitError(self.alloc, cached_d);
             slot.* = entry;
         } else {
             try self.inspect_cache.put(id, entry);
@@ -1236,4 +1237,24 @@ test "workspace diagnostics query" {
     const id = try ws.open("<test>", "const x =");
     const diag = try ws.diagnostics(alloc, id, .{});
     try std.testing.expect(diag != null);
+}
+
+test "workspace stale version tracking" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ws = try Workspace.init(alloc);
+    defer ws.deinit();
+
+    const id = try ws.open("<test>", "1 + 1");
+    const v1 = ws.currentVersion(id).?;
+    try std.testing.expectEqual(@as(u32, 1), v1);
+    try std.testing.expect(!ws.isStale(id, v1));
+
+    try ws.change(id, "1 + 2");
+    try std.testing.expect(ws.isStale(id, v1));
+    const v2 = ws.currentVersion(id).?;
+    try std.testing.expectEqual(@as(u32, 2), v2);
+    try std.testing.expect(!ws.isStale(id, v2));
 }
