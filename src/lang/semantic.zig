@@ -439,6 +439,15 @@ const SemanticChecker = struct {
         if (call.callee.expr == .ident and callee_type == .function) {
             const sig = callee_type.function.*;
             if (call.args.len != sig.params.len) {
+                const label = blk: {
+                    if (call.args.len > sig.params.len) {
+                        break :blk try std.fmt.allocPrint(self.alloc, "{d} extra args", .{
+                            call.args.len -| sig.params.len,
+                        });
+                    } else break :blk try std.fmt.allocPrint(self.alloc, "{d} missing args", .{
+                        sig.params.len -| call.args.len,
+                    });
+                };
                 try self.appendError(
                     try std.fmt.allocPrint(self.alloc, "`{s}` wants {d} arguments, got {d}", .{
                         call.callee.expr.ident,
@@ -446,9 +455,7 @@ const SemanticChecker = struct {
                         call.args.len,
                     }),
                     call.callee.span,
-                    try std.fmt.allocPrint(self.alloc, "{d} extra args", .{
-                        call.args.len -| sig.params.len,
-                    }),
+                    label,
                 );
             }
             const count = @min(call.args.len, sig.params.len);
@@ -512,12 +519,17 @@ const SemanticChecker = struct {
         actual: types_mod.TypeInfo,
         label_prefix: []const u8,
     ) !void {
+        _ = label_prefix; // autofix
         const msg = try std.fmt.allocPrint(self.alloc, "`{s}` wants {s}, got {s}", .{
             name,
             expected_name,
             types_mod.typeName(actual),
         });
-        const label = try std.fmt.allocPrint(self.alloc, "wants {s}, got {s}", .{ label_prefix, expected_name });
+        const label = try std.fmt.allocPrint(
+            self.alloc,
+            "wants {s}, got {s}",
+            .{ expected_name, types_mod.typeName(actual) },
+        );
         try self.appendError(msg, span, label);
         _ = expected;
     }

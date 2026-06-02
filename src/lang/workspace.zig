@@ -1467,8 +1467,7 @@ fn findCallAtPosition(text: []const u8, pos: Position) ?CallAtPos {
 
     var depth: i32 = 0;
     var i = offset;
-    while (i > 0) {
-        i -= 1;
+    while (i > 0) : (i -= 1) {
         switch (text[i]) {
             ')' => depth += 1,
             '(' => {

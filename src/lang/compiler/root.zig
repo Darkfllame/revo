@@ -1586,7 +1586,11 @@ pub const Compiler = struct {
                     .{
                         .span = val.span,
                         .role = .primary,
-                        .message = "return value",
+                        .message = try std.fmt.allocPrint(
+                            self.alloc,
+                            "must return {s} (got {s})",
+                            .{ declared, typeStr(actual) },
+                        ),
                     },
                     msg,
                     &.{},
@@ -1619,7 +1623,10 @@ pub const Compiler = struct {
                     .{
                         .span = last_expr.span,
                         .role = .primary,
-                        .message = "return value",
+                        .message = try std.fmt.allocPrint(self.alloc, "return type not {s} (got {s})", .{
+                            types.typeName(expected),
+                            types.typeName(actual),
+                        }),
                     },
                     msg,
                     &.{},
