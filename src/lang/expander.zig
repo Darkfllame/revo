@@ -12,6 +12,7 @@ pub const ExpandError = error{
     InvalidPipeTarget,
     ParseFailed,
     InvalidIntrospection,
+    InvalidMacroName,
 } || std.mem.Allocator.Error;
 
 //
@@ -98,8 +99,10 @@ fn expandInEnv(allocator: std.mem.Allocator, expr: *Node, env: *MacroEnv) Expand
 
 fn expandCon(allocator: std.mem.Allocator, span: Span, binding: ast.Binding, env: *MacroEnv) ExpandError!*Node {
     if (binding.target.expr == .ident and binding.value.expr == .macro_expr) {
+        const name = binding.target.expr.ident;
+        if (!std.mem.endsWith(u8, name, "!")) return error.InvalidMacroName;
         const def = try parseMacroDef(allocator, binding.value.expr.macro_expr.pattern, binding.value.expr.macro_expr.template);
-        try env.map.put(binding.target.expr.ident, def);
+        try env.map.put(name, def);
         return ast.allocNode(allocator, span, .nil);
     }
     return ast.allocNode(allocator, span, .{ .binding = .{
@@ -787,11 +790,11 @@ pub const testing = struct {
         defer arena.deinit();
 
         const expanded = try expandExpr(arena.allocator(), try pipeline.parseSource(arena.allocator(),
-            \\ const dup = macro `` `saved`
-            \\ const try = macro `%e:expr` `match %e | x when is_error(x) => sys.panic(x) | x => x`
+            \\ const dup! = macro `` `saved`
+            \\ const try! = macro `%e:expr` `match %e | x when is_error(x) => sys.panic(x) | x => x`
             \\ 41
-            \\ dup
-            \\ try(1)
+            \\ dup!
+            \\ try!(1)
         ));
         var buf = std.Io.Writer.Allocating.init(std.heap.page_allocator);
         defer buf.deinit();
@@ -819,8 +822,8 @@ pub const testing = struct {
         defer arena.deinit();
 
         const expanded = try expandExpr(arena.allocator(), try pipeline.parseSource(arena.allocator(),
-            \\ const add = macro `%a:expr + %b:expr` `(%a + %b)`
-            \\ add(1, 2)
+            \\ const add! = macro `%a:expr + %b:expr` `(%a + %b)`
+            \\ add!(1, 2)
         ));
         try doesMatch(expanded, "(block nil (+ 1 2))");
     }
@@ -830,8 +833,8 @@ pub const testing = struct {
         defer arena.deinit();
 
         const expanded = try expandExpr(arena.allocator(), try pipeline.parseSource(arena.allocator(),
-            \\ const sum = macro `%first:expr %REST(%item:expr)*` `%first %REST(+ %item)`
-            \\ sum(1, 2, 3)
+            \\ const sum! = macro `%first:expr %REST(%item:expr)*` `%first %REST(+ %item)`
+            \\ sum!(1, 2, 3)
         ));
         try doesMatch(expanded, "(block nil (+ (+ 1 2) 3))");
     }
@@ -852,10 +855,10 @@ pub const testing = struct {
         defer arena.deinit();
 
         const expanded = try expandExpr(arena.allocator(), try pipeline.parseSource(arena.allocator(),
-            \\ const ok = macro `(%what:expr)` `(:ok, %what)`
-            \\ const err = macro `(%what:expr)` `(:err, %what)`
-            \\ ok(42)
-            \\ err("fail")
+            \\ const ok! = macro `(%what:expr)` `(:ok, %what)`
+            \\ const err! = macro `(%what:expr)` `(:err, %what)`
+            \\ ok!(42)
+            \\ err!("fail")
         ));
         try doesMatch(expanded, "(block nil nil (tuple :ok 42) (tuple :err \"fail\"))");
     }
@@ -876,11 +879,11 @@ pub const testing = struct {
         defer arena.deinit();
 
         const expanded = try expandExpr(arena.allocator(), try pipeline.parseSource(arena.allocator(),
-            \\ const double = macro `%x:expr` `(%x * 2)`
+            \\ const double! = macro `%x:expr` `(%x * 2)`
             \\ do
-            \\   const triple = macro `%x:expr` `(%x * 3)`
-            \\   double(5)
-            \\   triple(5)
+            \\   const triple! = macro `%x:expr` `(%x * 3)`
+            \\   double!(5)
+            \\   triple!(5)
             \\ end
         ));
         try doesMatch(expanded, "(block nil (block nil (* 5 2) (* 5 3)))");
@@ -891,10 +894,10 @@ pub const testing = struct {
         defer arena.deinit();
 
         const expanded = try expandExpr(arena.allocator(), try pipeline.parseSource(arena.allocator(),
-            \\ const id = macro `%x:ident` `%x`
-            \\ const num = macro `%x:number` `%x`
-            \\ id(foo)
-            \\ num(42)
+            \\ const id! = macro `%x:ident` `%x`
+            \\ const num! = macro `%x:number` `%x`
+            \\ id!(foo)
+            \\ num!(42)
         ));
         try doesMatch(expanded, "(block nil nil foo 42)");
     }

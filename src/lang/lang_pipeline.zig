@@ -1,8 +1,8 @@
 pub const default_macro_source =
-    \\const ok? = macro `(%what:expr)` `%what[0] == :ok`
-    \\const err? = macro `(%what:expr)` `%what[0] == :err`
-    \\const some? = macro `(%what:expr)` `%what[0] == :some`
-    \\const none? = macro `(%what:expr)` `%what == :none or %what[0] == :none`
+    \\const ok?! = macro `(%what:expr)` `%what[0] == :ok`
+    \\const err?! = macro `(%what:expr)` `%what[0] == :err`
+    \\const some?! = macro `(%what:expr)` `%what[0] == :some`
+    \\const none?! = macro `(%what:expr)` `%what == :none or %what[0] == :none`
     \\const print! = macro `(%fmt:str %ARGS(, %arg:expr)*)` `(print(fmt(%fmt %ARGS(, %arg))))`
 ;
 

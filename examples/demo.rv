@@ -194,9 +194,11 @@ fn error_handling() do
   const bad_val = safe_div(10, 0)
   const fallback = bad_val orelse 0
 
-  # ok? and err? check the tag without pattern matching
-  const is_ok = ok?(safe_div(5, 1))
-  const is_err = err?(safe_div(5, 0))
+  # ok?! and err?! check the tag without pattern matching
+  const ok_result = safe_div(5, 1)
+  const err_result = safe_div(5, 0)
+  const is_ok = ok?!(ok_result)
+  const is_err = err?!((:err, err_result))
 
   print(result, fallback, is_ok, is_err)
 end

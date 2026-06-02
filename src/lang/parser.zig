@@ -854,6 +854,7 @@ const Parser = struct {
         // check if this is a named function definition
         if (!self.check(.ident)) return error.AnonProc;
         const first_ident = self.advance();
+        if (!std.mem.endsWith(u8, first_ident.text, "!")) return error.InvalidProcName;
 
         if (self.check(.lparen)) {
             _ = try self.expect(.lparen);
@@ -1048,9 +1049,9 @@ const Parser = struct {
     test "parser test block parses" {
         try testing_helpers.expectPrinted(
             \\test "smoke" do
-            \\    ok?
+            \\    ok!
             \\end
-        , "(test smoke (fn () (block ok?)))");
+        , "(test smoke (fn () (block ok!)))");
     }
 
     /// (expr, expr, ...) or ()

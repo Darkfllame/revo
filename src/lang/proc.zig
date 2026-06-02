@@ -17,6 +17,7 @@ pub const ExpandError = error{
     ProcEvalFailed,
     RecursiveProcMacro,
     UnsupportedProcValue,
+    InvalidProcName,
 } || std.mem.Allocator.Error;
 
 pub fn register(vm: *revo.VM) !void {
@@ -152,6 +153,7 @@ fn expandInEnv(
         .binding => |binding| expandBinding(vm, allocator, expr.span, binding, env, mode),
         .call => |call| maybeExpandCall(vm, allocator, expr.span, call.callee, call.args, call.implicit_self, env, mode),
         .proc_macro => |pm| blk: {
+            if (!std.mem.endsWith(u8, pm.name, "!")) return error.InvalidProcName;
             const body = try expandInEnv(vm, allocator, pm.body, env, .runtimeize);
             try env.map.put(pm.name, .{
                 .name = pm.name,
@@ -175,6 +177,7 @@ fn expandBinding(
     // kinda hacky. will probably make them run normally later
     if (binding.target.expr == .ident and binding.value.expr == .proc_macro) {
         const target_name = binding.target.expr.ident;
+        if (!std.mem.endsWith(u8, target_name, "!")) return error.InvalidProcName;
         const proc_body = try expandInEnv(
             vm,
             allocator,

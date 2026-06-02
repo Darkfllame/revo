@@ -25,6 +25,20 @@ pub fn compileLocalBinding(
     mutable: bool,
     type_name: ?[]const u8,
 ) !void {
+    if (ast.isDiscardName(name)) {} else if (std.mem.endsWith(u8, name, "!"))
+        return self.setFailureParts(
+            .ParseError,
+            .{ .span = value.span, .role = .primary, .message = name },
+            "name with ! is reserved for macros",
+            &.{},
+        )
+    else if (std.mem.endsWith(u8, name, "?") and value.expr != .fn_expr)
+        return self.setFailureParts(
+            .ParseError,
+            .{ .span = value.span, .role = .primary, .message = name },
+            "name with ? is reserved for functions returning bool",
+            &.{},
+        );
     // type check before alloc
     if (type_name) |tn| {
         type_check.validateBindingType(self, tn, value) catch |err| switch (err) {

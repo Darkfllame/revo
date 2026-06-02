@@ -576,17 +576,17 @@ test "result predicates work" {
 
 test "error helpers build and classify tagged errors" {
     try t.top_string("tostring((:err, :FileNotFound))", "(:err, :FileNotFound)");
-    try t.top_true("err?((:err, :Bad))");
-    try t.top_true("err?((:err, :FileNotFound))");
-    try t.top_false("err?((:ok, :Bad))");
+    try t.top_true("err?!((:err, :Bad))");
+    try t.top_true("err?!((:err, :FileNotFound))");
+    try t.top_false("err?!((:ok, :Bad))");
 }
 
 test "result predicates replace native functions" {
-    try t.top_true("ok?((:ok, 42))");
-    try t.top_true("ok?((:ok, :nil))");
-    try t.top_false("ok?((:err, :Bad))");
-    try t.top_true("err?((:err, :Bad))");
-    try t.top_false("err?((:ok, 42))");
+    try t.top_true("ok?!((:ok, 42))");
+    try t.top_true("ok?!((:ok, :nil))");
+    try t.top_false("ok?!((:err, :Bad))");
+    try t.top_true("err?!((:err, :Bad))");
+    try t.top_false("err?!((:ok, 42))");
 }
 
 test "result and error conventions work with match" {
@@ -618,15 +618,15 @@ test "unwrap panics on bullshit" {
 
 test "zero-arg macro expands on identifier use" {
     try t.top_number(
-        \\const answer = macro `` `42`
-        \\answer
+        \\const answer! = macro `` `42`
+        \\answer!
     , 42);
 }
 
 test "unary macro expands in call position" {
     try t.top_number(
-        \\ const id = macro `%e:expr` `%e`
-        \\ id(42)
+        \\ const id! = macro `%e:expr` `%e`
+        \\ id!(42)
     , 42);
 }
 // test "side prefix" {
@@ -651,21 +651,21 @@ test "unary macro expands in call position" {
 
 test "macro system capabilities and limitations" {
     try t.top_number(
-        \\ const id = macro `%x:expr` `%x`
-        \\ id(42)
+        \\ const id! = macro `%x:expr` `%x`
+        \\ id!(42)
     , 42);
 
     try t.top_number(
-        \\ const count_args = macro `(%fmt:str %ARGS(, %arg:expr)*)` `3`
-        \\ count_args("format", 1, 2, 3)
+        \\ const count_args! = macro `(%fmt:str %ARGS(, %arg:expr)*)` `3`
+        \\ count_args!("format", 1, 2, 3)
     , 3);
 }
 
 // basic simple captures
 test "unary macro - single expression capture" {
     try t.top_number(
-        \\ const id = macro `%x:expr` `%x`
-        \\ id(42)
+        \\ const id! = macro `%x:expr` `%x`
+        \\ id!(42)
     , 42);
 }
 

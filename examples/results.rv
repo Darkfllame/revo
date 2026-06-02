@@ -8,5 +8,5 @@ match safe_div(10, 0)
 	| (:ok, v)  do print(v) end
 	| (:err, e) do print(fmt("error: %v", e)) end
 
-print(ok?((:ok, 42)))    # :true
-print(err?((:err, :Boom))) # :true
+print(ok?!((:ok, 42)))    # :true
+print(err?!((:err, :Boom))) # :true

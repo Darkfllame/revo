@@ -1,0 +1,3 @@
+fn hi?() do
+  :true
+end

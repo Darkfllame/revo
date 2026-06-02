@@ -1263,6 +1263,20 @@ pub const Compiler = struct {
 
         if (binding.target.expr == .ident) {
             const name = binding.target.expr.ident;
+            if (std.mem.endsWith(u8, name, "!"))
+                return self.setFailureParts(
+                    .ParseError,
+                    .{ .span = binding.target.span, .role = .primary, .message = name },
+                    "name with ! is reserved for macros",
+                    &.{},
+                );
+            if (std.mem.endsWith(u8, name, "?") and !ast.isDiscardName(name) and binding.value.expr != .fn_expr)
+                return self.setFailureParts(
+                    .ParseError,
+                    .{ .span = binding.target.span, .role = .primary, .message = name },
+                    "name with ? is reserved for functions returning bool",
+                    &.{},
+                );
             if (binding.value.expr == .fn_expr) {
                 try self.compileFn(
                     binding.value.expr.fn_expr.params,
@@ -1312,6 +1326,33 @@ pub const Compiler = struct {
         name: []const u8,
         loop_sym: ?revo.AtomID,
     ) InternalLowerError!void {
+        if (!ast.isDiscardName(name) and !std.mem.eql(u8, name, "<fn>")) {
+            if (std.mem.endsWith(u8, name, "!"))
+                return self.setFailureParts(
+                    .ParseError,
+                    .{ .span = body.span, .role = .primary, .message = name },
+                    "function name with ! is reserved for macros",
+                    &.{},
+                );
+            if (std.mem.endsWith(u8, name, "?")) {
+                if (return_type) |rt| {
+                    if (!std.mem.eql(u8, rt, "bool"))
+                        return self.setFailureParts(
+                            .ParseError,
+                            .{ .span = body.span, .role = .primary, .message = name },
+                            "function ending with ? must return bool",
+                            &.{},
+                        );
+                }
+            }
+        }
+
+        // names ending with ? must return bool (forced if not explicit)
+        const effective_return_type = if (std.mem.endsWith(u8, name, "?") and !ast.isDiscardName(name) and !std.mem.eql(u8, name, "<fn>"))
+            if (return_type) |rt| rt else try self.alloc.dupe(u8, "bool")
+        else
+            return_type;
+
         const jump_over = try emit.jump(self, .jump);
         const body_addr: ProgramCounter = @intCast(self.instructions.items.len);
         const caller_registers = self.active_registers;
@@ -1322,10 +1363,10 @@ pub const Compiler = struct {
         }
 
         const own_sig = !(ast.isDiscardName(name) or std.mem.eql(u8, name, "<fn>"));
-        const sig = try state_mod.allocFnSig(self, params, return_type);
+        const sig = try state_mod.allocFnSig(self, params, effective_return_type);
 
         var s = try FunctionState.init(self.alloc);
-        s.return_type = return_type;
+        s.return_type = effective_return_type;
         for (params, 0..) |param, idx| {
             const local: LocalVar = .{
                 .name = param.name,
@@ -1380,7 +1421,7 @@ pub const Compiler = struct {
         self.upvalue_cache.clearRetainingCapacity();
         if (own_sig) try s.fn_signatures.put(name, sig);
         try self.compile(body, true);
-        if (return_type) |rt| {
+        if (effective_return_type) |rt| {
             try validateImplicitReturnType(self, body, rt);
         } else {
             const inferred_type = type_check.inferExprType(self, body);
