@@ -485,7 +485,7 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
-                const return_type = if (self.match(.arrow)) (self.advance()).text else null;
+                const return_type = if (self.match(.arrow)) try self.parseTypeExpr() else null;
                 const body = try self.parseStatementExpression(body_min_bp);
 
                 var new_params = try self.alloc.alloc(ast.FnParam, params.len + 1);
@@ -512,7 +512,7 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
-                const return_type = if (self.match(.arrow)) (self.advance()).text else null;
+                const return_type = if (self.match(.arrow)) try self.parseTypeExpr() else null;
                 const body = try self.parseStatementExpression(body_min_bp);
 
                 const fn_node = try self.allocExpr(Span.merge(start.span(), body.span), .{
@@ -533,7 +533,7 @@ const Parser = struct {
                 _ = try self.expect(.lparen);
                 const params = try self.parseParamList(.rparen);
                 _ = try self.expect(.rparen);
-                const return_type = if (self.match(.arrow)) (self.advance()).text else null;
+                const return_type = if (self.match(.arrow)) try self.parseTypeExpr() else null;
                 const body = try self.parseStatementExpression(body_min_bp);
 
                 const fn_node = try self.allocExpr(Span.merge(start.span(), body.span), .{
@@ -552,7 +552,7 @@ const Parser = struct {
         _ = try self.expect(.lparen);
         const params = try self.parseParamList(.rparen);
         _ = try self.expect(.rparen);
-        const return_type = if (self.match(.arrow)) (self.advance()).text else null;
+        const return_type = if (self.match(.arrow)) try self.parseTypeExpr() else null;
         const body = try self.parseStatementExpression(body_min_bp);
         return self.allocExpr(Span.merge(start.span(), body.span), .{
             .fn_expr = .{ .params = params, .return_type = return_type, .body = body },
@@ -638,30 +638,72 @@ const Parser = struct {
         });
     }
 
-    fn parseTypeExpr(self: *Parser) anyerror!*Node {
-        var left = try self.parseTypeExprAtom();
-        while (self.match(.pipe)) {
-            const right = try self.parseTypeExprAtom();
-            left = try self.allocExpr(Span.merge(left.span, right.span), .{
-                .binary = .{ .op = .@"union", .left = left, .right = right },
-            });
+    fn parseTypeExpr(self: *Parser) anyerror!*ast.TypeExpr {
+        const left = try self.parseTypeExprAtom();
+        if (self.match(.pipe)) {
+            var variants = try std.ArrayList(*ast.TypeExpr).initCapacity(self.alloc, 4);
+            errdefer variants.deinit(self.alloc);
+            try collectTypeVariants(self.alloc, &variants, left);
+            try collectTypeVariants(self.alloc, &variants, try self.parseTypeExprAtom());
+            while (self.match(.pipe))
+                try collectTypeVariants(self.alloc, &variants, try self.parseTypeExprAtom());
+            const span = ast.Span.merge(variants.items[0].span, variants.items[variants.items.len - 1].span);
+            return try ast.allocTypeExpr(self.alloc, span, .{ .union_of = try variants.toOwnedSlice(self.alloc) });
         }
         return left;
     }
 
-    fn parseTypeExprAtom(self: *Parser) anyerror!*Node {
+    fn collectTypeVariants(alloc: std.mem.Allocator, variants: *std.ArrayList(*ast.TypeExpr), te: *ast.TypeExpr) !void {
+        if (te.kind == .union_of) {
+            try variants.appendSlice(alloc, te.kind.union_of);
+        } else {
+            try variants.append(alloc, te);
+        }
+    }
+
+    fn parseParenTypeExpr(self: *Parser, start: Token) anyerror!*ast.TypeExpr {
+        const inner = try self.parseTypeExpr();
+        if (self.match(.comma)) {
+            var items = try std.ArrayList(*ast.TypeExpr).initCapacity(self.alloc, 4);
+            errdefer items.deinit(self.alloc);
+            try items.append(self.alloc, inner);
+            while (!self.check(.rparen)) {
+                try items.append(self.alloc, try self.parseTypeExpr());
+                if (!self.match(.comma)) break;
+            }
+            const close = try self.expect(.rparen);
+            return try ast.allocTypeExpr(self.alloc, ast.Span.merge(start.span(), close.span()), .{
+                .tuple = try items.toOwnedSlice(self.alloc),
+            });
+        }
+        _ = try self.expect(.rparen);
+        return inner;
+    }
+
+    fn parseTypeExprAtom(self: *Parser) anyerror!*ast.TypeExpr {
         return switch (self.peek().type) {
             .ident => blk: {
                 const tok = self.advance();
-                break :blk try self.allocExpr(tok.span(), .{ .ident = tok.text });
+                break :blk try ast.allocTypeExpr(self.alloc, tok.span(), .{ .named = tok.text });
             },
             .hash => blk: {
                 const tok = self.advance();
-                break :blk try self.allocExpr(tok.span(), .{ .hash = tok.text });
+                break :blk try ast.allocTypeExpr(self.alloc, tok.span(), .{ .atom = tok.text });
+            },
+            .kw_fn => blk: {
+                const start = self.advance();
+                _ = try self.expect(.lparen);
+                const params = try self.parseParamList(.rparen);
+                _ = try self.expect(.rparen);
+                const return_type = if (self.match(.arrow)) try self.parseTypeExpr() else null;
+                const end = if (return_type) |r| r.span else self.tokens[self.pos - 1].span();
+                break :blk try ast.allocTypeExpr(self.alloc, ast.Span.merge(start.span(), end), .{
+                    .function = .{ .params = params, .return_type = return_type },
+                });
             },
             .lparen => blk: {
                 const start = self.advance();
-                break :blk try self.parseParenExpr(start);
+                break :blk try self.parseParenTypeExpr(start);
             },
             else => return error.UnexpectedToken,
         };
@@ -1134,7 +1176,7 @@ const Parser = struct {
         while (!self.check(terminator)) {
             const name = try self.expectIdent();
             var param: ast.FnParam = .{ .name = name.text };
-            if (self.match(.colon)) param.type_name = (try self.expectIdent()).text;
+            if (self.match(.colon)) param.type_name = try self.parseTypeExpr();
             try params.append(self.alloc, param);
             if (!self.match(.comma)) break;
         }

@@ -393,7 +393,7 @@ pub fn collectConstLocals(self: *Compiler, locals: []const LocalVar) ![]LocalSlo
     return out.toOwnedSlice(self.alloc);
 }
 
-pub fn allocFnSig(self: *Compiler, params: []const ast.FnParam, return_type: ?[]const u8) !*FunctionState.FnSig {
+pub fn allocFnSig(self: *Compiler, params: []const ast.FnParam, return_type: ?*ast.TypeExpr) !*FunctionState.FnSig {
     const sig = try self.alloc.create(FunctionState.FnSig);
     errdefer self.alloc.destroy(sig);
 
@@ -403,17 +403,23 @@ pub fn allocFnSig(self: *Compiler, params: []const ast.FnParam, return_type: ?[]
 
     var param_types = try std.ArrayList(?[]const u8).initCapacity(self.alloc, params.len);
     errdefer param_types.deinit(self.alloc);
-    for (params) |p| try param_types.append(self.alloc, p.type_name);
+    for (params) |p| try param_types.append(self.alloc, if (p.type_name) |tn| switch (tn.kind) {
+        .named => |n| n,
+        else => @tagName(tn.kind),
+    } else null);
 
     sig.* = .{
         .param_names = try param_names.toOwnedSlice(self.alloc),
         .param_types = try param_types.toOwnedSlice(self.alloc),
-        .return_type = return_type,
+        .return_type = if (return_type) |rt| switch (rt.kind) {
+            .named => |n| n,
+            else => @tagName(rt.kind),
+        } else null,
     };
     return sig;
 }
 
-pub fn declareFnSignature(self: *Compiler, name: []const u8, params: []const ast.FnParam, return_type: ?[]const u8) !void {
+pub fn declareFnSignature(self: *Compiler, name: []const u8, params: []const ast.FnParam, return_type: ?*ast.TypeExpr) !void {
     const state = currentFunctionState(self) orelse return;
     if (ast.isDiscardName(name)) return;
     if (state.fn_signatures.get(name) != null) return;

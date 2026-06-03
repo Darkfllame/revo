@@ -614,7 +614,10 @@ fn decodeValue(
             if (ptr.size == .one) {
                 var single_idx: usize = 0;
                 const single_items = [_]Data{data};
-                return try decodeValue(vm, allocator, span, ptr.child, &single_items, &single_idx);
+                const val = try decodeValue(vm, allocator, span, ptr.child, &single_items, &single_idx);
+                const p = try allocator.create(ptr.child);
+                p.* = val;
+                return p;
             }
             return error.UnsupportedProcValue;
         },

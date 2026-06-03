@@ -338,27 +338,38 @@ pub fn inferBlockResultType(ctx: anytype, exprs: []const *ast.Node) TypeInfo {
     return inferExprType(ctx, exprs[exprs.len - 1]);
 }
 
-pub fn evalTypeExpr(ctx: anytype, node: *const ast.Node) !TypeInfo {
-    return switch (node.expr) {
-        .ident => |name| resolveTypeName(ctx, name),
-        .hash => |name| TypeInfo{ .atom = name },
+pub fn evalTypeExpr(ctx: anytype, te: *const ast.TypeExpr) !TypeInfo {
+    return switch (te.kind) {
+        .named => |name| resolveTypeName(ctx, name),
+        .atom => |name| TypeInfo{ .atom = name },
         .tuple => |items| blk: {
             var types = try std.ArrayList(TypeInfo).initCapacity(ctx.alloc, items.len);
             errdefer types.deinit(ctx.alloc);
             for (items) |item| try types.append(ctx.alloc, try evalTypeExpr(ctx, item));
             break :blk TypeInfo{ .tuple = try types.toOwnedSlice(ctx.alloc) };
         },
-        .binary => |b| switch (b.op) {
-            .@"union" => blk: {
-                var variants = try std.ArrayList(UnionVariant).initCapacity(ctx.alloc, 4);
-                errdefer variants.deinit(ctx.alloc);
-                try collectVariants(ctx.alloc, try evalTypeExpr(ctx, b.left), &variants);
-                try collectVariants(ctx.alloc, try evalTypeExpr(ctx, b.right), &variants);
-                break :blk TypeInfo{ .@"union" = try variants.toOwnedSlice(ctx.alloc) };
-            },
-            else => return error.UnsupportedSyntax,
+        .union_of => |variants| blk: {
+            var collected = try std.ArrayList(UnionVariant).initCapacity(ctx.alloc, 4);
+            errdefer collected.deinit(ctx.alloc);
+            for (variants) |v| {
+                try collectVariants(ctx.alloc, try evalTypeExpr(ctx, v), &collected);
+            }
+            break :blk TypeInfo{ .@"union" = try collected.toOwnedSlice(ctx.alloc) };
         },
-        else => return error.UnsupportedSyntax,
+        .function => |f| blk: {
+            var params = try std.ArrayList(TypeInfo).initCapacity(ctx.alloc, f.params.len);
+            errdefer params.deinit(ctx.alloc);
+            for (f.params) |p| {
+                try params.append(ctx.alloc, if (p.type_name) |tn| try evalTypeExpr(ctx, tn) else .any);
+            }
+            const return_type = if (f.return_type) |rt| try evalTypeExpr(ctx, rt) else .any;
+            const sig_ptr = try ctx.alloc.create(FunctionSignature);
+            sig_ptr.* = .{
+                .params = try params.toOwnedSlice(ctx.alloc),
+                .return_type = return_type,
+            };
+            break :blk TypeInfo{ .function = sig_ptr };
+        },
     };
 }
 

@@ -93,9 +93,69 @@ pub const MatchResult = struct {
     groups: []GroupCapture,
 };
 
+pub const TypeExpr = struct {
+    kind: Kind,
+    span: Span,
+
+    pub const Kind = union(enum) {
+        named: []const u8,
+        atom: []const u8,
+        tuple: []const *TypeExpr,
+        union_of: []const *TypeExpr,
+        function: struct {
+            params: []const FnParam,
+            return_type: ?*TypeExpr,
+        },
+    };
+
+    pub fn printAt(self: *const TypeExpr, writer: *std.Io.Writer, depth: ?usize) !void {
+        _ = depth;
+        switch (self.kind) {
+            .named => |name| try writer.writeAll(name),
+            .atom => |name| try writer.print(":{s}", .{name}),
+            .tuple => |items| {
+                try writer.writeByte('(');
+                for (items, 0..) |item, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try item.printAt(writer, null);
+                }
+                try writer.writeByte(')');
+            },
+            .union_of => |variants| {
+                for (variants, 0..) |v, i| {
+                    if (i > 0) try writer.writeAll(" | ");
+                    try v.printAt(writer, null);
+                }
+            },
+            .function => |f| {
+                try writer.writeAll("fn(");
+                for (f.params, 0..) |p, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try writer.writeAll(p.name);
+                    if (p.type_name) |t| {
+                        try writer.writeAll(": ");
+                        try t.printAt(writer, null);
+                    }
+                }
+                try writer.writeByte(')');
+                if (f.return_type) |ret| {
+                    try writer.writeAll(" -> ");
+                    try ret.printAt(writer, null);
+                }
+            },
+        }
+    }
+};
+
+pub fn allocTypeExpr(allocator: std.mem.Allocator, span: Span, kind: TypeExpr.Kind) !*TypeExpr {
+    const te = try allocator.create(TypeExpr);
+    te.* = .{ .span = span, .kind = kind };
+    return te;
+}
+
 pub const FnParam = struct {
     name: []const u8,
-    type_name: ?[]const u8 = null,
+    type_name: ?*TypeExpr = null,
 };
 
 pub const TableEntry = struct {
@@ -187,7 +247,7 @@ pub const Expr = union(enum) {
     match_expr: struct { subject: *Node, arms: []MatchArm },
     fn_expr: struct {
         params: []FnParam,
-        return_type: ?[]const u8 = null,
+        return_type: ?*TypeExpr = null,
         body: *Node,
         doc: ?[]const u8 = null,
     },
@@ -221,7 +281,7 @@ pub const Expr = union(enum) {
     proc_macro: struct { name: []const u8, param: FnParam, body: *Node },
     try_expr: *Node, // expr?
     orelse_expr: struct { left: *Node, right: *Node }, // expr orelse 42
-    type_alias: struct { name: []const u8, type_expr: *Node },
+    type_alias: struct { name: []const u8, type_expr: *TypeExpr },
 };
 
 pub const Node = struct {
@@ -358,9 +418,16 @@ pub const Node = struct {
                 for (fn_expr.params, 0..) |param, i| {
                     if (i != 0) try writer.writeByte(' ');
                     try writer.writeAll(param.name);
-                    if (param.type_name) |t| try writer.print(":{s}", .{t});
+                    if (param.type_name) |t| {
+                        try writer.writeByte(':');
+                        try t.printAt(writer, null);
+                    }
                 }
                 try writer.writeByte(')');
+                if (fn_expr.return_type) |ret| {
+                    try writer.writeAll(" -> ");
+                    try ret.printAt(writer, null);
+                }
                 try sep(writer, depth, 1);
                 try fn_expr.body.printAt(writer, child(depth));
                 try close(writer, depth);
@@ -413,7 +480,10 @@ pub const Node = struct {
                 for (v.params, 0..) |param, i| {
                     if (i != 0) try writer.writeByte(' ');
                     try writer.writeAll(param.name);
-                    if (param.type_name) |t| try writer.print(":{s}", .{t});
+                    if (param.type_name) |t| {
+                        try writer.writeByte(':');
+                        try t.printAt(writer, null);
+                    }
                 }
                 try writer.writeAll(" in ");
                 // iter is inline with the header in both modes
@@ -526,7 +596,7 @@ pub const Node = struct {
             .type_alias => |t| {
                 try writer.print("(type {s}", .{t.name});
                 try sep(writer, depth, 1);
-                try t.type_expr.printAt(writer, child(depth));
+                try t.type_expr.printAt(writer, null);
                 try close(writer, depth);
             },
         }
@@ -749,6 +819,38 @@ test "prints break and return empty and valued forms" {
     try std.testing.expectEqualStrings("(return 1)", buf.written());
 }
 
+pub fn walkTypeExpr(te: *const TypeExpr) void {
+    switch (te.kind) {
+        .tuple => |items| for (items) |item| walkTypeExpr(item),
+        .union_of => |variants| for (variants) |v| walkTypeExpr(v),
+        .function => |f| {
+            for (f.params) |p| {
+                if (p.type_name) |t| walkTypeExpr(t);
+            }
+            if (f.return_type) |ret| walkTypeExpr(ret);
+        },
+        .named, .atom => {},
+    }
+}
+
+fn walkTypeExprWithVisitor(comptime Visitor: type, visitor: *Visitor, te: *const TypeExpr) void {
+    switch (te.kind) {
+        .named => |name| {
+            var temp: Node = .{ .span = te.span, .expr = .{ .ident = name } };
+            visitor.visit(&temp);
+        },
+        .atom => {},
+        .tuple => |items| for (items) |item| walkTypeExprWithVisitor(Visitor, visitor, item),
+        .union_of => |variants| for (variants) |v| walkTypeExprWithVisitor(Visitor, visitor, v),
+        .function => |f| {
+            for (f.params) |p| {
+                if (p.type_name) |t| walkTypeExprWithVisitor(Visitor, visitor, t);
+            }
+            if (f.return_type) |ret| walkTypeExprWithVisitor(Visitor, visitor, ret);
+        },
+    }
+}
+
 pub fn walkAST(comptime Visitor: type, visitor: *Visitor, node: *const Node) void {
     if (@hasField(Visitor, "found") and visitor.found) return;
 
@@ -793,6 +895,8 @@ pub fn walkAST(comptime Visitor: type, visitor: *Visitor, node: *const Node) voi
                         visitor.visit(c);
                     },
                     ?*Node => if (value) |c| visitor.visit(c),
+                    *TypeExpr => walkTypeExprWithVisitor(Visitor, visitor, value),
+                    ?*TypeExpr => if (value) |te| walkTypeExprWithVisitor(Visitor, visitor, te),
                     []MatchArm => for (value) |arm| {
                         if (@hasField(Visitor, "found") and visitor.found) return;
                         for (arm.matchers) |matcher| visitor.visit(matcher.expr);

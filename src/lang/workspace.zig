@@ -1243,12 +1243,18 @@ pub const Workspace = struct {
                     for (fn_expr.params, params) |src, *dst| {
                         dst.* = .{
                             .name = self.alloc.dupe(u8, src.name) catch return,
-                            .type_name = if (src.type_name) |tn| self.alloc.dupe(u8, tn) catch return else "",
+                            .type_name = if (src.type_name) |tn| switch (tn.kind) {
+                                .named => |n| self.alloc.dupe(u8, n) catch return,
+                                else => self.alloc.dupe(u8, @tagName(tn.kind)) catch return,
+                            } else "",
                         };
                     }
 
                     const return_type = if (fn_expr.return_type) |rt|
-                        self.alloc.dupe(u8, rt) catch return
+                        switch (rt.kind) {
+                            .named => |n| self.alloc.dupe(u8, n) catch return,
+                            else => self.alloc.dupe(u8, @tagName(rt.kind)) catch return,
+                        }
                     else
                         "";
                     const doc = if (fn_expr.doc) |d|

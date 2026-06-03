@@ -75,14 +75,14 @@ pub fn inferFieldType(self: *Compiler, object: *const Node, name: []const u8) Ty
     };
 }
 
-pub fn inferFnType(self: *Compiler, params: []const ast.FnParam, return_type: ?[]const u8) TypeInfo {
+pub fn inferFnType(self: *Compiler, params: []const ast.FnParam, return_type: ?*ast.TypeExpr) TypeInfo {
     var param_types = std.ArrayList(TypeInfo).initCapacity(self.alloc, params.len) catch return .any;
     defer param_types.deinit(self.alloc);
     for (params) |p| {
-        const pt = if (p.type_name) |tn| types_mod.resolveTypeName(self, tn) else .any;
+        const pt = if (p.type_name) |tn| evalTypeExpr(self, tn) catch .any else .any;
         param_types.append(self.alloc, pt) catch return .any;
     }
-    const ret = if (return_type) |rt| types_mod.resolveTypeName(self, rt) else .any;
+    const ret = if (return_type) |rt| evalTypeExpr(self, rt) catch .any else .any;
     const sig = self.alloc.create(FunctionSignature) catch return .any;
     sig.* = .{
         .params = param_types.toOwnedSlice(self.alloc) catch return .any,
@@ -97,38 +97,8 @@ pub fn validateBindingType(self: *Compiler, type_name: []const u8, value: *const
     try checkType(self.alloc, expected, actual, value.span);
 }
 
-pub const TypeExprError = error{
-    UnexpectedToken,
-    OutOfMemory,
-    TypeError,
-    UnsupportedSyntax,
-};
-
 pub fn resolveTypeAlias(self: *Compiler, name: []const u8) ?TypeInfo {
     return self.type_aliases.get(name);
-}
-
-pub fn evalUnionVariant(self: *Compiler, node: *const Node) TypeExprError!types_mod.UnionVariant {
-    switch (node.expr) {
-        .tuple => |items| {
-            if (items.len == 0) return error.UnsupportedSyntax;
-            const name_type = try evalTypeExpr(self, items[0]);
-            const name_str = switch (name_type) {
-                .atom => |a| a,
-                else => return error.UnsupportedSyntax,
-            };
-            var types = std.ArrayList(TypeInfo).initCapacity(self.alloc, items.len - 1) catch return error.OutOfMemory;
-            errdefer types.deinit(self.alloc);
-            for (items[1..]) |item| {
-                try types.append(self.alloc, try evalTypeExpr(self, item));
-            }
-            return types_mod.UnionVariant{
-                .name = name_str,
-                .types = try types.toOwnedSlice(self.alloc),
-            };
-        },
-        else => return error.UnsupportedSyntax,
-    }
 }
 
 pub fn validateAssignmentType(self: *Compiler, target: *const Node, value: *const Node) !void {

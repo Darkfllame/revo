@@ -500,11 +500,6 @@ pub const Compiler = struct {
             },
             .type_alias => |t| {
                 const type_info = type_check.evalTypeExpr(self, t.type_expr) catch |err| switch (err) {
-                    error.UnsupportedSyntax => return self.fail(
-                        .UnsupportedSyntax,
-                        t.type_expr,
-                        "unsupported type expression syntax",
-                    ),
                     error.OutOfMemory => return error.OutOfMemory,
                 };
                 try self.type_aliases.put(t.name, type_info);
@@ -1321,7 +1316,7 @@ pub const Compiler = struct {
     pub fn compileFn(
         self: *Compiler,
         params: []const ast.FnParam,
-        return_type: ?[]const u8,
+        return_type: ?*ast.TypeExpr,
         body: *const Node,
         name: []const u8,
         loop_sym: ?revo.AtomID,
@@ -1336,7 +1331,11 @@ pub const Compiler = struct {
                 );
             if (std.mem.endsWith(u8, name, "?")) {
                 if (return_type) |rt| {
-                    if (!std.mem.eql(u8, rt, "bool"))
+                    const rt_name = switch (rt.kind) {
+                        .named => |n| n,
+                        else => @tagName(rt.kind),
+                    };
+                    if (!std.mem.eql(u8, rt_name, "bool"))
                         return self.setFailureParts(
                             .ParseError,
                             .{ .span = body.span, .role = .primary, .message = name },
@@ -1348,8 +1347,8 @@ pub const Compiler = struct {
         }
 
         // names ending with ? must return bool (forced if not explicit)
-        const effective_return_type = if (std.mem.endsWith(u8, name, "?") and !ast.isDiscardName(name) and !std.mem.eql(u8, name, "<fn>"))
-            if (return_type) |rt| rt else try self.alloc.dupe(u8, "bool")
+        const effective_return_type: ?*ast.TypeExpr = if (std.mem.endsWith(u8, name, "?") and !ast.isDiscardName(name) and !std.mem.eql(u8, name, "<fn>"))
+            if (return_type) |rt| rt else try ast.allocTypeExpr(self.alloc, body.span, .{ .named = "bool" })
         else
             return_type;
 
@@ -1366,14 +1365,20 @@ pub const Compiler = struct {
         const sig = try state_mod.allocFnSig(self, params, effective_return_type);
 
         var s = try FunctionState.init(self.alloc);
-        s.return_type = effective_return_type;
+        s.return_type = if (effective_return_type) |rt| switch (rt.kind) {
+            .named => |n| n,
+            else => @tagName(rt.kind),
+        } else null;
         for (params, 0..) |param, idx| {
             const local: LocalVar = .{
                 .name = param.name,
                 .slot = @intCast(idx),
                 .mutable = true,
                 .initialized = true,
-                .type_name = param.type_name,
+                .type_name = if (param.type_name) |tn| switch (tn.kind) {
+                    .named => |n| n,
+                    else => @tagName(tn.kind),
+                } else null,
             };
             s.locals.append(self.alloc, local) catch |err| {
                 s.deinit(self.alloc);
@@ -1386,7 +1391,7 @@ pub const Compiler = struct {
             if (param.type_name) |type_name| {
                 s.type_hints.append(self.alloc, .{
                     .name = param.name,
-                    .type_info = types.resolveTypeName(self, type_name),
+                    .type_info = try types.evalTypeExpr(self, type_name),
                 }) catch |err| {
                     s.deinit(self.alloc);
                     return err;
@@ -1421,7 +1426,11 @@ pub const Compiler = struct {
         if (own_sig) try s.fn_signatures.put(name, sig);
         try self.compile(body, true);
         if (effective_return_type) |rt| {
-            try validateImplicitReturnType(self, body, rt);
+            const rt_name = switch (rt.kind) {
+                .named => |n| n,
+                else => @tagName(rt.kind),
+            };
+            try validateImplicitReturnType(self, body, rt_name);
         } else {
             const inferred_type = type_check.inferExprType(self, body);
             const inferred_type_str = try self.alloc.dupe(u8, types.typeName(inferred_type));

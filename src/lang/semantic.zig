@@ -146,7 +146,7 @@ const SemanticChecker = struct {
         return self.lookup(name) orelse .any;
     }
 
-    pub fn inferFnType(_: *SemanticChecker, _: []const ast.FnParam, _: ?[]const u8) types_mod.TypeInfo {
+    pub fn inferFnType(_: *SemanticChecker, _: []const ast.FnParam, _: ?*ast.TypeExpr) types_mod.TypeInfo {
         return .any;
     }
 
@@ -154,8 +154,8 @@ const SemanticChecker = struct {
         return self.type_aliases.get(name);
     }
 
-    fn evalTypeExpr(self: *SemanticChecker, node: *const ast.Node) !types_mod.TypeInfo {
-        return try types_mod.evalTypeExpr(self, node);
+    fn evalTypeExpr(self: *SemanticChecker, te: *const ast.TypeExpr) !types_mod.TypeInfo {
+        return try types_mod.evalTypeExpr(self, te);
     }
 
     pub fn inferCallReturnType(self: *SemanticChecker, callee: *const ast.Node, args: []const *ast.Node) types_mod.TypeInfo {
@@ -189,11 +189,11 @@ const SemanticChecker = struct {
         defer param_types.deinit(self.alloc);
         for (fn_expr.params) |p| {
             try param_names.append(self.alloc, p.name);
-            try param_types.append(self.alloc, if (p.type_name) |tn| types_mod.resolveTypeName(self, tn) else .any);
+            try param_types.append(self.alloc, if (p.type_name) |tn| try self.evalTypeExpr(tn) else .any);
         }
         const params_slice = try param_types.toOwnedSlice(self.alloc);
         const names_slice = try param_names.toOwnedSlice(self.alloc);
-        const ret = if (fn_expr.return_type) |rt| types_mod.resolveTypeName(self, rt) else .any;
+        const ret = if (fn_expr.return_type) |rt| try self.evalTypeExpr(rt) else .any;
         const sig_ptr = try self.alloc.create(FnSig);
         sig_ptr.* = .{
             .param_names = names_slice,
