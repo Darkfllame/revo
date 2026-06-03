@@ -96,9 +96,14 @@ const SemanticChecker = struct {
     }
 
     fn finishReport(self: *SemanticChecker) !diagnostic.Report {
+        const parts = try self.errors.toOwnedSlice(self.alloc);
+
+        const first_msg = for (parts) |p| {
+            if (p == .@"error") break p.@"error";
+        } else "";
         return .{
-            .parts = try self.errors.toOwnedSlice(self.alloc),
-            .message = "",
+            .parts = parts,
+            .message = if (first_msg.len > 0) try self.alloc.dupe(u8, first_msg) else "",
             .source_name = try self.alloc.dupe(u8, self.source_name),
             .source = try self.alloc.dupe(u8, self.source),
         };
@@ -158,6 +163,8 @@ const SemanticChecker = struct {
         if (std.mem.eql(u8, name, "bool")) return .bool;
         if (std.mem.eql(u8, name, "void")) return .void;
         if (std.mem.eql(u8, name, "any")) return .any;
+        // TODO: temp; function as a type annotation means "any fn" and maps to .any
+        if (std.mem.eql(u8, name, "function")) return .any;
         if (name.len > 0 and name[0] == ':') return .{ .atom = name };
         if (self.type_aliases.get(name)) |aliased| return aliased;
         if (self.struct_layouts.get(name) != null) return .{ .struct_type = name };

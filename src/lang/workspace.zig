@@ -508,30 +508,46 @@ pub const Workspace = struct {
     }
 
     /// get diagnostics for a file (or null if clean)
-    /// runs full compile pipeline to catch all errors
+    /// runs both semantic and full compile to catch all errors
     pub fn diagnostics(
         self: *Workspace,
         alloc: std.mem.Allocator,
         id: FileId,
         opts: lang.BuildOptions,
     ) !?lang.Error {
-        var analysis = try self.inspectDetailed(alloc, id, opts);
-        if (analysis.diagnostics) |diag| {
-            analysis.diagnostics = null;
-            defer analysis.deinit(alloc);
-            return diag;
-        }
-        analysis.deinit(alloc);
+        var sem = try self.inspectDetailed(alloc, id, opts);
+        errdefer sem.deinit(alloc);
         var full = self.analyzeDetailed(alloc, id, opts) catch |err| switch (err) {
-            error.VmUnavailable => return null,
+            error.VmUnavailable => {
+                if (sem.diagnostics) |diag| {
+                    sem.diagnostics = null;
+                    return diag;
+                }
+                return null;
+            },
             else => |e| return e,
         };
-        if (full.diagnostics) |diag| {
+        errdefer full.deinit(alloc);
+
+        // if both have diagnostics, merge the reports
+        if (full.diagnostics) |full_diag| {
+            if (sem.diagnostics) |sem_diag| {
+                const merged_report = try mergeReports(alloc, sem_diag, full_diag);
+                // keep the error variant from the full compile, but swap the report
+                // errorKind doesn't matter much for diagnostics display
+                full.diagnostics = null;
+                sem.diagnostics = null;
+                return lang.Error{ .lower = .{ .kind = .ParseError, .report = merged_report } };
+            }
             full.diagnostics = null;
-            defer full.deinit(alloc);
+            return full_diag;
+        }
+
+        if (sem.diagnostics) |diag| {
+            sem.diagnostics = null;
             return diag;
         }
-        full.deinit(alloc);
+
         return null;
     }
 
@@ -1372,6 +1388,38 @@ fn copyArtifact(alloc: std.mem.Allocator, artifact: lang.Artifact) !lang.Artifac
 fn deinitArtifact(alloc: std.mem.Allocator, artifact: lang.Artifact) void {
     alloc.free(artifact.instructions);
     alloc.free(artifact.spans);
+}
+
+/// merge two error reports into one (all parts from both)
+fn mergeReports(alloc: std.mem.Allocator, a: lang.Error, b: lang.Error) !lang.diagnostic.Report {
+    const a_report = switch (a) {
+        .parse => |f| f.report,
+        .expand => |f| f.report,
+        .lower => |f| f.report,
+        .semantic => |f| f.report,
+    };
+    const b_report = switch (b) {
+        .parse => |f| f.report,
+        .expand => |f| f.report,
+        .lower => |f| f.report,
+        .semantic => |f| f.report,
+    };
+    const total = a_report.parts.len + b_report.parts.len;
+    var all_parts = try std.ArrayList(lang.diagnostic.Part).initCapacity(alloc, total);
+    for (a_report.parts) |p| all_parts.appendAssumeCapacity(p);
+    for (b_report.parts) |p| all_parts.appendAssumeCapacity(p);
+    const message = if (a_report.message.len > 0)
+        try alloc.dupe(u8, a_report.message)
+    else if (b_report.message.len > 0)
+        try alloc.dupe(u8, b_report.message)
+    else
+        "";
+    return .{
+        .parts = try all_parts.toOwnedSlice(alloc),
+        .message = message,
+        .source_name = try alloc.dupe(u8, a_report.source_name orelse b_report.source_name orelse ""),
+        .source = try alloc.dupe(u8, a_report.source orelse b_report.source orelse ""),
+    };
 }
 
 fn copyError(
