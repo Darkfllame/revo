@@ -294,7 +294,12 @@ pub const root_specs: []const api.FnSpec = &.{
             .{ "opts", "table?" },
         },
         .ret = "(:ok, string) | (:err, string)",
-        .doc = "reads from stdin or a path",
+        .doc =
+        \\ reads from stdin or a path 
+        \\ opts:
+        \\  - delimiter: string, :eof or nothing
+        \\  - path:      string or nothing
+        ,
         .variadic = true,
         .f = defineVariadic(&[_]TypeSpec{}, read),
     },
@@ -985,59 +990,70 @@ pub fn system_(tbl: []const Data, vm: *VM) !NativeResult {
 }
 
 pub fn read(args: []const Data, vm: *VM) !NativeResult {
+    var path: []const u8 = "/dev/stdin";
+    var read_eof = false;
+    var delim: u8 = '\n';
+
     if (args.len > 1) return .errArity(args.len, 1);
-
-    var delimiter: u8 = '\n';
-    var read_path: []const u8 = "/dev/stdin";
-
     if (args.len == 1) {
-        const table_id = args[0].asTable() orelse return .errType(0, "table", typeof(args[0]));
-        const table = try vm.tables.get(table_id);
-
-        const path_key = Data.new.atom(try vm.internAtom("path"));
-        const rpath_in = try table.get(path_key, vm) orelse Data.new.nil();
-        read_path = if (rpath_in.asString()) |id|
-            vm.stringValue(id)
-        else if (rpath_in.asAtom()) |atom|
-            if (atom == revo.core_atoms.atom_id(.nil)) read_path else return .errType(0, "string", typeof(rpath_in))
-        else
-            return .errType(0, "string", typeof(rpath_in));
-
-        const delim_key = Data.new.atom(try vm.internAtom("delimiter"));
-        const delim_in = try table.get(delim_key, vm) orelse Data.new.nil();
-        delimiter = if (delim_in.asString()) |id| blk: {
-            const s = vm.stringValue(id);
-            break :blk if (s.len == 1) s[0] else return .errType(0, "single char string", "string");
-        } else if (delim_in.asAtom()) |atom|
-            if (atom == revo.core_atoms.atom_id(.nil)) delimiter else return .errType(0, "string", typeof(delim_in))
-        else
-            return .errType(0, "string", typeof(delim_in));
+        const t = args[0].asTable() orelse return .errType(0, "table", typeof(args[0]));
+        const table = try vm.tables.get(t);
+        if (try table.get(Data.new.atom(try vm.internAtom("path")), vm)) |v| {
+            path = if (v.asString()) |id|
+                vm.stringValue(id)
+            else if (v.asAtom()) |atom|
+                if (atom == revo.core_atoms.atom_id(.undef) or atom == revo.core_atoms.atom_id(.nil))
+                    path
+                else
+                    return .errType(0, "string", typeof(v))
+            else
+                return .errType(0, "string", typeof(v));
+        }
+        if (try table.get(Data.new.atom(try vm.internAtom("delimiter")), vm)) |v| {
+            if (v.asAtom()) |atom| {
+                const eof_id = try vm.internAtom("eof");
+                if (atom == revo.core_atoms.atom_id(.nil) or atom == eof_id)
+                    read_eof = true
+                else
+                    return .errType(0, "string, :nil, or :eof", typeof(v));
+            } else if (v.asString()) |id| {
+                const s = vm.stringValue(id);
+                if (s.len == 1) {
+                    delim = s[0];
+                } else {
+                    return .errType(0, "single char string", "string");
+                }
+            } else {
+                return .errType(0, "string, :nil, or :eof", typeof(v));
+            }
+        }
     }
 
-    const resolved_path = try resolveOsPath(read_path, vm.module_dir, vm);
-    defer if (!std.mem.eql(u8, resolved_path, "/dev/stdin")) vm.runtime.alloc.free(resolved_path);
+    const rp = try resolveOsPath(path, vm.module_dir, vm);
+    defer if (!std.mem.eql(u8, rp, "/dev/stdin")) vm.runtime.alloc.free(rp);
 
-    const file, const should_close =
-        if (std.mem.eql(u8, resolved_path, "/dev/stdin"))
+    const file, const close =
+        if (std.mem.eql(u8, rp, "/dev/stdin"))
             .{ std.Io.File.stdin(), false }
         else
-            .{
-                std.Io.Dir.openFileAbsolute(vm.runtime.io, resolved_path, .{}) catch
-                    return resultTuple(vm, .err, try vm.ownDataString("ReadError")),
-                true,
-            };
+            .{ try std.Io.Dir.openFileAbsolute(vm.runtime.io, rp, .{}), true };
+    defer if (close) file.close(vm.runtime.io);
 
-    defer if (should_close) file.close(vm.runtime.io);
+    var result = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, 128);
+    defer result.deinit(vm.runtime.alloc);
 
-    var buf: [512]u8 = undefined;
-    var r = file.reader(vm.runtime.io, &buf);
-    var w = std.Io.Writer.Allocating.init(vm.runtime.alloc);
-    defer w.deinit();
-
-    _ = r.interface.streamDelimiter(&w.writer, delimiter) catch |e|
-        return .Err(vm, @errorName(e));
-    const result_str = try w.toOwnedSlice();
-    return resultTuple(vm, .ok, try vm.adoptDataString(result_str));
+    var buf: [1]u8 = undefined;
+    while (true) {
+        const n = try std.posix.read(file.handle, &buf);
+        if (n == 0) {
+            if (result.items.len > 0)
+                return resultTuple(vm, .ok, try vm.adoptDataString(try result.toOwnedSlice(vm.runtime.alloc)));
+            return .Err(vm, "EndOfStream");
+        }
+        if (!read_eof and buf[0] == delim)
+            return resultTuple(vm, .ok, try vm.adoptDataString(try result.toOwnedSlice(vm.runtime.alloc)));
+        try result.append(vm.runtime.alloc, buf[0]);
+    }
 }
 
 pub fn cwd(args: []const Data, vm: *VM) !NativeResult {

@@ -1261,6 +1261,23 @@ test "read accepts delimiter and path" {
     , "a");
 }
 
+test "read reads exact multiline text" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "exact.txt",
+        .data = "let line = :nil\nwhile do\n    let result = read()\n",
+    });
+
+    const module_dir = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(module_dir);
+
+    try t.top_string_in_dir(module_dir,
+        \\ read({path = "exact.txt"}):unwrap()
+    , "let line = :nil");
+}
+
 test "import caches modules and reuses the same table" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
