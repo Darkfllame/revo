@@ -643,6 +643,23 @@ fn evalConstNode(self: *Compiler, node: *const Node) ?Data {
         .multiline_string => |s| return self.vm.ownDataString(s) catch return null,
         .hash => |h| return self.vm.dataAtom(h) catch return null,
         .nil => return revo.core_atoms.data(.nil),
+        .table => |entries| {
+            const t_id = self.vm.tables.create() catch return null;
+            const table = self.vm.tables.get(t_id) catch return null;
+            var array_index: i64 = 0;
+            for (entries) |entry| {
+                if (entry.key) |key| {
+                    const key_val = evalConstNode(self, key) orelse return null;
+                    const val = evalConstNode(self, entry.value) orelse return null;
+                    table.putRaw(key_val, val) catch return null;
+                } else {
+                    const val = evalConstNode(self, entry.value) orelse return null;
+                    table.putRaw(Data.new.num(@as(f64, @floatFromInt(array_index))), val) catch return null;
+                    array_index += 1;
+                }
+            }
+            return Data.new.table(t_id);
+        },
         else => return null,
     }
 }

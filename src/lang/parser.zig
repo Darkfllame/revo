@@ -78,31 +78,31 @@ pub fn parseTokensReport(alloc: std.mem.Allocator, tokens: []const Token) anyerr
         error.UnexpectedToken => {
             const token = parser.peek();
             const parts = try alloc.alloc(diagnostic.Part, 2);
-            parts[0] = diagnostic.Part{ .@"error" = "unexpected token" };
+            parts[0] = diagnostic.Part{ .@"error" = try alloc.dupe(u8, "unexpected token") };
             parts[1] = .{ .span = .{ .span = token.span(), .role = .primary } };
             return .{ .err = .{
                 .kind = .UnexpectedToken,
-                .report = .{ .parts = parts, .message = "unexpected token" },
+                .report = .{ .parts = parts, .message = "" },
             } };
         },
         error.ExpectedIdentifier => {
             const token = parser.peek();
             const parts = try alloc.alloc(diagnostic.Part, 2);
-            parts[0] = diagnostic.Part{ .@"error" = "expected identifier" };
+            parts[0] = diagnostic.Part{ .@"error" = try alloc.dupe(u8, "expected identifier") };
             parts[1] = .{ .span = .{ .span = token.span(), .role = .primary } };
             return .{ .err = .{
                 .kind = .ExpectedIdentifier,
-                .report = .{ .parts = parts, .message = "expected identifier" },
+                .report = .{ .parts = parts, .message = "" },
             } };
         },
         error.ExpectedMatchArm => {
             const token = parser.peek();
             const parts = try alloc.alloc(diagnostic.Part, 2);
-            parts[0] = diagnostic.Part{ .@"error" = "match expression requires at least one arm" };
+            parts[0] = diagnostic.Part{ .@"error" = try alloc.dupe(u8, "match expression requires at least one arm") };
             parts[1] = .{ .span = .{ .span = token.span(), .role = .primary } };
             return .{ .err = .{
                 .kind = .ExpectedMatchArm,
-                .report = .{ .parts = parts, .message = "match expression requires at least one arm" },
+                .report = .{ .parts = parts, .message = "" },
             } };
         },
         else => return err,
@@ -158,18 +158,19 @@ const Parser = struct {
             .kind = self.first_error_kind orelse .LexUnknown,
             .report = .{
                 .parts = parts,
-                .message = self.first_error_message,
+                .message = "",
             },
         };
     }
 
     fn recordError(self: *Parser, kind: Kind, message: []const u8, span: ast.Span) !void {
         self.had_errors = true;
+        const owned = try self.alloc.dupe(u8, message);
         if (self.first_error_kind == null) {
             self.first_error_kind = kind;
             self.first_error_message = message;
         }
-        try self.errors.append(self.alloc, .{ .@"error" = message });
+        try self.errors.append(self.alloc, .{ .@"error" = owned });
         try self.errors.append(self.alloc, .{ .span = .{ .span = span, .role = .primary } });
     }
 
@@ -571,7 +572,7 @@ const Parser = struct {
 
     /// if <expr> then <expr> else <expr>
     fn parseIf(self: *Parser, start: Token) anyerror!*Node {
-        const condition = try self.parseScoped(.kw_else, self.allow_bare_calls, 25);
+        const condition = try self.parseScoped(.kw_else, self.allow_bare_calls, 0);
         const then_expr = try self.parseExpression(0);
         const else_expr = if (self.match(.kw_else)) try self.parseExpression(0) else null;
         const end_span = if (else_expr) |branch| branch.span else then_expr.span;

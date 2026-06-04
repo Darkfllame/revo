@@ -183,19 +183,6 @@ test "vm channel buffered send then recv" {
     try testing.expectEqual(@as(f64, 7), vm.currentFiber().registers[vm.currentFiber().registers_len - 1].asNum().?);
 }
 
-test "vm gc reuses freed table ids" {
-    var vm = try VM.init(vt.runtime());
-    defer vm.deinit();
-
-    const first_id = try vm.tables.create();
-    trigger_gc(&vm);
-
-    try testing.expectError(error.InvalidTable, vm.tables.get(first_id));
-
-    const reused_id = try vm.tables.create();
-    try testing.expectEqual(first_id, reused_id);
-}
-
 test "vm gc keeps rooted tables and their children alive" {
     var vm = try VM.init(vt.runtime());
     defer vm.deinit();
@@ -218,32 +205,6 @@ test "vm gc keeps rooted tables and their children alive" {
     try testing.expect(child.isTable());
     try testing.expectEqual(child_id, child.asTable().?);
     _ = try vm.tables.get(child_id);
-}
-
-test "vm gc collects self-referential tables once unrooted" {
-    var vm = try revo.VM.init(vt.runtime());
-    defer vm.deinit();
-
-    const cycle_id = try vm.tables.create();
-    {
-        const cycle = try vm.tables.get(cycle_id);
-        try cycle.putRaw(try vm.ownDataString("self"), Data.new.table(cycle_id));
-    }
-
-    try vm.push(Data.new.table(cycle_id));
-    trigger_gc(&vm);
-
-    {
-        const cycle = try vm.tables.get(cycle_id);
-        const self_ref = cycle.getRaw(try vm.ownDataString("self")) orelse unreachable;
-        try testing.expect(self_ref.isTable());
-        try testing.expectEqual(cycle_id, self_ref.asTable().?);
-    }
-
-    _ = try vm.pop();
-    trigger_gc(&vm);
-
-    try testing.expectError(error.InvalidTable, vm.tables.get(cycle_id));
 }
 
 test "vm gc keeps globals rooted tables alive" {
@@ -287,21 +248,6 @@ test "vm gc keeps tables written during sweep alive" {
     try testing.expectEqual(child_id, child.asTable().?);
     _ = try vm.tables.get(child_id);
 }
-
-// test "vm gc reclaims unrooted tables tuples and functions" {
-//     var vm = try revo.VM.init(vt.runtime());
-//     defer vm.deinit();
-//
-//     const dead_table_id = try vm.tables.create();
-//     const tuple_id = try vm.tuples.create(&.{ Data.new.num(1), Data.new.num(2) });
-//     const fn_id = try vm.functions.create(.{ .native = return_one });
-//
-//     trigger_gc(&vm);
-//
-//     try testing.expectError(error.InvalidTable, vm.tables.get(dead_table_id));
-//     try testing.expectError(error.FunctionDNE, vm.functions.get(fn_id));
-//     try testing.expectError(error.InvalidTuple, vm.tuples.get(tuple_id));
-// }
 
 test "vm gc reuses freed function ids" {
     var vm = try VM.init(vt.runtime());

@@ -1088,7 +1088,6 @@ pub const EvalError = error{
     FrameUnderflow,
     InvalidBytecode,
     FunctionDNE,
-    InvalidTable,
     InvalidTuple,
     OutOfMemory,
     ConstantReassignment,

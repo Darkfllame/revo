@@ -62,9 +62,9 @@ pub const TablePool = struct {
     }
 
     pub fn get(self: *TablePool, id: memory.TableID) !*Table {
-        if (id >= self.tables.items.len) @panic("invalid table");
+        if (id >= self.tables.items.len) @panic("invalid table :<");
         if (self.tables.items[id]) |*t| return t;
-        @panic("invalid table");
+        @panic("invalid table :<");
     }
 
     pub fn isValid(self: *const TablePool, id: memory.TableID) bool {

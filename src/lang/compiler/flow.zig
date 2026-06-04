@@ -55,6 +55,13 @@ pub fn compileWhile(
     try self.compile(predicate, true);
     const exit_jump = try emit.jump(self, .jump_if_false);
     try self.compile(body, true);
+
+    const body_result_reg: Register = @intCast(self.active_registers - 1);
+    const loop_result_reg: Register = @intCast(self.loop_result_regs.items[self.loop_result_regs.items.len - 1]);
+    if (body_result_reg != loop_result_reg) {
+        const move_res: Instruction = .{ .op = .move, .a = loop_result_reg, .b = body_result_reg };
+        try emit.appendRecorded(self, move_res);
+    }
     try emit.regRelease(self);
     try emit.emit(self, .jump, loop_start);
 
@@ -231,6 +238,10 @@ pub fn compileFor(
         const index_slot = try state.declareLocal(self, params[1].name, false);
         index_storage = .{ .local = index_slot };
     }
+
+    // ensure active_registers > value_slot so emitForValueLoad result
+    // and subsequent idx load don't overwrite value_slot
+    state.reserveLocalSlots(self);
 
     const loop_check: ProgramCounter = @intCast(self.instructions.items.len);
 
