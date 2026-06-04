@@ -818,7 +818,7 @@ fn consumed(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
     if (args.len != 1) return .errArity(args.len, 1);
     const iter_id = args[0].asTable() orelse return .errType(0, "table", revo.std_lib.dataToString(args[0]));
     const iter_tbl = try vm.tables.get(iter_id);
-    const index_data = iter_tbl.getRaw(Data.new.atom(try vm.internAtom("index"))) orelse Data.new.num(0);
+    const index_data = iter_tbl.getRawAtom(try vm.internAtom("index")) orelse Data.new.num(0);
     return .{ .ok = index_data };
 }
 
@@ -879,17 +879,17 @@ fn procApply(args: []const Data, vm: *revo.VM) !revo.std_lib.NativeResult {
 fn makeIterValue(vm: *revo.VM, items: Data) !Data {
     const iter_id = try vm.tables.create();
     const iter_tbl = try vm.tables.get(iter_id);
-    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("items")), items);
-    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("index")), Data.new.num(0));
+    try iter_tbl.putRawAtom(try vm.internAtom("items"), items);
+    try iter_tbl.putRawAtom(try vm.internAtom("index"), Data.new.num(0));
 
     const next_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{.table}, next) });
     const peek_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{.table}, peek) });
     const consumed_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{.table}, consumed) });
     const next_of_id = try vm.functions.create(.{ .native = revo.std_lib.define(&[_]revo.std_lib.TypeSpec{ .table, .atom }, nextOf) });
-    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("next")), Data.new.function(next_id));
-    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("peek")), Data.new.function(peek_id));
-    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("consumed")), Data.new.function(consumed_id));
-    try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("next_of")), Data.new.function(next_of_id));
+    try iter_tbl.putRawAtom(try vm.internAtom("next"), Data.new.function(next_id));
+    try iter_tbl.putRawAtom(try vm.internAtom("peek"), Data.new.function(peek_id));
+    try iter_tbl.putRawAtom(try vm.internAtom("consumed"), Data.new.function(consumed_id));
+    try iter_tbl.putRawAtom(try vm.internAtom("next_of"), Data.new.function(next_of_id));
     return Data.new.table(iter_id);
 }
 
@@ -910,8 +910,8 @@ fn iterStep(args: []const Data, vm: *revo.VM, advance: bool) !revo.std_lib.Nativ
     if (args.len != 1) return .errArity(args.len, 1);
     const iter_id = args[0].asTable() orelse return .errType(0, "table", revo.std_lib.dataToString(args[0]));
     const iter_tbl = try vm.tables.get(iter_id);
-    const items_data = iter_tbl.getRaw(Data.new.atom(try vm.internAtom("items"))) orelse return .{ .ok = revo.core_atoms.data(.nil) };
-    const index_data = iter_tbl.getRaw(Data.new.atom(try vm.internAtom("index"))) orelse Data.new.num(0);
+    const items_data = iter_tbl.getRawAtom(try vm.internAtom("items")) orelse return .{ .ok = revo.core_atoms.data(.nil) };
+    const index_data = iter_tbl.getRawAtom(try vm.internAtom("index")) orelse Data.new.num(0);
     const idx = if (index_data.asNum()) |n| try revo.asIndex(n) else return error.TypeError;
 
     const item = if (items_data.asTable()) |tid| blk: {
@@ -925,7 +925,7 @@ fn iterStep(args: []const Data, vm: *revo.VM, advance: bool) !revo.std_lib.Nativ
     } else revo.core_atoms.data(.nil);
 
     if (advance) {
-        try iter_tbl.putRaw(Data.new.atom(try vm.internAtom("index")), Data.new.num(idx + 1));
+        try iter_tbl.putRawAtom(try vm.internAtom("index"), Data.new.num(idx + 1));
     }
     return .{ .ok = item };
 }

@@ -360,7 +360,7 @@ fn attachMathPi(vm: *revo.VM) !void {
     if (vm.globals.get(try vm.internAtom("math"))) |t| {
         if (t.asTable()) |table_id| {
             const table = try vm.tables.get(table_id);
-            try table.putRaw(Data.new.atom(try vm.internAtom("pi")), Data.new.num(std.math.pi));
+            try table.putRawAtom(try vm.internAtom("pi"), Data.new.num(std.math.pi));
         }
     }
 }
@@ -644,29 +644,29 @@ pub fn debug_(args: []const Data, vm: *VM) !NativeResult {
 
     const flags_id = try vm.tables.create();
     const flags = try vm.tables.get(flags_id);
-    try flags.putRaw(Data.new.atom(try vm.internAtom("dump")), Data.new.boolean(vm.debug.dump));
-    try flags.putRaw(Data.new.atom(try vm.internAtom("trace")), Data.new.boolean(vm.debug.trace));
-    try flags.putRaw(Data.new.atom(try vm.internAtom("instr")), Data.new.boolean(vm.debug.each_instr));
-    try flags.putRaw(Data.new.atom(try vm.internAtom("stack")), Data.new.boolean(vm.debug.each_stack));
-    try out.putRaw(Data.new.atom(try vm.internAtom("flags")), Data.new.table(flags_id));
+    try flags.putRawAtom(try vm.internAtom("dump"), Data.new.boolean(vm.debug.dump));
+    try flags.putRawAtom(try vm.internAtom("trace"), Data.new.boolean(vm.debug.trace));
+    try flags.putRawAtom(try vm.internAtom("instr"), Data.new.boolean(vm.debug.each_instr));
+    try flags.putRawAtom(try vm.internAtom("stack"), Data.new.boolean(vm.debug.each_stack));
+    try out.putRawAtom(try vm.internAtom("flags"), Data.new.table(flags_id));
 
     const fiber = vm.currentFiber();
-    try out.putRaw(Data.new.atom(try vm.internAtom("fiber_id")), Data.new.num(fiber.id));
-    try out.putRaw(Data.new.atom(try vm.internAtom("pc")), Data.new.num(fiber.pc));
-    try out.putRaw(Data.new.atom(try vm.internAtom("stack_depth")), Data.new.num(fiber.registers_len));
-    try out.putRaw(Data.new.atom(try vm.internAtom("frame_depth")), Data.new.num(fiber.frames.items.len));
-    try out.putRaw(Data.new.atom(try vm.internAtom("program_len")), Data.new.num(fiber.program.len));
+    try out.putRawAtom(try vm.internAtom("fiber_id"), Data.new.num(fiber.id));
+    try out.putRawAtom(try vm.internAtom("pc"), Data.new.num(fiber.pc));
+    try out.putRawAtom(try vm.internAtom("stack_depth"), Data.new.num(fiber.registers_len));
+    try out.putRawAtom(try vm.internAtom("frame_depth"), Data.new.num(fiber.frames.items.len));
+    try out.putRawAtom(try vm.internAtom("program_len"), Data.new.num(fiber.program.len));
 
     if (vm.currentDebugInfo()) |info| {
-        try out.putRaw(Data.new.atom(try vm.internAtom("has_debug_info")), Data.new.boolean(true));
-        try out.putRaw(Data.new.atom(try vm.internAtom("source_name")), try vm.ownDataString(info.source_name));
-        try out.putRaw(Data.new.atom(try vm.internAtom("source")), try vm.ownDataString(info.source));
-        try out.putRaw(Data.new.atom(try vm.internAtom("span_count")), Data.new.num(info.spans.len));
+        try out.putRawAtom(try vm.internAtom("has_debug_info"), Data.new.boolean(true));
+        try out.putRawAtom(try vm.internAtom("source_name"), try vm.ownDataString(info.source_name));
+        try out.putRawAtom(try vm.internAtom("source"), try vm.ownDataString(info.source));
+        try out.putRawAtom(try vm.internAtom("span_count"), Data.new.num(info.spans.len));
     } else {
-        try out.putRaw(Data.new.atom(try vm.internAtom("has_debug_info")), Data.new.boolean(false));
-        try out.putRaw(Data.new.atom(try vm.internAtom("source_name")), Data.new.nil());
-        try out.putRaw(Data.new.atom(try vm.internAtom("source")), Data.new.nil());
-        try out.putRaw(Data.new.atom(try vm.internAtom("span_count")), Data.new.num(0));
+        try out.putRawAtom(try vm.internAtom("has_debug_info"), Data.new.boolean(false));
+        try out.putRawAtom(try vm.internAtom("source_name"), Data.new.nil());
+        try out.putRawAtom(try vm.internAtom("source"), Data.new.nil());
+        try out.putRawAtom(try vm.internAtom("span_count"), Data.new.num(0));
     }
 
     try out.putRaw(

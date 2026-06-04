@@ -384,25 +384,16 @@ pub fn wrapSocket(vm: *VM, entry_ptr: *SocketEntry, is_server: bool) !Data {
     const sock_table = try vm.tables.create();
     var table = try vm.tables.get(sock_table);
 
-    try table.putRaw(
-        Data.new.atom(try vm.internAtom("__is_server")),
-        Data.new.boolean(is_server),
-    );
+    try table.putRawAtom(try vm.internAtom("__is_server"), Data.new.boolean(is_server));
 
-    try table.putRaw(
-        Data.new.atom(try vm.internAtom("__entry_ptr")),
-        Data.new.num(@intFromPtr(entry_ptr)),
-    );
+    try table.putRawAtom(try vm.internAtom("__entry_ptr"), Data.new.num(@intFromPtr(entry_ptr)));
 
     if (is_server) {
         const port = switch (entry_ptr.*) {
             .server => |s| s.socket.address.getPort(),
             .stream => 0,
         };
-        try table.putRaw(
-            Data.new.atom(try vm.internAtom("port")),
-            Data.new.num(port),
-        );
+        try table.putRawAtom(try vm.internAtom("port"), Data.new.num(port));
     }
 
     // the socket module as mt __index so methods resolve
@@ -410,10 +401,7 @@ pub fn wrapSocket(vm: *VM, entry_ptr: *SocketEntry, is_server: bool) !Data {
     var mt = try vm.tables.get(metatable);
     const socket_module_data = vm.globals.get(try vm.internAtom("socket")) orelse
         return error.SocketModuleNotFound;
-    try mt.putRaw(
-        Data.new.atom(try vm.internAtom("__index")),
-        socket_module_data,
-    );
+    try mt.putRawAtom(try vm.internAtom("__index"), socket_module_data);
 
     const mt_array = [_]Data{ Data.new.table(sock_table), Data.new.table(metatable) };
     const set_result = try meta.set_metatable_(&mt_array, vm);
@@ -424,7 +412,7 @@ pub fn wrapSocket(vm: *VM, entry_ptr: *SocketEntry, is_server: bool) !Data {
 
 fn isServer(socket_data: Data, vm: *VM) !bool {
     const table = try vm.tables.get(socket_data.asTable().?);
-    const d = table.getRaw(Data.new.atom(try vm.internAtom("__is_server"))) orelse
+    const d = table.getRawAtom(try vm.internAtom("__is_server")) orelse
         return error.InvalidSocket;
     return !revo.isFalse(d);
 }
@@ -432,7 +420,7 @@ fn isServer(socket_data: Data, vm: *VM) !bool {
 /// ret always live ptr or SocketClosed
 fn getEntryPtr(socket_data: Data, vm: *VM) !*SocketEntry {
     const table = try vm.tables.get(socket_data.asTable().?);
-    const d = table.getRaw(Data.new.atom(try vm.internAtom("__entry_ptr"))) orelse
+    const d = table.getRawAtom(try vm.internAtom("__entry_ptr")) orelse
         return error.InvalidSocket;
     const addr: usize = @intFromFloat(d.asNum().?);
     if (addr == 0) return error.SocketClosed;
@@ -458,10 +446,7 @@ fn closeEntry(socket_data: Data, vm: *VM) !void {
 
     // zeroise so double close is nop rather than use-after-free
     var tbl = try vm.tables.get(socket_data.asTable().?);
-    try tbl.putRaw(
-        Data.new.atom(try vm.internAtom("__entry_ptr")),
-        Data.new.num(0),
-    );
+    try tbl.putRawAtom(try vm.internAtom("__entry_ptr"), Data.new.num(0));
 }
 
 /// > net:connect(host: string, port: number) -> socket
@@ -657,20 +642,20 @@ fn parseRecvOptions(opts_data: Data, vm: *VM) !RecvWaitToken {
     var token: RecvWaitToken = .{};
     const opts = try vm.tables.get(opts_data.asTable().?);
 
-    if (opts.getRaw(Data.new.atom(try vm.internAtom("max_bytes")))) |max_d| {
+    if (opts.getRawAtom(try vm.internAtom("max_bytes"))) |max_d| {
         if (!max_d.isNumber()) return error.TypeError;
         token.max_bytes = @as(usize, @intFromFloat(max_d.asNum().?));
     }
     if (token.max_bytes == 0) token.max_bytes = 1;
 
-    if (opts.getRaw(Data.new.atom(try vm.internAtom("delimiter")))) |delim_d| {
+    if (opts.getRawAtom(try vm.internAtom("delimiter"))) |delim_d| {
         if (!delim_d.isString()) return error.TypeError;
         const s = vm.stringValue(delim_d.asString().?);
         if (s.len == 0) return error.TypeError;
         token.delimiter = s[0];
     }
 
-    if (opts.getRaw(Data.new.atom(try vm.internAtom("mode")))) |mode_d| {
+    if (opts.getRawAtom(try vm.internAtom("mode"))) |mode_d| {
         if (!mode_d.isAtom()) return error.TypeError;
         const a = mode_d.asAtom().?;
         if (a == try vm.internAtom("read_some")) {

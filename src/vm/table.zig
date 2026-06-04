@@ -291,7 +291,6 @@ pub const Table = struct {
     hash: HashPart,
     metatable: ?memory.TableID = null,
     ic_version: usize = 0,
-    metamethod_cache: u64 = 0,
 
     pub fn init(alloc: std.mem.Allocator) !Table {
         return .{
@@ -334,7 +333,7 @@ pub const Table = struct {
         const mt_id = self.metatable.?;
         const mt = try vm.tables.get(mt_id);
 
-        if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__newindex)))) |newindex_method| {
+        if (mt.getRawAtom(revo.core_atoms.atom_id(.__newindex))) |newindex_method| {
             if (newindex_method.asFunction()) |f| {
                 const table_data = Data.new.table(table_id);
                 _ = try vm.callFunction(Data.new.function(f), &[_]Data{ table_data, key, val });
@@ -347,7 +346,6 @@ pub const Table = struct {
 
     pub fn putRaw(self: *Table, key: Data, val: Data) !void {
         self.ic_version +%= 1;
-        self.metamethod_cache = 0;
         if (integerArrayIndex(key)) |idx| {
             if (idx < self.array.items.len) {
                 self.array.items[idx] = val;
@@ -359,6 +357,12 @@ pub const Table = struct {
         }
 
         const entry = try self.hash.getOrPut(self.alloc, key);
+        entry.* = val;
+    }
+
+    pub fn putRawAtom(self: *Table, id: memory.AtomID, val: Data) !void {
+        self.ic_version +%= 1;
+        const entry = try self.hash.getOrPut(self.alloc, Data.new.atom(id));
         entry.* = val;
     }
 
@@ -375,6 +379,10 @@ pub const Table = struct {
         return self.hash.get(key);
     }
 
+    pub inline fn getRawAtom(self: *Table, id: memory.AtomID) ?Data {
+        return self.hash.get(Data.new.atom(id));
+    }
+
     const MAX_TAG_LOOP = 200;
 
     pub fn get(self: *Table, key: Data, vm: *revo.VM) !?Data {
@@ -386,7 +394,7 @@ pub const Table = struct {
         if (depth == 0) return null;
         if (self.metatable) |mt_id| {
             const mt = try vm.tables.get(mt_id);
-            if (mt.getRaw(Data.new.atom(revo.core_atoms.atom_id(.__index)))) |index_method| {
+            if (mt.getRawAtom(revo.core_atoms.atom_id(.__index))) |index_method| {
                 if (index_method.asTable()) |table_id| {
                     const index_table = try vm.tables.get(table_id);
                     return try index_table.getWithDepth(key, vm, depth - 1);

@@ -608,7 +608,7 @@ pub fn putInTable(
 ) !void {
     const atom = try self.internAtom(name);
     const t = try self.tables.get(table_id);
-    try t.putRaw(Data.new.atom(atom), Data.new.function(fn_id));
+    try t.putRawAtom(atom, Data.new.function(fn_id));
 }
 
 /// same as putInTable but the key is an already-resolved core atom
@@ -619,7 +619,7 @@ pub fn putInTableAtom(
     fn_id: mem.FunctionID,
 ) !void {
     const t = try self.tables.get(table_id);
-    try t.putRaw(Data.new.atom(atom), Data.new.function(fn_id));
+    try t.putRawAtom(atom, Data.new.function(fn_id));
 }
 
 pub fn seedBootstrapGlobals(self: *VM, target: *Globals) !void {
@@ -1021,15 +1021,6 @@ pub fn evalFailure(self: *VM, err: EvalError) EvalFailure {
     return failure;
 }
 
-fn mmCacheMask(atom: mem.AtomID) ?u64 {
-    const mm_start = @intFromEnum(revo.core_atoms.__index);
-    const mm_end = @intFromEnum(revo.core_atoms.__call);
-    if (atom >= mm_start and atom <= mm_end) {
-        return @as(u64, 1) << @as(u6, @intCast(atom - mm_start));
-    }
-    return null;
-}
-
 pub fn getMetamethodByAtom(
     self: *VM,
     val: Data,
@@ -1037,18 +1028,7 @@ pub fn getMetamethodByAtom(
 ) !?Data {
     const mt_id = try self.getMetatableId(val) orelse return null;
     const mt = try self.tables.get(mt_id);
-
-    if (mmCacheMask(atom)) |mask| {
-        if (mt.metamethod_cache & mask != 0) return null;
-    }
-
-    const result = mt.getRaw(Data.new.atom(atom));
-    if (result == null) {
-        if (mmCacheMask(atom)) |mask| {
-            mt.metamethod_cache |= mask;
-        }
-    }
-    return result;
+    return mt.getRawAtom(atom);
 }
 
 pub fn getMetatableId(
