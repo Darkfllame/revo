@@ -17,6 +17,7 @@ const state = @import("state.zig");
 const type_check = @import("type_check.zig");
 const types_mod = @import("types.zig");
 
+// enable it only when you make it not that inconvenient
 pub const validate_if_branches: bool = false;
 
 const TypeHint = struct {

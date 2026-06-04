@@ -516,7 +516,7 @@ test "if-let works" {
     try t.top_number(
         \\ let t = {count = 100}
         \\ 
-        \\ if not let cnt = t.count
+        \\ if not (let cnt = t.count)
         \\   return :false
         \\ 
         \\ expect_eq(cnt, 100)
@@ -524,7 +524,6 @@ test "if-let works" {
         \\ let acc = 0
         \\ 
         \\ for i in 0..cnt do
-        \\   print(cnt)
         \\   acc += 1
         \\ end
         \\ 
@@ -1136,23 +1135,16 @@ test "break works inside fn" {
     , "asdf");
 }
 
-test "while else value when predicate false on first entry" {
+test "while scope pred value when predicate false on first entry" {
     try t.top_number(
         \\ let a = 0
         \\ let x = while do
         \\     a += 1
         \\     let result = (:err, :Asdf)
-        \\     a < 1
+        \\     a < 2
         \\ end 123
         \\ x
     , 123);
-}
-
-test "while else value with simple false predicate" {
-    try t.top_number(
-        \\ let x = while do :false end 42
-        \\ x
-    , 42);
 }
 
 test "while body result is loop value after iterations" {

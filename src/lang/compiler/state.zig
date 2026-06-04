@@ -65,6 +65,7 @@ pub const FunctionState = struct {
         self.scope_starts.deinit(alloc);
         self.type_hints.deinit(alloc);
         self.type_scope_starts.deinit(alloc);
+
         var it = self.fn_signatures.iterator();
         while (it.next()) |entry| {
             alloc.free(entry.value_ptr.*.param_types);

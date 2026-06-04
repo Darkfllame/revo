@@ -128,6 +128,7 @@ pub const Compiler = struct {
     struct_layouts: std.StringHashMap([]const struct_layout.FieldDef),
     ir_ctx: ?ir.IrContext = null,
     use_ir_first: bool = false,
+    // register cache for upvalue loads, cleared per-block in compileBlock
     upvalue_cache: std.AutoHashMap(usize, usize) = undefined,
     type_aliases: std.StringHashMap(types.TypeInfo),
 
@@ -243,7 +244,7 @@ pub const Compiler = struct {
             .binding => |binding| try self.compileBinding(binding, .con),
             .number => |n| {
                 const value = n.value;
-                // int literal?
+                // fit in i64 and whole? -> tagged int, else float
                 if (std.math.isFinite(value) and
                     @floor(value) == value and
                     value >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
@@ -264,7 +265,7 @@ pub const Compiler = struct {
                 if (state_mod.resolveLocal(self, name)) |slot| {
                     try emit.emit(self, .load_local, slot);
                 } else if (try state_mod.resolveUpvalue(self, name)) |upval_id| {
-                    // cached reg still valid?
+                    // reuse cached reg only if still live
                     if (self.upvalue_cache.get(upval_id)) |cached_reg| {
                         if (cached_reg < self.active_registers - 1) {
                             const dst = try state.pushRegister(self);

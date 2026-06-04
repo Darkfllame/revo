@@ -184,6 +184,7 @@ fn recordIr(self: *Compiler, op: Opcode, i: Instruction, op_arg: Operand) !void 
 }
 
 pub fn emit(self: *Compiler, op: Opcode, op_arg: Operand) !void {
+    // all stack effects computed inline here; matched to opcode's static shape
     var i: Instruction = .{ .op = .halt };
     var d = self.active_registers;
     var ir_rec = false;
