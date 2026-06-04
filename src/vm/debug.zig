@@ -179,12 +179,10 @@ pub fn printDisassembly(artifact: revo.lang.Artifact, source: []const u8) void {
 
         const raw_line = blk: {
             var s = span.start;
-            if (s > source.len) s = source.len;
             while (s > 0 and source[s - 1] != '\n') : (s -= 1) {}
             var e = if (span.end <= source.len) span.end else source.len;
             while (e < source.len and source[e] != '\n') : (e += 1) {}
-            const empty: []const u8 = "";
-            break :blk if (e > s) source[s..e] else empty;
+            break :blk source[s..e];
         };
 
         if (raw_line.len > 0) {
