@@ -1036,7 +1036,7 @@ pub fn read(args: []const Data, vm: *VM) !NativeResult {
         if (std.mem.eql(u8, rp, "/dev/stdin"))
             .{ std.Io.File.stdin(), false }
         else
-            .{ try std.Io.Dir.openFileAbsolute(vm.runtime.io, rp, .{}), true };
+            .{ try std.Io.Dir.openFile(std.Io.Dir.cwd(), vm.runtime.io, rp, .{}), true };
     defer if (close) file.close(vm.runtime.io);
 
     var result = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, 128);
