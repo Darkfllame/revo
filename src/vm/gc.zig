@@ -253,6 +253,15 @@ pub inline fn markRoots(self: *VM) void {
     var cache_it = self.module_cache.iterator();
     while (cache_it.next()) |v| pushMark(self, v.value_ptr.*.result);
 
+    for (self.struct_types.types.items) |*desc| {
+        for (desc.fields) |field| {
+            if (field.default_val) |val| pushMark(self, val);
+        }
+
+        var method_it = desc.methods.iterator();
+        while (method_it.next()) |entry| pushMark(self, entry.value_ptr.*);
+    }
+
     var channel_it = self.sched.channels.iterator();
     while (channel_it.next()) |entry| {
         self.tables.mark(entry.key_ptr.*, self);
