@@ -331,21 +331,31 @@ pub const Table = struct {
     pub fn put(self: *Table, table_id: memory.TableID, vm: *revo.VM, key: Data, val: Data) !void {
         self.ic_version +%= 1;
         if (self.metatable == null) {
-            return self.putRaw(key, val);
-        }
+            try self.putRaw(key, val);
+        } else {
+            const mt_id = self.metatable.?;
+            const mt = try vm.tables.get(mt_id);
 
-        const mt_id = self.metatable.?;
-        const mt = try vm.tables.get(mt_id);
-
-        if (mt.getRawAtom(revo.core_atoms.atom_id(.__newindex))) |newindex_method| {
-            if (newindex_method.asFunction()) |f| {
-                const table_data = Data.new.table(table_id);
-                _ = try vm.callFunction(Data.new.function(f), &[_]Data{ table_data, key, val });
-                return;
+            if (mt.getRawAtom(revo.core_atoms.atom_id(.__newindex))) |newindex_method| {
+                if (newindex_method.asFunction()) |f| {
+                    const table_data = Data.new.table(table_id);
+                    _ = try vm.callFunction(Data.new.function(f), &[_]Data{ table_data, key, val });
+                    if (vm.gc_sweep_state.phase != .idle and vm.gc_sweep_state.phase != .done) {
+                        vm.markData(table_data);
+                        vm.markData(key);
+                        vm.markData(val);
+                    }
+                    return;
+                }
             }
+
+            try self.putRaw(key, val);
         }
 
-        return self.putRaw(key, val);
+        if (vm.gc_sweep_state.phase != .idle and vm.gc_sweep_state.phase != .done) {
+            vm.markData(key);
+            vm.markData(val);
+        }
     }
 
     pub fn putRaw(self: *Table, key: Data, val: Data) !void {

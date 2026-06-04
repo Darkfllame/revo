@@ -258,6 +258,36 @@ test "vm gc keeps globals rooted tables alive" {
     _ = try vm.tables.get(table_id);
 }
 
+test "vm gc keeps tables written during sweep alive" {
+    var vm = try revo.VM.init(vt.runtime());
+    defer vm.deinit();
+
+    const root_id = try vm.tables.create();
+    try vm.setGlobal("root", Data.new.table(root_id));
+
+    for (0..1100) |_| {
+        _ = try vm.tables.create();
+    }
+
+    trigger_gc(&vm);
+
+    const key = try vm.ownDataString("child");
+    const child_id = try vm.tables.create();
+    {
+        const root = try vm.tables.get(root_id);
+        try root.put(root_id, &vm, key, Data.new.table(child_id));
+    }
+
+    while (vm.gc_sweep_state.phase != .idle)
+        vm.maybeCollectGarbage();
+
+    const root = try vm.tables.get(root_id);
+    const child = root.getRaw(key) orelse unreachable;
+    try testing.expect(child.isTable());
+    try testing.expectEqual(child_id, child.asTable().?);
+    _ = try vm.tables.get(child_id);
+}
+
 // test "vm gc reclaims unrooted tables tuples and functions" {
 //     var vm = try revo.VM.init(vt.runtime());
 //     defer vm.deinit();

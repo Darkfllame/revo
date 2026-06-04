@@ -730,7 +730,10 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
                 try self.setRuntimeMessage("reassignment to constant!");
                 return self.evalFailure(error.ConstantReassignment);
             }
-            try self.globals.put(instr.bx, regRead(regs, base, instr.a));
+            const val = regRead(regs, base, instr.a);
+            try self.globals.put(instr.bx, val);
+            if (self.gc_sweep_state.phase != .idle and self.gc_sweep_state.phase != .done)
+                self.markData(val);
 
             if (fiber.pc >= fiber.program.len) break :dispatch;
             instr = fiber.program[fiber.pc];
@@ -742,7 +745,10 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
                 try self.setRuntimeMessage("reassignment to constant!");
                 return self.evalFailure(error.ConstantReassignment);
             }
-            try self.globals.put(instr.bx, regRead(regs, base, instr.a));
+            const val = regRead(regs, base, instr.a);
+            try self.globals.put(instr.bx, val);
+            if (self.gc_sweep_state.phase != .idle and self.gc_sweep_state.phase != .done)
+                self.markData(val);
             try self.const_globals.put(instr.bx, {});
 
             if (fiber.pc >= fiber.program.len) break :dispatch;
