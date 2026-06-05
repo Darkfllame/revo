@@ -1,4 +1,4 @@
-const ex = import("examples/c/extension.so")
+const ex = import("extension.so")
 
 print("echo:", ex.echo("hello"))
 print("strlen:", ex.strlen("hello"))
