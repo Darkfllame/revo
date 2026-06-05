@@ -84,6 +84,7 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{ .name = "revo", .root_module = exe_root });
     if (optimize == .Debug) exe.lto = .none;
+    exe.rdynamic = true;
 
     const install_exe = b.addInstallArtifact(exe, .{});
     if (maybe_git_submod) |git_step| install_exe.step.dependOn(git_step);
