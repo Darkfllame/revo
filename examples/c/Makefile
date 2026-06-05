@@ -1,5 +1,5 @@
 CC ?= cc
-CFLAGS ?= -std=c99 -Wall -Wextra -I../../zig-out/include
+CFLAGS ?= -std=c99 -Wall -Wextra -I../../zig-out/include -lm
 LIB = ../../zig-out/lib/liberevo.a
 UNAME := $(shell uname -s)
 
@@ -17,7 +17,7 @@ basic: basic.c $(LIB)
 	$(CC) $(CFLAGS) $< $(LIB) -o $@
 
 extension: extension.c
-	$(CC) $(CFLAGS) -shared -fPIC $< -o extension.so -undefined dynamic_lookup
+	$(CC) $(CFLAGS) -shared -fPIC $< -o extension.so
 
 run: basic
 	./basic
