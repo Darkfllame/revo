@@ -923,7 +923,7 @@ pub const Compiler = struct {
 
             const msg = try std.fmt.allocPrint(
                 self.alloc,
-                "{s} wants {d} argument(s), got {d}",
+                "{s} wants {d} arg(s), got {d}",
                 .{
                     fn_name,
                     sig.params.len,
@@ -970,7 +970,7 @@ pub const Compiler = struct {
                     const headline = if (display_name) |name| blk: {
                         break :blk try std.fmt.allocPrint(
                             self.alloc,
-                            "argument {d} (`{s}`) to `{s}` wants {s}, got {s}",
+                            "arg {d} (`{s}`) to `{s}` wants {s}, got {s}",
                             .{
                                 idx + 1,
                                 name,
@@ -1133,7 +1133,7 @@ pub const Compiler = struct {
             } else if (has_named) {
                 const msg = try std.fmt.allocPrint(
                     self.alloc,
-                    "positional argument cannot follow named argument",
+                    "positional arg cannot follow named arg",
                     .{},
                 );
                 try self.appendFailureReport(.ParseError, &.{
@@ -1212,7 +1212,7 @@ pub const Compiler = struct {
                 if (positional_idx >= sig.param_names.len) {
                     const msg = try std.fmt.allocPrint(
                         self.alloc,
-                        "too many positional arguments",
+                        "too many positional args",
                         .{},
                     );
                     try self.appendFailureReport(.ParseError, &.{
@@ -1257,7 +1257,7 @@ pub const Compiler = struct {
             }
             const msg = try std.fmt.allocPrint(
                 self.alloc,
-                "call to `{s}` wants {d} argument(s), got {d}",
+                "call to `{s}` wants {d} arg(s), got {d}",
                 .{
                     fn_name,
                     sig.param_types.len,
@@ -1295,20 +1295,20 @@ pub const Compiler = struct {
                         const label = if (sig.param_names[i].len == 0)
                             try std.fmt.allocPrint(
                                 self.alloc,
-                                "argument {d}",
+                                "arg {d}",
                                 .{i + 1},
                             )
                         else
                             try std.fmt.allocPrint(
                                 self.alloc,
-                                "argument {d} (`{s}`)",
+                                "arg {d} (`{s}`)",
                                 .{ i + 1, sig.param_names[i] },
                             );
 
                         const headline = if (sig.param_names[i].len == 0)
                             try std.fmt.allocPrint(
                                 self.alloc,
-                                "argument {d} to `{s}` wants {s}, got {s}",
+                                "arg {d} to `{s}` wants {s}, got {s}",
                                 .{
                                     i + 1,
                                     fn_name,
@@ -1319,7 +1319,7 @@ pub const Compiler = struct {
                         else
                             try std.fmt.allocPrint(
                                 self.alloc,
-                                "argument {d} (`{s}`) to `{s}` wants {s}, got {s}",
+                                "arg {d} (`{s}`) to `{s}` wants {s}, got {s}",
                                 .{
                                     i + 1,
                                     sig.param_names[i],

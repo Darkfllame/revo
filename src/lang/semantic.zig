@@ -473,7 +473,7 @@ const SemanticChecker = struct {
                     });
                 };
                 try self.appendError(
-                    try std.fmt.allocPrint(self.alloc, "`{s}` wants {d} arguments, got {d}", .{
+                    try std.fmt.allocPrint(self.alloc, "`{s}` wants {d} args, got {d}", .{
                         call.callee.expr.ident,
                         sig.params.len,
                         call.args.len,
@@ -487,7 +487,7 @@ const SemanticChecker = struct {
                 const actual = try self.analyzeNode(call.args[i]);
                 const expected = sig.params[i];
                 if (!types_mod.canCoerce(actual, expected)) {
-                    const msg = try std.fmt.allocPrint(self.alloc, "argument {d} to `{s}` wants {s}, got {s}", .{
+                    const msg = try std.fmt.allocPrint(self.alloc, "arg {d} to `{s}` wants {s}, got {s}", .{
                         i + 1,
                         call.callee.expr.ident,
                         types_mod.typeName(expected),
@@ -551,7 +551,7 @@ const SemanticChecker = struct {
         const expected_str = try types_mod.formatType(self.alloc, expected);
         const actual_str = try types_mod.formatType(self.alloc, actual);
         const obj_name = try types_mod.formatType(self.alloc, types_mod.inferExprType(self, field.object));
-        const msg = try std.fmt.allocPrint(self.alloc, "field `{s}` on `{s}` expected {s}, got {s}", .{
+        const msg = try std.fmt.allocPrint(self.alloc, "field `{s}` on `{s}` wants {s}, got {s}", .{
             field.name,
             obj_name,
             expected_str,

@@ -66,6 +66,7 @@ pub fn atomPayload(name: []const u8) []const u8 {
 pub const FunctionSignature = struct { params: []const TypeInfo, return_type: TypeInfo };
 
 /// sentinel "any function" type,,, matches any callable value
+/// ptr identity;; only matches when &ANY_FN_SIG is used
 pub const ANY_FN_SIG: FunctionSignature = .{ .params = &.{}, .return_type = .any };
 
 pub fn typeName(T: TypeInfo) []const u8 {

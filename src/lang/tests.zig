@@ -1207,7 +1207,7 @@ test "compile report includes function call argument detail" {
         .ParseError,
         2,
         5,
-        "argument 1 (`x`) to `id` wants int, got string",
+        "arg 1 (`x`) to `id` wants int, got string",
     );
 }
 
@@ -1278,7 +1278,7 @@ test "runtime span for struct field assignment type error points at assignment" 
         .TypeError,
         5,
         2,
-        "field `age` on `User` expected number, got string",
+        "field `age` on `User` wants number, got string",
     );
 }
 
@@ -1603,7 +1603,7 @@ test "struct fields are mutable" {
         \\ }
         \\ let user = User {}
         \\ user.age = "old"
-    , .TypeError, "field `age` on `User` expected number, got string");
+    , .TypeError, "field `age` on `User` wants number, got string");
     try t.top_number(
         \\ struct User {
         \\     name: string,
@@ -1679,7 +1679,7 @@ test "structs reject bad inputs" {
 test "string with rejects empty replacement char" {
     try t.expectRuntimeFailureWithMessage(
         \\ "abc":with(1, "")
-    , .TypeError, "argument 2: expected non-empty string, got string");
+    , .TypeError, "arg 2: wants non-empty string, got string");
 }
 
 test "structs do not leak" {

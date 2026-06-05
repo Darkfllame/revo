@@ -945,7 +945,7 @@ pub fn evalFailure(self: *VM, err: EvalError) EvalFailure {
         const is_struct_panic =
             std.mem.indexOf(u8, msg, " for struct `") != null or
             (std.mem.indexOf(u8, msg, " on `") != null and
-                std.mem.indexOf(u8, msg, " expected ") != null);
+                std.mem.indexOf(u8, msg, " wants ") != null);
 
         const top_is_non_module = blk: {
             if (frames.len == 0) break :blk false;
@@ -1264,7 +1264,7 @@ fn callNonClosureFunction(
                     switch (err) {
                         .wrong_arity => |info| {
                             try self.setRuntimeMessageFmt(
-                                "function `{s}` expected {d} args, got {d}",
+                                "function `{s}` wants {d} args, got {d}",
                                 .{
                                     func.name(),
                                     info.expected,
@@ -1276,7 +1276,7 @@ fn callNonClosureFunction(
                         .type_error => |info| {
                             if (info.arg) |arg| {
                                 try self.setRuntimeMessageFmt(
-                                    "argument {d}: expected {s}, got {s}",
+                                    "arg {d}: wants {s}, got {s}",
                                     .{
                                         arg,
                                         info.expected,
@@ -1285,7 +1285,7 @@ fn callNonClosureFunction(
                                 );
                             } else {
                                 try self.setRuntimeMessageFmt(
-                                    "expected {s}, got {s}",
+                                    "wants {s}, got {s}",
                                     .{
                                         info.expected,
                                         info.got,
@@ -1347,7 +1347,7 @@ pub fn callRegister(
                 {
                     @branchHint(.unlikely);
                     try self.setRuntimeMessageFmt(
-                        "function `{s}` expected {d} args, got {d}",
+                        "function `{s}` wants {d} args, got {d}",
                         .{
                             closure.name,
                             closure.arity,
@@ -1598,7 +1598,7 @@ fn callStructConstructor(
                 val,
             )) {
                 try self.setRuntimeMessageFmt(
-                    "field `{s}` on `{s}` expected {s}, got {s}",
+                    "field `{s}` on `{s}` wants {s}, got {s}",
                     .{
                         self.atomName(f.name_atom),
                         desc.name,
@@ -1663,7 +1663,7 @@ pub fn setStructField(
             value,
         )) {
             try self.setRuntimeMessageFmt(
-                "field `{s}` on `{s}` expected {s}, got {s}",
+                "field `{s}` on `{s}` wants {s}, got {s}",
                 .{
                     self.atomName(field_atom),
                     desc.name,
@@ -1796,7 +1796,7 @@ pub inline fn spawnRegister(
     {
         @branchHint(.unlikely);
         try self.setRuntimeMessageFmt(
-            "fiber closure `{s}` expected {d} args, got {d}",
+            "fiber closure `{s}` wants {d} args, got {d}",
             .{ closure.name, closure.arity, argc },
         );
         return error.WrongArity;
