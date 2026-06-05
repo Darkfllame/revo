@@ -821,6 +821,7 @@ pub const Compiler = struct {
                     fn_name,
                     call.args,
                 );
+                try self.validateStructInit(fn_name, call.callee, call.args);
                 try self.compile(call.callee, true);
 
                 // use reordered args if named params were used
@@ -1006,6 +1007,62 @@ pub const Compiler = struct {
                     );
                 },
             };
+        }
+    }
+
+    fn validateStructInit(
+        self: *Compiler,
+        struct_name: []const u8,
+        callee: *const Node,
+        args: []const *Node,
+    ) InternalLowerError!void {
+        const callee_type = type_check.inferExprType(self, callee);
+        if (callee_type != .struct_type) return;
+        const field_defs = self.struct_layouts.get(struct_name) orelse return;
+        if (args.len == 0) return;
+
+        const init_arg = args[0];
+        if (init_arg.expr != .table) return;
+
+        for (init_arg.expr.table) |entry| {
+            const key = entry.key orelse continue;
+            if (key.expr != .ident) continue;
+            const field_name = key.expr.ident;
+
+            for (field_defs) |fd| {
+                if (!std.mem.eql(u8, fd.name, field_name)) continue;
+                if (fd.field_type == .any) break;
+
+                type_check.checkType(
+                    self.alloc,
+                    fd.field_type,
+                    type_check.inferExprType(self, entry.value),
+                    entry.value.span,
+                ) catch |err| switch (err) {
+                    error.TypeError => {
+                        const actual = type_check.inferExprType(self, entry.value);
+                        const headline = try std.fmt.allocPrint(
+                            self.alloc,
+                            "field `{s}` on `{s}` wants {s}, got {s}",
+                            .{
+                                field_name,
+                                struct_name,
+                                try types.formatType(self.alloc, fd.field_type),
+                                types.typeName(actual),
+                            },
+                        );
+
+                        return self.setFailureParts(
+                            .ParseError,
+                            .{ .span = entry.value.span, .role = .primary, .message = "wrong type!" },
+                            headline,
+                            &.{},
+                        );
+                    },
+                    else => |e| return e,
+                };
+                break;
+            }
         }
     }
 

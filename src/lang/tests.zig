@@ -1258,18 +1258,13 @@ test "runtime report includes wrong arity detail" {
     , .ParseError);
 }
 
-test "runtime span for struct constructor type error points at constructor call" {
-    try t.expectRuntimeFailure(
+test "compile time span for struct constructor type error points at constructor call" {
+    try t.expectCompileError(
         \\ struct User {
         \\     age: number
         \\ }
         \\ User { age = "old" }
-    ,
-        .TypeError,
-        4,
-        2,
-        "field `age` on `User` expected number, got string",
-    );
+    , .ParseError);
 }
 
 test "runtime span for struct field assignment type error points at assignment" {
@@ -1673,12 +1668,12 @@ test "structs reject bad inputs" {
         \\ }
         \\ User { name = "ana", age = 12 }
     , .Panic, "unknown field `age` for struct `User`");
-    try t.expectRuntimeFailureWithMessage(
+    try t.expectCompileError(
         \\ struct User {
         \\     age: number
         \\ }
         \\ User { age = "old" }
-    , .TypeError, "field `age` on `User` expected number, got string");
+    , .ParseError);
 }
 
 test "string with rejects empty replacement char" {
