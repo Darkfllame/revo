@@ -1073,7 +1073,7 @@ pub fn import(args: []const Data, vm: *VM) !NativeResult {
     } } };
     const raw_path_s = vm.stringValue(raw_path);
 
-    const resolved_path = try resolveImportPath(raw_path_s, vm.module_dir, vm);
+    const resolved_path = try resolveImportPath(raw_path_s, vm.module_dir orelse ".", vm);
     defer vm.runtime.alloc.free(resolved_path);
     if (std.mem.endsWith(u8, resolved_path, ".so") or std.mem.endsWith(u8, resolved_path, ".dylib")) {
         const mods = try revo.ffi.loadC(vm, resolved_path);

@@ -157,9 +157,8 @@ pub const path_utils = struct {
     pub fn resolve(raw_path: []const u8, base_dir: ?[]const u8, io: std.Io, alloc: std.mem.Allocator) Error![]u8 {
         if (std.fs.path.isAbsolute(raw_path)) return alloc.dupe(u8, raw_path) catch return error.OutOfMemory;
 
-        const cwd_path = std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc) catch return error.IoError;
-        defer alloc.free(cwd_path);
-        const root_dir = base_dir orelse cwd_path;
+        const root_dir = std.Io.Dir.cwd().realPathFileAlloc(io, base_dir orelse ".", alloc) catch return error.IoError;
+        defer alloc.free(root_dir);
         return std.fs.path.resolve(alloc, &.{ root_dir, raw_path }) catch return error.OutOfMemory;
     }
 
