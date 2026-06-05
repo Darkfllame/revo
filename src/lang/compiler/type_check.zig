@@ -91,8 +91,8 @@ pub fn inferFnType(self: *Compiler, params: []const ast.FnParam, return_type: ?*
     return TypeInfo{ .function = sig };
 }
 
-pub fn validateBindingType(self: *Compiler, type_name: []const u8, value: *const Node) !void {
-    const expected = types_mod.resolveTypeName(self, type_name);
+pub fn validateBindingType(self: *Compiler, type_expr: *ast.TypeExpr, value: *const Node) !void {
+    const expected = try types_mod.evalTypeExpr(self, type_expr);
     const actual = inferExprType(self, value);
     try checkType(self.alloc, expected, actual, value.span);
 }

@@ -21,7 +21,7 @@ pub fn compileLocalBinding(
     name: []const u8,
     value: *const Node,
     mutable: bool,
-    type_name: ?[]const u8,
+    type_name: ?*ast.TypeExpr,
 ) !void {
     if (ast.isDiscardName(name)) {} else if (std.mem.endsWith(u8, name, "!"))
         return self.setFailureParts(
@@ -42,16 +42,19 @@ pub fn compileLocalBinding(
         type_check.validateBindingType(self, tn, value) catch |err| switch (err) {
             error.TypeError => {
                 const actual = type_check.inferExprType(self, value);
+                const expected_type = try types_mod.evalTypeExpr(self, tn);
+                const tn_str = try types_mod.formatType(self.alloc, expected_type);
                 const msg = try std.fmt.allocPrint(
                     self.alloc,
                     "`{s}` wants {s}, got {s}",
-                    .{ name, tn, types_mod.typeName(actual) },
+                    .{ name, tn_str, types_mod.typeName(actual) },
                 );
                 const label = try std.fmt.allocPrint(
                     self.alloc,
                     "not {s}!",
-                    .{tn},
+                    .{tn_str},
                 );
+                self.alloc.free(tn_str);
                 return self.setFailureParts(
                     .ParseError,
                     .{
@@ -63,6 +66,7 @@ pub fn compileLocalBinding(
                     &.{},
                 );
             },
+            error.OutOfMemory => return error.OutOfMemory,
         };
     }
 
@@ -95,7 +99,7 @@ pub fn compileLocalBinding(
     try syncLocalTableFields(self, slot, value);
 
     const inferred_type = if (type_name) |tn|
-        types_mod.resolveTypeName(self, tn)
+        try types_mod.evalTypeExpr(self, tn)
     else
         type_check.inferExprType(self, value);
 

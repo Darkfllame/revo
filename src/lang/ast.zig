@@ -202,7 +202,7 @@ pub const MatchArm = struct {
 
 pub const Binding = struct {
     target: *Node,
-    type_name: ?[]const u8 = null,
+    type_name: ?*TypeExpr = null,
     value: *Node,
     mutable: bool = false,
 
@@ -212,7 +212,10 @@ pub const Binding = struct {
             try writer.writeByte('\n');
             try writeIndent(writer, d + 1);
             try self.target.printAt(writer, d + 1);
-            if (self.type_name) |t| try writer.print(":{s}", .{t});
+            if (self.type_name) |t| {
+                try writer.writeByte(':');
+                try t.printAt(writer, d + 1);
+            }
             try writer.writeByte('\n');
             try writeIndent(writer, d + 1);
             try self.value.printAt(writer, d + 1);
@@ -221,7 +224,10 @@ pub const Binding = struct {
         } else {
             try writer.writeByte(' ');
             try self.target.printAt(writer, null);
-            if (self.type_name) |t| try writer.print(":{s}", .{t});
+            if (self.type_name) |t| {
+                try writer.writeByte(':');
+                try t.printAt(writer, null);
+            }
             try writer.writeByte(' ');
             try self.value.printAt(writer, null);
         }

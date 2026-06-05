@@ -1166,7 +1166,7 @@ test "type alias gets unaliased" {
         \\ let x: Als = (:aa, 55)
         \\ let y: Als = (:bb, 100.1)
         \\ 
-        \\ x + y == 155.1
+        \\ x[1] + y[1] == 155.1
     );
 }
 
@@ -1175,6 +1175,6 @@ test "tuple type annotation" {
         \\ let x: (:aa, int) | (:bb, float) = (:aa, 55)
         \\ let y: (:aa, int) | (:bb, float) = (:bb, 100.1)
         \\ 
-        \\ x + y == 155.1
+        \\ x[1] + y[1] == 155.1
     );
 }

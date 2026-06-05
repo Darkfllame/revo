@@ -340,17 +340,19 @@ const SemanticChecker = struct {
         if (binding.value.expr == .fn_expr) {
             const sig = try self.makeFnSig(binding.value.expr.fn_expr);
             const fn_type: types_mod.TypeInfo = .{ .function = &sig.sig };
-            if (binding.type_name) |type_name| {
-                const expected = types_mod.resolveTypeName(self, type_name);
+            if (binding.type_name) |type_expr| {
+                const expected = try types_mod.evalTypeExpr(self, type_expr);
                 if (!types_mod.canCoerce(fn_type, expected)) {
+                    const name_str = try types_mod.formatType(self.alloc, expected);
                     try self.appendTypeMismatch(
                         binding.target.span,
                         name,
-                        type_name,
+                        name_str,
                         expected,
                         fn_type,
                         "not",
                     );
+                    self.alloc.free(name_str);
                 }
             }
             try self.declare(name, fn_type);
@@ -359,17 +361,19 @@ const SemanticChecker = struct {
         }
 
         const value_type = try self.analyzeNode(binding.value);
-        if (binding.type_name) |type_name| {
-            const expected = types_mod.resolveTypeName(self, type_name);
+        if (binding.type_name) |type_expr| {
+            const expected = try types_mod.evalTypeExpr(self, type_expr);
             if (!types_mod.canCoerce(value_type, expected)) {
+                const name_str = try types_mod.formatType(self.alloc, expected);
                 try self.appendTypeMismatch(
                     binding.target.span,
                     name,
-                    type_name,
+                    name_str,
                     expected,
                     value_type,
                     "not",
                 );
+                self.alloc.free(name_str);
             }
         }
 

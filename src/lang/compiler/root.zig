@@ -1540,26 +1540,34 @@ pub const Compiler = struct {
                 type_check.validateBindingType(self, tn, binding.value) catch |err| switch (err) {
                     error.TypeError => {
                         const actual = type_check.inferExprType(self, binding.value);
+                        const expected_type = try types.evalTypeExpr(self, tn);
+                        const tn_str = try types.formatType(self.alloc, expected_type);
                         const msg = try std.fmt.allocPrint(
                             self.alloc,
                             "`{s}` wants {s}, got {s}",
-                            .{ name, tn, types.typeName(actual) },
+                            .{ name, tn_str, types.typeName(actual) },
                         );
+                        const label = try std.fmt.allocPrint(self.alloc, "not {s}!", .{tn_str});
+                        self.alloc.free(tn_str);
                         return self.setFailureParts(
                             .ParseError,
                             .{
                                 .span = binding.value.span,
                                 .role = .primary,
-                                .message = try std.fmt.allocPrint(self.alloc, "not {s}!", .{tn}),
+                                .message = label,
                             },
                             msg,
                             &.{},
                         );
                     },
+                    error.OutOfMemory => return error.OutOfMemory,
                 };
             }
 
-            const inferred_type = type_check.inferExprType(self, binding.value);
+            const inferred_type = if (binding.type_name) |tn|
+                try types.evalTypeExpr(self, tn)
+            else
+                type_check.inferExprType(self, binding.value);
             try state_mod.setLocalTypeHint(self, name, inferred_type);
 
             if (ast.isDiscardName(name)) return;
@@ -1582,11 +1590,14 @@ pub const Compiler = struct {
                 type_check.validateBindingType(self, tn, binding.value) catch |err| switch (err) {
                     error.TypeError => {
                         const actual = type_check.inferExprType(self, binding.value);
+                        const expected_type = try types.evalTypeExpr(self, tn);
+                        const tn_str = try types.formatType(self.alloc, expected_type);
                         const msg = try std.fmt.allocPrint(
                             self.alloc,
                             "binding wants {s}, got {s}",
-                            .{ tn, types.typeName(actual) },
+                            .{ tn_str, types.typeName(actual) },
                         );
+                        self.alloc.free(tn_str);
                         return self.setFailureParts(
                             .ParseError,
                             .{ .span = binding.value.span, .role = .primary, .message = msg },
@@ -1594,6 +1605,7 @@ pub const Compiler = struct {
                             &.{},
                         );
                     },
+                    error.OutOfMemory => return error.OutOfMemory,
                 };
             }
             try values.declarePatternLocals(

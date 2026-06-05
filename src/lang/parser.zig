@@ -752,8 +752,8 @@ const Parser = struct {
             }
         }
 
-        if (binding.target.expr == .ident and self.match(.colon)) {
-            binding.type_name = (try self.expectIdent()).text;
+        if (self.match(.colon)) {
+            binding.type_name = try self.parseTypeExpr();
         }
         _ = try self.expect(.assign);
         binding.value = try self.parseStatementExpression(0);
