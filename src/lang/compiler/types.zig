@@ -251,26 +251,18 @@ pub fn collectVariants(alloc: std.mem.Allocator, ti: TypeInfo, variants: *std.Ar
     }
 }
 
+const type_name_map: std.StaticStringMap(TypeInfo) = std.StaticStringMap(TypeInfo).initComptime(.{
+    .{ "int", .int },
+    .{ "float", .float },
+    .{ "num", .int },
+    .{ "number", .int },
+    .{ "string", .string },
+    .{ "bool", .bool },
+    .{ "any", .any },
+});
+
 pub fn resolveTypeName(ctx: anytype, name: []const u8) TypeInfo {
-    if (std.mem.eql(u8, name, "int")) return .int;
-    if (std.mem.eql(u8, name, "float")) return .float;
-    if (std.mem.eql(u8, name, "num")) return .int;
-    if (std.mem.eql(u8, name, "number")) return .int;
-    // if (std.mem.eql(u8, name, "num")) return .{
-    //     .@"union" = &.{
-    //         .{ .name = "", .types = &.{.int} },
-    //         .{ .name = "", .types = &.{.float} },
-    //     },
-    // };
-    // if (std.mem.eql(u8, name, "number")) return .{
-    //     .@"union" = &.{
-    //         .{ .name = "", .types = &.{.int} },
-    //         .{ .name = "", .types = &.{.float} },
-    //     },
-    // };
-    if (std.mem.eql(u8, name, "string")) return .string;
-    if (std.mem.eql(u8, name, "bool")) return .bool;
-    if (std.mem.eql(u8, name, "any")) return .any;
+    if (type_name_map.get(name)) |res| return res;
     if (std.mem.eql(u8, name, "function")) return .{ .function = &ANY_FN_SIG };
     if (name.len > 0 and name[0] == ':') return .{ .atom = name };
     if (ctx.resolveTypeAlias(name)) |aliased| return aliased;

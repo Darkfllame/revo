@@ -936,10 +936,8 @@ pub const Compiler = struct {
 
         for (args, sig.params, 0..) |arg, expected_type, idx| {
             type_check.checkType(
-                self.alloc,
                 expected_type,
                 type_check.inferExprType(self, arg),
-                arg.span,
             ) catch |err| switch (err) {
                 error.TypeError => {
                     const actual_types = try self.buildArgTypesList(args);
@@ -1033,10 +1031,8 @@ pub const Compiler = struct {
                 if (fd.field_type == .any) break;
 
                 type_check.checkType(
-                    self.alloc,
                     fd.field_type,
                     type_check.inferExprType(self, entry.value),
-                    entry.value.span,
                 ) catch |err| switch (err) {
                     error.TypeError => {
                         const actual = type_check.inferExprType(self, entry.value);
@@ -1284,10 +1280,8 @@ pub const Compiler = struct {
                     reordered_args[i],
                 );
                 type_check.checkType(
-                    self.alloc,
                     types.resolveTypeName(self, expected_type),
                     actual_type,
-                    reordered_args[i].span,
                 ) catch |err| switch (err) {
                     error.TypeError => {
                         const actual_str = try types.formatType(self.alloc, actual_type);
@@ -1520,7 +1514,7 @@ pub const Compiler = struct {
             if (last.expr != .return_expr) {
                 const actual = type_check.inferExprType(self, last);
                 const expected = types.resolveTypeName(self, self.fn_return_type.?);
-                type_check.checkType(self.alloc, expected, actual, last.span) catch |err| switch (err) {
+                type_check.checkType(expected, actual) catch |err| switch (err) {
                     error.TypeError => {
                         const actual_str = try types.formatType(self.alloc, actual);
                         const expected_str = try types.formatType(self.alloc, expected);
@@ -1953,7 +1947,7 @@ pub const Compiler = struct {
         const declared = fn_state.return_type orelse return;
         const actual = type_check.inferExprType(self, val);
         const expected = types.resolveTypeName(self, declared);
-        type_check.checkType(self.alloc, expected, actual, val.span) catch |err| switch (err) {
+        type_check.checkType(expected, actual) catch |err| switch (err) {
             error.TypeError => {
                 const actual_str = try types.formatType(self.alloc, actual);
                 const msg = try std.fmt.allocPrint(
@@ -1991,7 +1985,7 @@ pub const Compiler = struct {
         if (last_expr.expr == .return_expr) return;
         const actual = type_check.inferExprType(self, last_expr);
         const expected = types.resolveTypeName(self, declared);
-        type_check.checkType(self.alloc, expected, actual, last_expr.span) catch |err| switch (err) {
+        type_check.checkType(expected, actual) catch |err| switch (err) {
             error.TypeError => {
                 const actual_str = try types.formatType(self.alloc, actual);
                 const expected_str = try types.formatType(self.alloc, expected);

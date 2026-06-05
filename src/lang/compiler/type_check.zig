@@ -21,13 +21,10 @@ pub fn storedTypeName(self: *Compiler, t: TypeInfo) ?[]const u8 {
     return if (roundtrip.eql(t)) name else null;
 }
 
-pub fn checkType(alloc: std.mem.Allocator, expected: TypeInfo, actual: TypeInfo, span: ast.Span) !void {
-    // std.debug.print("this {any} other {any}", .{ expected, actual });
+pub fn checkType(expected: TypeInfo, actual: TypeInfo) !void {
     if (expected == .any or actual == .any) return;
     if (expected.eql(actual)) return;
     if (types_mod.canCoerce(actual, expected)) return;
-    _ = alloc;
-    _ = span;
     return error.TypeError;
 }
 
@@ -94,7 +91,7 @@ pub fn inferFnType(self: *Compiler, params: []const ast.FnParam, return_type: ?*
 pub fn validateBindingType(self: *Compiler, type_expr: *ast.TypeExpr, value: *const Node) !void {
     const expected = try types_mod.evalTypeExpr(self, type_expr);
     const actual = inferExprType(self, value);
-    try checkType(self.alloc, expected, actual, value.span);
+    try checkType(expected, actual);
 }
 
 pub fn resolveTypeAlias(self: *Compiler, name: []const u8) ?TypeInfo {
@@ -108,7 +105,7 @@ pub fn validateAssignmentType(self: *Compiler, target: *const Node, value: *cons
             const type_name = local.type_name orelse return;
             const expected = types_mod.resolveTypeName(self, type_name);
             const actual = inferExprType(self, value);
-            try checkType(self.alloc, expected, actual, value.span);
+            try checkType(expected, actual);
         },
         .field => |field| {
             const object_type = inferExprType(self, field.object);
@@ -117,7 +114,7 @@ pub fn validateAssignmentType(self: *Compiler, target: *const Node, value: *cons
             for (layout) |f| {
                 if (std.mem.eql(u8, f.name, field.name)) {
                     const actual = inferExprType(self, value);
-                    try checkType(self.alloc, f.field_type, actual, value.span);
+                    try checkType(f.field_type, actual);
                     return;
                 }
             }
@@ -139,7 +136,7 @@ pub fn validateUpvalueAssignmentType(self: *Compiler, name: []const u8, value: *
             const hint = type_hints.items[i];
             if (std.mem.eql(u8, hint.name, name)) {
                 const actual = inferExprType(self, value);
-                try checkType(self.alloc, hint.type_info, actual, value.span);
+                try checkType(hint.type_info, actual);
                 return;
             }
         }
