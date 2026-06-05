@@ -2,17 +2,15 @@ const std = @import("std");
 
 const revo = @import("revo");
 const Data = revo.Data;
-const Instruction = revo.Instruction;
 const Compiler = revo.lang.compiler.Compiler;
 
 const ast = @import("../ast.zig");
 const Node = ast.Node;
 const TableEntry = ast.TableEntry;
 const StructItem = ast.StructItem;
-const emit = @import("emit.zig");
 const flow = @import("flow.zig");
 const state = @import("state.zig");
-const toRegister = @import("emit.zig").toRegister;
+const toRegister = state.toRegister;
 const type_check = @import("type_check.zig");
 const types_mod = @import("types.zig");
 
@@ -102,11 +100,13 @@ pub fn compileLocalBinding(
         type_check.inferExprType(self, value);
 
     try state.setLocalTypeHint(self, name, inferred_type);
-    if (type_check.storedTypeName(self, inferred_type)) |stored_name|
-        state.setLocalType(self, slot, stored_name);
+    if (type_name != null) {
+        if (type_check.storedTypeName(self, inferred_type)) |stored_name|
+            state.setLocalType(self, slot, stored_name);
+    }
 
-    try emit.regDupe(self);
-    try emit.emit(self, .bind_local, slot);
+    try self.regDupe();
+    try self.emit(.bind_local, slot);
 }
 
 pub fn bindDeclaredPattern(
@@ -118,28 +118,22 @@ pub fn bindDeclaredPattern(
     switch (pattern.expr) {
         .ident => |name| {
             if (ast.isDiscardName(name)) return;
-            const mv: Instruction = .{
-                .op = .move,
-                .a = try toRegister(self.active_registers),
-                .b = try toRegister(source_idx),
-            };
-            try emit.appendRecorded(self, mv);
+            const mv_dst = try toRegister(self.active_registers);
+            try self.spans.append(self.alloc, self.active_span);
+            _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst, 0);
             self.active_registers += 1;
             const slot = try state.reuseOrDeclareLocal(self, name, kind != .con);
             state.markLocalInitialized(self, slot);
-            try emit.emit(self, .bind_local, slot);
+            try self.emit(.bind_local, slot);
             state.reserveLocalSlots(self);
         },
         .tuple_pattern => |items| {
             for (items, 0..) |item, idx| {
-                const mv: Instruction = .{
-                    .op = .move,
-                    .a = try toRegister(self.active_registers),
-                    .b = try toRegister(source_idx),
-                };
-                try emit.appendRecorded(self, mv);
+                const mv_dst = try toRegister(self.active_registers);
+                try self.spans.append(self.alloc, self.active_span);
+                _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst, 0);
                 self.active_registers += 1;
-                try emit.emit(self, .tuple_get_const, idx);
+                try self.emit(.tuple_get_const, idx);
                 try bindDeclaredPattern(self, item, self.active_registers - 1, kind);
             }
         },
@@ -176,15 +170,11 @@ pub fn bindPattern(
     switch (pattern.expr) {
         .ident => |name| {
             if (ast.isDiscardName(name)) return;
-            const mv: Instruction = .{
-                .op = .move,
-                .a = try toRegister(self.active_registers),
-                .b = try toRegister(source_idx),
-            };
-            try emit.appendRecorded(self, mv);
+            const mv_dst = try toRegister(self.active_registers);
+            try self.spans.append(self.alloc, self.active_span);
+            _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst, 0);
             self.active_registers += 1;
-            try emit.emit(
-                self,
+            try self.emit(
                 if (kind == .con) .store_global_const else .store_global,
                 try self.vm.internAtom(name),
             );
@@ -195,29 +185,22 @@ pub fn bindPattern(
                 switch (item.expr) {
                     .ident => |name| {
                         if (ast.isDiscardName(name)) continue;
-                        const mv: Instruction = .{
-                            .op = .move,
-                            .a = try toRegister(self.active_registers),
-                            .b = try toRegister(source_idx),
-                        };
-                        try emit.appendRecorded(self, mv);
+                        const mv_dst2 = try toRegister(self.active_registers);
+                        try self.spans.append(self.alloc, self.active_span);
+                        _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst2, 0);
                         self.active_registers += 1;
-                        try emit.emit(self, .tuple_get_const, idx);
-                        try emit.emit(
-                            self,
+                        try self.emit(.tuple_get_const, idx);
+                        try self.emit(
                             if (is_mutable) .store_global else .store_global_const,
                             try self.vm.internAtom(name),
                         );
                     },
                     .tuple_pattern => {
-                        const mv: Instruction = .{
-                            .op = .move,
-                            .a = try toRegister(self.active_registers),
-                            .b = try toRegister(source_idx),
-                        };
-                        try emit.appendRecorded(self, mv);
+                        const mv_dst2 = try toRegister(self.active_registers);
+                        try self.spans.append(self.alloc, self.active_span);
+                        _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst2, 0);
                         self.active_registers += 1;
-                        try emit.emit(self, .tuple_get_const, idx);
+                        try self.emit(.tuple_get_const, idx);
                         try bindPattern(self, item, self.active_registers - 1, kind);
                     },
                     else => {},
@@ -272,20 +255,42 @@ fn compileAssignSimple(
     switch (target.expr) {
         .ident => |name| {
             try self.compile(value, true);
-            try emit.regDupe(self);
+            try self.regDupe();
             if (state.resolveLocal(self, name)) |slot| {
-                try emit.emit(self, .store_local, slot);
+                try self.emit(.store_local, slot);
                 state.markLocalValueKind(self, slot, .unknown);
                 try syncLocalTableFields(self, slot, value);
                 const inferred_type = type_check.inferExprType(self, value);
+
+                type_check.validateAssignmentType(self, target, value) catch |err| switch (err) {
+                    error.TypeError => {
+                        const loc = state.resolveLocalVar(self, name) orelse unreachable;
+                        const type_name = loc.type_name orelse unreachable;
+                        const actual = type_check.inferExprType(self, value);
+                        const msg = try std.fmt.allocPrint(
+                            self.alloc,
+                            "`{s}` wants {s}, got {s}",
+                            .{ name, type_name, types_mod.typeName(actual) },
+                        );
+                        return self.setFailureParts(
+                            .ParseError,
+                            .{
+                                .span = value.span,
+                                .role = .primary,
+                                .message = try std.fmt.allocPrint(self.alloc, "not {s}!", .{type_name}),
+                            },
+                            msg,
+                            &.{},
+                        );
+                    },
+                };
+
                 try state.setLocalTypeHint(self, name, inferred_type);
-                if (type_check.storedTypeName(self, inferred_type)) |stored_name|
-                    state.setLocalType(self, slot, stored_name);
             } else if (try state.resolveUpvalue(self, name)) |slot| {
-                try emit.emit(self, .store_upval, slot);
+                try self.emit(.store_upval, slot);
             } else {
                 if (self.functions.items.len == 1) {
-                    try emit.emit(self, .store_global, try self.vm.internAtom(name));
+                    try self.emit(.store_global, try self.vm.internAtom(name));
                 } else {
                     const msg = try std.fmt.allocPrint(
                         self.alloc,
@@ -366,7 +371,9 @@ fn compileAssignSimple(
                         },
                     };
                     try self.compile(field.object, true);
-                    try compileAssignIntoStructOffset(self, field_offset, value);
+                    try self.compile(value, true);
+                    try self.emit(.struct_set_offset, @intCast(field_offset));
+                    try self.regRelease();
                 },
                 else => {
                     // table field access
@@ -389,7 +396,9 @@ fn compileAssignSimple(
                 )
             else {
                 try self.compile(index.key, true);
-                try compileAssignIntoTable(self, value);
+                try self.compile(value, true);
+                try self.emit(.table_set, 0);
+                try self.regRelease();
             }
         },
         else => {
@@ -452,38 +461,14 @@ fn syncLocalTableFields(
     }
 }
 
-fn compileAssignIntoTable(
-    self: *Compiler,
-    value: *const Node,
-) !void {
-    try self.compile(value, true);
-    try emit.emit(self, .table_set, 0);
-    try emit.regRelease(self);
-}
-
 fn compileAssignIntoTableAtom(
     self: *Compiler,
     key_atom: revo.AtomID,
     value: *const Node,
 ) !void {
     try self.compile(value, true);
-    try emit.emit(self, .table_set_atom, key_atom);
-    try emit.regRelease(self);
-}
-
-fn compileAssignIntoStructOffset(
-    self: *Compiler,
-    field_offset: usize,
-    value: *const Node,
-) !void {
-    try self.compile(value, true);
-    try emit.emit(self, .struct_set_offset, @intCast(field_offset));
-    try emit.regRelease(self);
-}
-
-pub fn compileTuple(self: *Compiler, items: []const *Node) !void {
-    for (items) |item| try self.compile(item, true);
-    try emit.emit(self, .tuple_new, @intCast(items.len));
+    try self.emit(.table_set_atom, key_atom);
+    try self.regRelease();
 }
 
 pub fn compileStruct(
@@ -556,10 +541,10 @@ pub fn compileStruct(
     // bind the .struct_type constant to the struct name
     const slot = try state.reuseOrDeclareLocal(self, name, false);
     state.reserveLocalSlots(self);
-    try emit.@"const"(self, Data.new.structType(type_id));
+    try self.@"const"(Data.new.structType(type_id));
     state.markLocalInitialized(self, slot);
-    try emit.regDupe(self);
-    try emit.emit(self, .bind_local, slot);
+    try self.regDupe();
+    try self.emit(.bind_local, slot);
 
     // compile meth binds & store in pool via rt calls
     for (items) |item| switch (item) {
@@ -574,7 +559,7 @@ pub fn compileStruct(
             }
             const key_atom = try self.vm.internAtom(b.target.expr.ident);
             try flow.emitStorageLoad(self, .{ .local = slot });
-            try emit.@"const"(self, Data.new.atom(key_atom));
+            try self.@"const"(Data.new.atom(key_atom));
             if (b.value.expr == .fn_expr)
                 try self.compileFn(
                     b.value.expr.fn_expr.params,
@@ -585,8 +570,8 @@ pub fn compileStruct(
                 )
             else
                 try self.compile(b.value, true);
-            try emit.emit(self, .struct_set_method, 0);
-            try emit.regRelease(self);
+            try self.emit(.struct_set_method, 0);
+            try self.regRelease();
         },
         .field => {},
     };
@@ -596,30 +581,28 @@ pub fn compileStruct(
 }
 
 pub fn compileTable(self: *Compiler, entries: []const ast.TableEntry) !void {
-    try emit.emit(self, .table_new, 0);
+    try self.emit(.table_new, 0);
     var array_index: i64 = 0;
     for (entries) |entry| {
-        try emit.regDupe(self);
+        try self.regDupe();
         if (entry.key) |key| {
             if (!entry.computed) switch (key.expr) {
                 .ident => |name| {
                     try self.compile(entry.value, true);
-                    try emit.emit(
-                        self,
+                    try self.emit(
                         .table_set_atom,
                         try self.vm.internAtom(name),
                     );
-                    try emit.regRelease(self);
+                    try self.regRelease();
                     continue;
                 },
                 .hash => |name| {
                     try self.compile(entry.value, true);
-                    try emit.emit(
-                        self,
+                    try self.emit(
                         .table_set_atom,
                         try self.vm.internAtom(name),
                     );
-                    try emit.regRelease(self);
+                    try self.regRelease();
                     continue;
                 },
                 else => {},
@@ -627,12 +610,12 @@ pub fn compileTable(self: *Compiler, entries: []const ast.TableEntry) !void {
             try self.compile(key, true);
         } else {
             // array index key
-            try emit.@"const"(self, Data.new.num(array_index));
+            try self.@"const"(Data.new.num(array_index));
             array_index += 1;
         }
         try self.compile(entry.value, true);
-        try emit.emit(self, .table_set, 0);
-        try emit.regRelease(self);
+        try self.emit(.table_set, 0);
+        try self.regRelease();
     }
 }
 

@@ -1211,7 +1211,7 @@ fn callNonClosureFunction(
                 );
                 defer self.runtime.alloc.free(params_str);
                 try self.setRuntimeMessageFmt(
-                    "function `{s}` expected {d} args({s}), got {d}",
+                    "fn `{s}` wants {d} args({s}), got {d}",
                     .{
                         func.name(),
                         f.arity,
@@ -1225,7 +1225,7 @@ fn callNonClosureFunction(
             for (f.param_types, 0..) |spec, i| {
                 if (!spec.matches(args[i])) {
                     try self.setRuntimeMessageFmt(
-                        "argument {d}: expected {s}, got {s}",
+                        "arg #{d}: want {s}, got {s}",
                         .{
                             i,
                             @tagName(spec),

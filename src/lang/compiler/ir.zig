@@ -3,29 +3,15 @@ const std = @import("std");
 const revo = @import("revo");
 const Instruction = revo.opcode.Instruction;
 const Opcode = revo.opcode.Opcode;
-
-const types_mod = @import("types.zig");
-const TypeInfo = types_mod.TypeInfo;
+const Operand = revo.Operand;
 
 pub const IrValue = union(enum) { reg: u16, const_idx: usize, inst: *IrInst };
 
 pub const IrInst = struct {
-    op: IrOp,
-    result_type: TypeInfo,
+    opcode: Opcode,
     operands: []const IrValue,
-    bytecode: ?Instruction = null,
-    eliminated: bool = false,
-    metadata: IrMetadata = .none,
-
-    pub const IrMetadata = union(enum) {
-        none,
-        int_value: i64,
-        float_value: f64,
-        bool_value: bool,
-        string_value: []const u8,
-        field_name: []const u8,
-        offset: usize,
-    };
+    result_reg: u16 = 0,
+    op_arg: Operand = 0,
 };
 
 pub const IrBuilder = struct {
@@ -50,328 +36,57 @@ pub const IrBuilder = struct {
         for (self.constants.items) |c| self.alloc.free(c);
         self.constants.deinit(self.alloc);
     }
-
-    pub fn addInstruction(self: *IrBuilder, op: IrOp, result_type: TypeInfo, operands: []const IrValue) !*IrInst {
-        const inst = try self.alloc.create(IrInst);
-        inst.* = .{ .op = op, .result_type = result_type, .operands = try self.alloc.dupe(IrValue, operands) };
-        try self.instructions.append(self.alloc, inst);
-        return inst;
-    }
-
-    pub fn addConst(self: *IrBuilder, value: []const u8) !usize {
-        const idx = self.constants.items.len;
-        try self.constants.append(self.alloc, try self.alloc.dupe(u8, value));
-        return idx;
-    }
 };
 
-pub const IrContext = struct {
-    alloc: std.mem.Allocator,
-    ir_builder: IrBuilder,
-    value_stack: std.ArrayList(*IrInst),
-    active: bool = true,
+pub fn lowerInst(alloc: std.mem.Allocator, out: *std.ArrayList(Instruction), inst: *const IrInst) !void {
+    const op = inst.opcode;
+    const r = inst.result_reg;
+    const bx = inst.op_arg;
+    var bc: Instruction = undefined;
 
-    pub fn init(alloc: std.mem.Allocator) !IrContext {
-        return .{
-            .alloc = alloc,
-            .ir_builder = try IrBuilder.init(alloc),
-            .value_stack = try std.ArrayList(*IrInst).initCapacity(alloc, 32),
-        };
-    }
-
-    pub fn deinit(self: *IrContext) void {
-        self.value_stack.deinit(self.alloc);
-        self.ir_builder.deinit();
-    }
-
-    fn push(self: *IrContext, inst: *IrInst) !void {
-        try self.value_stack.append(self.alloc, inst);
-    }
-    fn pop(self: *IrContext) !*IrInst {
-        return self.value_stack.pop() orelse error.OutOfMemory;
-    }
-    fn peek(self: *IrContext) ?*IrInst {
-        return if (self.value_stack.items.len == 0) null else self.value_stack.items[self.value_stack.items.len - 1];
-    }
-
-    fn record(self: *IrContext, op: IrOp, res: TypeInfo, ops: []const IrValue, bc: Instruction, meta: ?IrInst.IrMetadata, push_res: bool) !*IrInst {
-        const inst = try self.ir_builder.addInstruction(op, res, ops);
-        inst.metadata = if (meta) |m| m else .none;
-        inst.bytecode = bc;
-        if (push_res) try self.push(inst);
-        return inst;
-    }
-
-    pub fn recordStackOp(self: *IrContext, op: IrOp, res: TypeInfo, bc: Instruction, pop_n: usize, push_n: usize, meta: ?IrInst.IrMetadata) !void {
-        if (!self.active) return;
-        var ops = try self.alloc.alloc(IrValue, pop_n);
-        defer self.alloc.free(ops);
-        var i = pop_n;
-        while (i > 0) {
-            i -= 1;
-            ops[i] = .{ .inst = try self.pop() };
-        }
-        _ = try self.record(op, res, ops, bc, meta, false);
-        var p: usize = 0;
-        while (p < push_n) : (p += 1) try self.push(self.ir_builder.instructions.items[self.ir_builder.instructions.items.len - 1]);
-    }
-
-    pub fn recordLoad(self: *IrContext, op: IrOp, res: TypeInfo, bc: Instruction, meta: ?IrInst.IrMetadata) !void {
-        if (!self.active) return;
-        _ = try self.record(op, res, &.{}, bc, meta, true);
-    }
-
-    pub fn recordUnary(self: *IrContext, op: IrOp, res: TypeInfo, bc: Instruction) !void {
-        if (!self.active) return;
-        const opnd = try self.pop();
-        _ = try self.record(op, res, &.{.{ .inst = opnd }}, bc, null, true);
-    }
-
-    pub fn recordBinary(self: *IrContext, op: IrOp, res: TypeInfo, bc: Instruction) !void {
-        if (!self.active) return;
-        const rhs = try self.pop();
-        const lhs = try self.pop();
-        _ = try self.record(op, res, &.{ .{ .inst = lhs }, .{ .inst = rhs } }, bc, null, true);
-    }
-
-    pub fn recordMove(self: *IrContext, bc: Instruction) !void {
-        if (!self.active) return;
-        const src = self.peek() orelse return;
-        _ = try self.record(.move, .any, &.{.{ .inst = src }}, bc, null, true);
-    }
-
-    pub fn lowerToVerifyBytecode(self: *IrContext) ![]Instruction {
-        var lowerer = try IrLowerer.init(self.alloc, &self.ir_builder);
-        defer lowerer.deinit();
-        return try lowerer.lower();
-    }
-
-    pub fn getIrInstructions(self: *const IrContext) []*IrInst {
-        return self.ir_builder.instructions.items;
-    }
-};
-
-pub fn verifyIrBytecode(ctx: *IrContext, emitted: []const Instruction, alloc: std.mem.Allocator) !bool {
-    if (!ctx.active or ctx.ir_builder.instructions.items.len == 0) return true;
-    const lowered = try ctx.lowerToVerifyBytecode();
-    defer alloc.free(lowered);
-    if (lowered.len != emitted.len) {
-        return false;
-    }
-    var idx: usize = 0;
-    while (idx < lowered.len) : (idx += 1) {
-        const ir_bc = lowered[idx];
-        const em_bc = emitted[idx];
-        const call_parity = (ir_bc.op == .call) and (em_bc.op == .call or em_bc.op == .call_field);
-        if (!call_parity and ir_bc.op != em_bc.op) {
-            return false;
-        }
-    }
-    return true;
-}
-
-pub const IrOp = enum {
-    move,
-    load_const,
-    load_stdlib_global,
-    load_nil,
-    load_int,
-    add,
-    sub,
-    mul,
-    div,
-    mod,
-    negate,
-    eq,
-    neq,
-    lt,
-    gt,
-    lte,
-    gte,
-    @"and",
-    @"or",
-    not,
-    table_new,
-    table_get,
-    table_set,
-    struct_new,
-    struct_get_offset,
-    struct_set_offset,
-    closure,
-    call,
-    ret,
-    jump,
-    jump_if_false,
-    jump_if_true,
-};
-
-pub const IrLowerer = struct {
-    alloc: std.mem.Allocator,
-    ir: *const IrBuilder,
-    out: std.ArrayList(Instruction),
-    regs: std.ArrayList(u16),
-    next_reg: u16,
-
-    pub fn init(alloc: std.mem.Allocator, ir: *const IrBuilder) !IrLowerer {
-        var r = try std.ArrayList(u16).initCapacity(alloc, ir.instructions.items.len);
-        for (ir.instructions.items) |_| try r.append(alloc, 0);
-        return .{ .alloc = alloc, .ir = ir, .out = try std.ArrayList(Instruction).initCapacity(alloc, ir.instructions.items.len), .regs = r, .next_reg = 0 };
-    }
-
-    pub fn deinit(self: *IrLowerer) void {
-        self.out.deinit(self.alloc);
-        self.regs.deinit(self.alloc);
-    }
-
-    pub fn lower(self: *IrLowerer) ![]Instruction {
-        for (self.ir.instructions.items, 0..) |inst, idx| try self.lowerInst(inst, idx);
-        return try self.out.toOwnedSlice(self.alloc);
-    }
-
-    fn lowerInst(self: *IrLowerer, inst: *const IrInst, idx: usize) !void {
-        if (inst.eliminated) return;
-        if (inst.bytecode) |bc| {
-            self.regs.items[idx] = bc.a;
-            return try self.out.append(self.alloc, bc);
-        }
-
-        const op = selectOpcode(inst.op, inst.result_type);
-        var out_inst: Instruction = .{ .op = op, .a = 0, .b = 0, .c = 0, .bx = 0 };
-
-        const res_reg: u16 = self.next_reg;
-        self.next_reg += 1;
-        out_inst.a = res_reg;
-        self.regs.items[idx] = res_reg;
-
-        for (inst.operands, 0..) |opnd, i| {
-            const mapped = switch (opnd) {
-                .reg => |r| @as(u16, r),
-                .const_idx => @as(u16, 0),
-                .inst => |ptr| blk: {
-                    var found: usize = 0;
-                    var ok = false;
-                    for (self.ir.instructions.items, 0..) |item, j| {
-                        if (item == ptr) {
-                            found = j;
-                            ok = true;
-                            break;
-                        }
-                    }
-                    if (ok) break :blk self.regs.items[found];
-                    break :blk 0;
-                },
+    switch (op) {
+        .add, .sub, .mul, .div, .mod, .add_int, .sub_int, .mul_int, .div_int, .mod_int, .div_float, .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int, .@"and", .@"or" => bc = .{ .op = op, .a = r, .b = r, .c = r + 1 },
+        .negate, .not, .negate_int, .negate_float => bc = .{ .op = op, .a = r, .b = r },
+        .load_global, .load_stdlib_global, .load_upval, .closure => bc = .{ .op = op, .a = r, .bx = bx },
+        .load_local => bc = .{ .op = op, .a = r, .b = @intCast(bx) },
+        .table_new => bc = .{ .op = op, .a = r },
+        .struct_new => bc = .{ .op = op, .a = r, .bx = bx },
+        .load_nil => bc = .{ .op = op, .a = r },
+        .load_small_int => bc = .{ .op = op, .a = r, .bx = bx },
+        .load_const => bc = .{ .op = op, .a = r, .bx = bx },
+        .halt => bc = .{ .op = op, .a = if (r == 0) 0 else r },
+        .ret => bc = .{ .op = op, .a = if (r == 0) 0 else r },
+        .jump => bc = .{ .op = op, .bx = bx },
+        .jump_if_false, .jump_if_true, .jump_if_not_nil_and_not_err, .jump_if_err => bc = .{ .op = op, .a = r, .bx = bx },
+        .store_global, .store_global_const, .store_upval => bc = .{ .op = op, .a = r, .bx = bx },
+        .store_local, .bind_local => bc = .{ .op = op, .a = @intCast(bx), .b = r },
+        .tuple_new => bc = .{ .op = op, .a = r, .b = r, .bx = bx },
+        .tuple_get => bc = .{ .op = op, .a = r, .b = r, .c = r + 1 },
+        .table_set => bc = .{ .op = op, .a = r, .b = r + 1, .c = r + 2 },
+        .table_get => bc = .{ .op = op, .a = r, .b = r, .c = r + 1 },
+        .table_set_atom, .struct_set_offset => bc = .{ .op = op, .a = r, .c = r + 1, .bx = bx },
+        .struct_set_method => bc = .{ .op = op, .a = r, .b = r + 1, .c = r + 2 },
+        .table_get_atom, .tuple_get_const, .struct_get_offset => bc = .{ .op = op, .a = r, .b = r, .bx = bx },
+        .call, .spawn => bc = .{ .op = op, .a = r, .b = @intCast(bx), .c = r },
+        .call_field => bc = .{ .op = op, .a = r, .b = @intCast(bx), .c = r },
+        .join => bc = .{ .op = op, .a = r },
+        .yield => bc = .{ .op = op },
+        .move => {
+            const source_reg = switch (inst.operands[0]) {
+                .inst => |ptr| ptr.result_reg,
+                .reg => |reg| reg,
+                .const_idx => unreachable,
             };
-            if (i == 0) out_inst.b = mapped else if (i == 1) out_inst.c = mapped;
-        }
-
-        if (inst.op == .load_const and inst.operands.len >= 1) out_inst.bx = @as(usize, inst.operands[0].const_idx);
-        try self.out.append(self.alloc, out_inst);
+            bc = .{ .op = op, .a = r, .b = source_reg };
+        },
+        .range_init => bc = .{ .op = op, .a = r, .b = r, .c = r + 2, .bx = @intCast(r + 1) },
+        .range_next => {
+            const has_index = bx != 0;
+            bc = .{ .op = op, .a = r, .b = r - 3, .c = if (has_index) r + 1 else 0, .bx = @as(Operand, if (has_index) r + 2 else r + 1) };
+        },
+        .range_for => bc = .{ .op = op, .a = r, .b = r + 1, .c = r + 2, .bx = bx },
+        .unwrap_result => bc = .{ .op = op, .a = r, .bx = bx },
     }
-};
 
-fn selectOpcode(op: IrOp, t: types_mod.TypeInfo) Opcode {
-    return switch (op) {
-        .add => switch (t) {
-            .int => .add_int,
-            .float => .add_int,
-            else => .add,
-        },
-        .sub => switch (t) {
-            .int => .sub_int,
-            .float => .sub_int,
-            else => .sub,
-        },
-        .mul => switch (t) {
-            .int => .mul_int,
-            .float => .mul_int,
-            else => .mul,
-        },
-        .div => switch (t) {
-            .int => .div_int,
-            .float => .div_float,
-            else => .div,
-        },
-        .mod => switch (t) {
-            .int => .mod_int,
-            else => .mod,
-        },
-        .eq => .eq,
-        .neq => .neq,
-        .lt => .lt,
-        .gt => .gt,
-        .lte => .lte,
-        .gte => .gte,
-        .@"and" => .@"and",
-        .@"or" => .@"or",
-        .not => .not,
-        .load_int => .load_small_int,
-        .load_const => .load_const,
-        .load_stdlib_global => .load_stdlib_global,
-        .load_nil => .load_nil,
-        .table_get => .table_get,
-        .table_set => .table_set,
-        .table_new => .table_new,
-        .call => .call,
-        .ret => .ret,
-        .jump => .jump,
-        .jump_if_false => .jump_if_false,
-        .jump_if_true => .jump_if_true,
-        .negate => .negate,
-        .move => .move,
-        .closure => .closure,
-        .struct_new => .struct_new,
-        .struct_get_offset => .struct_get_offset,
-        .struct_set_offset => .struct_set_offset,
-    };
-}
-
-test "IrBuilder init and deinit" {
-    var builder = try revo.lang.compiler.ir.IrBuilder.init(std.testing.allocator);
-    defer builder.deinit();
-    try std.testing.expect(builder.instructions.items.len == 0);
-}
-
-test "IrBuilder add instruction" {
-    var builder = try revo.lang.compiler.ir.IrBuilder.init(std.testing.allocator);
-    defer builder.deinit();
-
-    const inst = try builder.addInstruction(
-        .load_int,
-        .int,
-        &.{},
-    );
-
-    try std.testing.expect(inst.op == .load_int);
-    try std.testing.expect(inst.result_type.eql(.int));
-    try std.testing.expect(builder.instructions.items.len == 1);
-}
-
-test "IrBuilder add binary operation" {
-    var builder = try revo.lang.compiler.ir.IrBuilder.init(std.testing.allocator);
-    defer builder.deinit();
-
-    const lhs = try builder.addInstruction(.load_int, .int, &.{});
-    const rhs = try builder.addInstruction(.load_int, .int, &.{});
-
-    const add_inst = try builder.addInstruction(
-        .add,
-        .int,
-        &.{ .{ .inst = lhs }, .{ .inst = rhs } },
-    );
-
-    try std.testing.expect(add_inst.op == .add);
-    try std.testing.expect(add_inst.result_type.eql(.int));
-    try std.testing.expect(builder.instructions.items.len == 3);
-}
-
-test "IrBuilder constant pool" {
-    var builder = try revo.lang.compiler.ir.IrBuilder.init(std.testing.allocator);
-    defer builder.deinit();
-
-    const idx1 = try builder.addConst("hello");
-    const idx2 = try builder.addConst("world");
-
-    try std.testing.expect(idx1 == 0);
-    try std.testing.expect(idx2 == 1);
-    try std.testing.expect(builder.constants.items.len == 2);
+    try out.append(alloc, bc);
 }

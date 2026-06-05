@@ -104,11 +104,11 @@ pub fn resolveTypeAlias(self: *Compiler, name: []const u8) ?TypeInfo {
 pub fn validateAssignmentType(self: *Compiler, target: *const Node, value: *const Node) !void {
     switch (target.expr) {
         .ident => |name| {
-            const expected = inferVarType(self, name);
-            if (expected != .any) {
-                const actual = inferExprType(self, value);
-                try checkType(self.alloc, expected, actual, value.span);
-            }
+            const local = state_mod.resolveLocalVar(self, name) orelse return;
+            const type_name = local.type_name orelse return;
+            const expected = types_mod.resolveTypeName(self, type_name);
+            const actual = inferExprType(self, value);
+            try checkType(self.alloc, expected, actual, value.span);
         },
         .field => |field| {
             const object_type = inferExprType(self, field.object);

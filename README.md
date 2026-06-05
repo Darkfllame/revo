@@ -273,6 +273,8 @@ see [docs/lsp.md](src/lsp/README.md) for the full feature list, troubleshooting,
 
 recommending to a friend is always greatly appreciated. any contributions are welcome!
 
+you can contribute via github, codeberg or via [emailing me a .patch](mailto:lung-notification@proton.me)
+
 see [CONTRIBUTING.md](./CONTRIBUTING.md)
 
 ## credits

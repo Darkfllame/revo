@@ -46,31 +46,4 @@ pub const StructLayouter = struct {
         }
         return try vm.struct_types.registerType(name, fields.items, std.StringHashMap(revo.memory.Data).init(vm.runtime.alloc));
     }
-
-    pub fn getFieldCount(self: *StructLayouter, vm: *revo.VM, type_id: revo.StructTypeID) ?usize {
-        _ = self;
-        return vm.struct_types.fieldCount(type_id);
-    }
-
-    pub fn getFieldTypes(self: *StructLayouter, vm: *revo.VM, type_id: revo.StructTypeID) ?[]const revo.vm.struct_mod.StructField {
-        _ = self;
-        const desc = vm.struct_types.getType(type_id) orelse return null;
-        return desc.fields;
-    }
-
-    pub const TypeLayout = struct {
-        fields: []const FieldDef,
-    };
-
-    pub fn getLayout(self: *StructLayouter, vm: *revo.VM, name: []const u8) ?TypeLayout {
-        const type_id = vm.struct_types.findTypeByName(name) orelse return null;
-        const desc = vm.struct_types.getType(type_id) orelse return null;
-        var field_defs = std.ArrayList(FieldDef).initCapacity(self.alloc, desc.fields.len) catch return null;
-        for (desc.fields) |f| {
-            const field_name = vm.atomName(f.name_atom);
-            const field_type = if (f.type_atom) |ta| typeNameToTypeInfo(vm.atomName(ta)) else types_mod.TypeInfo.any;
-            field_defs.appendAssumeCapacity(.{ .name = field_name, .field_type = field_type });
-        }
-        return TypeLayout{ .fields = field_defs.items };
-    }
 };

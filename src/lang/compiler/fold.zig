@@ -3,12 +3,164 @@ const std = @import("std");
 const revo = @import("revo");
 const Compiler = revo.lang.compiler.Compiler;
 const Data = revo.Data;
+const ir = @import("ir.zig");
 
-const emit = @import("emit.zig");
-const ir_mod = @import("ir.zig");
-const types_mod = @import("types.zig");
+/// walk ir and fold constant expressions
+/// safe bc operands use .inst pointers (not register names),
+/// so data flow is correct whatever the control flow is
+pub fn foldIr(self: *Compiler) !void {
+    for (self.ir_builder.instructions.items) |inst| {
+        _ = tryFoldInst(self, inst) catch continue;
+    }
+}
 
-/// returns true if folded
+fn tryFoldInst(self: *Compiler, inst: *ir.IrInst) !bool {
+    switch (inst.opcode) {
+        .add, .sub, .mul, .div, .mod, .add_int, .sub_int, .mul_int, .div_int, .mod_int, .div_float, .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int => {
+            return tryFoldBinary(self, inst);
+        },
+        .negate, .not, .negate_int, .negate_float => {
+            return tryFoldUnary(self, inst);
+        },
+        else => return false,
+    }
+}
+
+fn extractConst(self: *Compiler, v: *const ir.IrInst) ?Data {
+    switch (v.opcode) {
+        .load_small_int => return Data.new.num(@as(i64, @intCast(v.op_arg))),
+        .load_const => {
+            if (v.op_arg < self.vm.constants.items.len) {
+                return self.vm.constants.items[v.op_arg];
+            }
+            return null;
+        },
+        .load_nil => return Data.new.nil(),
+        else => return null,
+    }
+}
+
+fn rewriteToConst(self: *Compiler, inst: *ir.IrInst, val: Data) !void {
+    self.alloc.free(inst.operands);
+    inst.operands = &.{};
+
+    if (val.asNum()) |n| {
+        if (n >= 0 and n <= 65535 and @trunc(n) == n) {
+            inst.opcode = .load_small_int;
+            inst.op_arg = @intFromFloat(n);
+            return;
+        }
+    }
+    const idx = try self.vm.addConstant(val);
+    inst.opcode = .load_const;
+    inst.op_arg = idx;
+}
+
+fn tryFoldBinary(self: *Compiler, inst: *ir.IrInst) !bool {
+    if (inst.operands.len != 2) return false;
+    const lhs = inst.operands[0];
+    const rhs = inst.operands[1];
+    if (lhs != .inst or rhs != .inst) return false;
+
+    const lv = extractConst(self, lhs.inst) orelse return false;
+    const rv = extractConst(self, rhs.inst) orelse return false;
+
+    // numeric fold
+    if (lv.isNumber() and rv.isNumber()) {
+        const ln = lv.asNum().?;
+        const rn = rv.asNum().?;
+        const is_comp = switch (inst.opcode) {
+            .eq, .neq, .lt, .gt, .lte, .gte, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int => true,
+            else => false,
+        };
+        const is_int = switch (inst.opcode) {
+            .add_int, .sub_int, .mul_int, .div_int, .mod_int, .eq_int, .neq_int, .lt_int, .gt_int, .lte_int, .gte_int => true,
+            else => false,
+        };
+
+        const raw: f64 = switch (inst.opcode) {
+            .add, .add_int => ln + rn,
+            .sub, .sub_int => ln - rn,
+            .mul, .mul_int => ln * rn,
+            .div, .div_int, .div_float => if (rn == 0.0) return false else ln / rn,
+            .mod, .mod_int => if (rn == 0.0) return false else @mod(ln, rn),
+            .eq, .eq_int => if (ln == rn) 1.0 else 0.0,
+            .neq, .neq_int => if (ln != rn) 1.0 else 0.0,
+            .lt, .lt_int => if (ln < rn) 1.0 else 0.0,
+            .gt, .gt_int => if (ln > rn) 1.0 else 0.0,
+            .lte, .lte_int => if (ln <= rn) 1.0 else 0.0,
+            .gte, .gte_int => if (ln >= rn) 1.0 else 0.0,
+            else => return false,
+        };
+
+        if (is_comp) {
+            // comparisons produce :true/:false atoms
+            try rewriteToConst(self, inst, Data.new.boolean(raw != 0.0));
+        } else {
+            if (!std.math.isFinite(raw)) return false;
+            if (is_int) {
+                if (@floor(raw) != raw) return false;
+                const min = @as(f64, @floatFromInt(std.math.minInt(i64)));
+                const max = @as(f64, @floatFromInt(std.math.maxInt(i64)));
+                if (raw < min or raw > max) return false;
+                try rewriteToConst(self, inst, Data.new.num(@as(i64, @intFromFloat(raw))));
+            } else {
+                try rewriteToConst(self, inst, Data.new.num(raw));
+            }
+        }
+        return true;
+    }
+
+    // string concat for .add with two string constants
+    if (lv.isString() and rv.isString() and
+        (inst.opcode == .add or inst.opcode == .add_int))
+    {
+        const ls = try self.vm.strings.get(lv.asString().?);
+        const rs = try self.vm.strings.get(rv.asString().?);
+        const s = try std.mem.concat(self.alloc, u8, &.{ ls, rs });
+        defer self.alloc.free(s);
+        try rewriteToConst(self, inst, try self.vm.ownDataString(s));
+        return true;
+    }
+
+    return false;
+}
+
+fn tryFoldUnary(self: *Compiler, inst: *ir.IrInst) !bool {
+    if (inst.operands.len != 1) return false;
+    const operand = inst.operands[0];
+    if (operand != .inst) return false;
+
+    const val = extractConst(self, operand.inst) orelse return false;
+    if (!val.isNumber()) return false;
+
+    const n = val.asNum().?;
+    const is_not = inst.opcode == .not;
+    const raw: f64 = switch (inst.opcode) {
+        .negate, .negate_int, .negate_float => -n,
+        .not => if (n == 0.0) 1.0 else 0.0,
+        else => return false,
+    };
+
+    if (is_not) {
+        try rewriteToConst(self, inst, Data.new.boolean(n == 0.0));
+    } else {
+        if (!std.math.isFinite(raw)) return false;
+        const is_int = inst.opcode == .negate_int;
+        if (is_int) {
+            if (@floor(raw) != raw) return false;
+            const min = @as(f64, @floatFromInt(std.math.minInt(i64)));
+            const max = @as(f64, @floatFromInt(std.math.maxInt(i64)));
+            if (raw < min or raw > max) return false;
+            try rewriteToConst(self, inst, Data.new.num(@as(i64, @intFromFloat(raw))));
+        } else {
+            try rewriteToConst(self, inst, Data.new.num(raw));
+        }
+    }
+    return true;
+}
+
+/// true if folded
 pub fn maybeFoldConstBinary(self: *Compiler, b: anytype) !bool {
     const left = b.left.expr;
     const right = b.right.expr;
@@ -35,7 +187,7 @@ pub fn maybeFoldConstBinary(self: *Compiler, b: anytype) !bool {
 
         // float literal? keep as float
         if (has_float_literal) {
-            try emit.@"const"(self, Data.new.num(res));
+            try self.@"const"(Data.new.num(res));
             return true;
         }
 
@@ -45,7 +197,7 @@ pub fn maybeFoldConstBinary(self: *Compiler, b: anytype) !bool {
         const max = @as(f64, @floatFromInt(std.math.maxInt(i64)));
         if (res < min or res > max) return false;
 
-        try emit.@"const"(self, Data.new.num(@as(i64, @intFromFloat(res))));
+        try self.@"const"(Data.new.num(@as(i64, @intFromFloat(res))));
         return true;
     }
 
@@ -53,268 +205,9 @@ pub fn maybeFoldConstBinary(self: *Compiler, b: anytype) !bool {
     if (left == .string and right == .string and b.op == .add) {
         const s = try std.mem.concat(self.alloc, u8, &.{ left.string, right.string });
         defer self.alloc.free(s);
-        try emit.@"const"(self, try self.vm.ownDataString(s));
+        try self.@"const"(try self.vm.ownDataString(s));
         return true;
     }
 
     return false;
 }
-
-pub const ConstantFolder = struct {
-    alloc: std.mem.Allocator,
-    comp: *Compiler,
-    ir: *ir_mod.IrBuilder,
-    folded: std.AutoHashMap(usize, FoldResult),
-
-    pub fn init(alloc: std.mem.Allocator, comp: *Compiler, ir: *ir_mod.IrBuilder) !ConstantFolder {
-        return .{
-            .alloc = alloc,
-            .comp = comp,
-            .ir = ir,
-            .folded = std.AutoHashMap(usize, FoldResult).init(alloc),
-        };
-    }
-
-    pub fn deinit(self: *ConstantFolder) void {
-        self.folded.deinit();
-    }
-
-    pub fn foldAll(self: *ConstantFolder) !usize {
-        var count: usize = 0;
-        for (self.ir.instructions.items, 0..) |inst, idx| {
-            if (try self.tryFold(inst, idx)) count += 1;
-        }
-        return count;
-    }
-
-    fn tryFold(self: *ConstantFolder, inst: *ir_mod.IrInst, idx: usize) !bool {
-        const bc = inst.bytecode orelse return false;
-        return switch (inst.op) {
-            .load_int => {
-                // cache int value
-                const val = if (inst.metadata == .int_value)
-                    inst.metadata.int_value
-                else
-                    @as(i64, @intCast(bc.bx));
-                try self.folded.put(idx, .{ .int_value = val });
-                return false;
-            },
-            .load_const => {
-                // cache const metadata
-                switch (inst.metadata) {
-                    .int_value => |v| try self.folded.put(idx, .{ .int_value = v }),
-                    .float_value => |v| try self.folded.put(idx, .{ .float_value = @bitCast(v) }),
-                    .bool_value => |v| try self.folded.put(idx, .{ .bool_value = v }),
-                    else => {},
-                }
-                return false;
-            },
-            .add, .sub, .mul, .div, .mod, .eq, .neq, .lt, .gt, .lte, .gte => try self.foldBinary(inst, idx),
-            .negate, .not => try self.foldUnary(inst, idx),
-            else => false,
-        };
-    }
-
-    fn foldBinary(self: *ConstantFolder, inst: *ir_mod.IrInst, idx: usize) !bool {
-        if (inst.operands.len < 2) return false;
-        const l = self.getVal(inst.operands[0]) orelse return false;
-        const r = self.getVal(inst.operands[1]) orelse return false;
-        const res = foldBinaryStatic(
-            inst.op,
-            inst.result_type,
-            l,
-            inst.result_type,
-            r,
-        ) orelse return false;
-        try self.folded.put(idx, res);
-        try self.applyFolded(inst, res);
-        return true;
-    }
-
-    fn foldUnary(self: *ConstantFolder, inst: *ir_mod.IrInst, idx: usize) !bool {
-        if (inst.operands.len < 1) return false;
-        const v = self.getVal(inst.operands[0]) orelse return false;
-        const res = foldUnaryStatic(
-            inst.op,
-            inst.result_type,
-            v,
-        ) orelse return false;
-        try self.folded.put(idx, res);
-        try self.applyFolded(inst, res);
-        return true;
-    }
-
-    fn getVal(self: *ConstantFolder, op: ir_mod.IrValue) ?i64 {
-        return switch (op) {
-            .const_idx => |i| @as(i64, @intCast(i)),
-            .inst => |ptr| self.getInstVal(ptr),
-            .reg => null, // reg values not constant
-        };
-    }
-
-    fn getInstVal(self: *ConstantFolder, ptr: anytype) ?i64 {
-        for (self.ir.instructions.items, 0..) |inst, i| {
-            if (inst != ptr) continue;
-            // already folded?
-            if (self.folded.get(i)) |f| return f.asInt();
-            const bc = inst.bytecode orelse return null;
-
-            return switch (bc.op) {
-                .load_small_int => @as(i64, @intCast(bc.bx)),
-                .load_const => switch (inst.metadata) {
-                    .int_value => |v| v,
-                    .bool_value => |v| if (v) @as(i64, 1) else 0,
-                    .float_value => |v| @as(i64, @bitCast(v)),
-                    else => null,
-                },
-                else => null,
-            };
-        }
-        return null;
-    }
-
-    fn applyFolded(self: *ConstantFolder, inst: *ir_mod.IrInst, res: FoldResult) !void {
-        const reg = if (inst.bytecode) |bc| bc.a else 0;
-        switch (res) {
-            .int_value => |v| {
-                // smi
-                if (v >= 0 and v <= 65535) {
-                    inst.bytecode = .{
-                        .op = .load_small_int,
-                        .a = reg,
-                        .bx = @intCast(v),
-                    };
-                } else {
-                    const data = Data.new.num(v);
-                    const idx = try self.comp.vm.addConstant(data);
-                    inst.bytecode = .{
-                        .op = .load_const,
-                        .a = reg,
-                        .bx = @intCast(idx),
-                    };
-                }
-                inst.metadata = .{ .int_value = v };
-            },
-            .bool_value => |v| {
-                const data = Data.new.boolean(v);
-                const idx = try self.comp.vm.addConstant(data);
-                inst.bytecode = .{
-                    .op = .load_const,
-                    .a = reg,
-                    .bx = @intCast(idx),
-                };
-                inst.metadata = .{ .bool_value = v };
-            },
-            .float_value => |v| {
-                const val_f = @as(f64, @bitCast(v));
-                const data = Data.new.num(val_f);
-                const idx = try self.comp.vm.addConstant(data);
-                inst.bytecode = .{
-                    .op = .load_const,
-                    .a = reg,
-                    .bx = @intCast(idx),
-                };
-                inst.metadata = .{ .float_value = val_f };
-            },
-        }
-    }
-};
-
-pub fn foldBinaryStatic(
-    op: ir_mod.IrOp,
-    lt: types_mod.TypeInfo,
-    lv: i64,
-    rt: types_mod.TypeInfo,
-    rv: i64,
-) ?FoldResult {
-    // types must match
-    if (!lt.eql(rt)) return null;
-    return switch (op) {
-        .add => switch (lt) {
-            .int => .{ .int_value = lv +% rv },
-            .float => {
-                const a = @as(f64, @bitCast(lv));
-                const b = @as(f64, @bitCast(rv));
-                return .{ .float_value = @bitCast(a + b) };
-            },
-            else => null,
-        },
-        .sub => switch (lt) {
-            .int => .{ .int_value = lv -% rv },
-            .float => {
-                const a = @as(f64, @bitCast(lv));
-                const b = @as(f64, @bitCast(rv));
-                return .{ .float_value = @bitCast(a - b) };
-            },
-            else => null,
-        },
-        .mul => switch (lt) {
-            .int => .{ .int_value = lv *% rv },
-            .float => {
-                const a = @as(f64, @bitCast(lv));
-                const b = @as(f64, @bitCast(rv));
-                return .{ .float_value = @bitCast(a * b) };
-            },
-            else => null,
-        },
-        .div => switch (lt) {
-            .int => {
-                // div by zero check
-                if (rv == 0) return null;
-                return .{ .int_value = @divTrunc(lv, rv) };
-            },
-            .float => {
-                const a = @as(f64, @bitCast(lv));
-                const b = @as(f64, @bitCast(rv));
-                if (b == 0) return null;
-                return .{ .float_value = @bitCast(a / b) };
-            },
-            else => null,
-        },
-        .mod => if (lt == .int) {
-            // mod by zero check
-            if (rv == 0) return null;
-            return .{ .int_value = @mod(lv, rv) };
-        } else null,
-        .eq => .{ .bool_value = lv == rv },
-        .neq => .{ .bool_value = lv != rv },
-        .lt => .{ .bool_value = lv < rv },
-        .gt => .{ .bool_value = lv > rv },
-        .lte => .{ .bool_value = lv <= rv },
-        .gte => .{ .bool_value = lv >= rv },
-        else => null,
-    };
-}
-
-pub fn foldUnaryStatic(
-    op: ir_mod.IrOp,
-    t: types_mod.TypeInfo,
-    v: i64,
-) ?FoldResult {
-    return switch (op) {
-        .negate => switch (t) {
-            .int => .{ .int_value = -%v },
-            .float => {
-                const f = @as(f64, @bitCast(v));
-                return .{ .float_value = @bitCast(-f) };
-            },
-            else => null,
-        },
-        .not => .{ .bool_value = v == 0 },
-        else => null,
-    };
-}
-
-pub const FoldResult = union(enum) {
-    int_value: i64,
-    float_value: i64, // bitcast
-    bool_value: bool,
-
-    pub fn asInt(self: FoldResult) i64 {
-        return switch (self) {
-            .int_value => |v| v,
-            .float_value => |v| v,
-            .bool_value => |v| if (v) 1 else 0,
-        };
-    }
-};

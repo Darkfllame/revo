@@ -65,7 +65,7 @@ pub fn atomPayload(name: []const u8) []const u8 {
 
 pub const FunctionSignature = struct { params: []const TypeInfo, return_type: TypeInfo };
 
-/// sentinel "any function" type,,,, matches any callable value
+/// sentinel "any function" type,,, matches any callable value
 pub const ANY_FN_SIG: FunctionSignature = .{ .params = &.{}, .return_type = .any };
 
 pub fn typeName(T: TypeInfo) []const u8 {
@@ -257,18 +257,20 @@ pub fn collectVariants(alloc: std.mem.Allocator, ti: TypeInfo, variants: *std.Ar
 pub fn resolveTypeName(ctx: anytype, name: []const u8) TypeInfo {
     if (std.mem.eql(u8, name, "int")) return .int;
     if (std.mem.eql(u8, name, "float")) return .float;
-    if (std.mem.eql(u8, name, "num")) return .{
-        .@"union" = &.{
-            .{ .name = "", .types = &.{.int} },
-            .{ .name = "", .types = &.{.float} },
-        },
-    };
-    if (std.mem.eql(u8, name, "number")) return .{
-        .@"union" = &.{
-            .{ .name = "", .types = &.{.int} },
-            .{ .name = "", .types = &.{.float} },
-        },
-    };
+    if (std.mem.eql(u8, name, "num")) return .int;
+    if (std.mem.eql(u8, name, "number")) return .int;
+    // if (std.mem.eql(u8, name, "num")) return .{
+    //     .@"union" = &.{
+    //         .{ .name = "", .types = &.{.int} },
+    //         .{ .name = "", .types = &.{.float} },
+    //     },
+    // };
+    // if (std.mem.eql(u8, name, "number")) return .{
+    //     .@"union" = &.{
+    //         .{ .name = "", .types = &.{.int} },
+    //         .{ .name = "", .types = &.{.float} },
+    //     },
+    // };
     if (std.mem.eql(u8, name, "string")) return .string;
     if (std.mem.eql(u8, name, "bool")) return .bool;
     if (std.mem.eql(u8, name, "void")) return .void;
@@ -570,7 +572,7 @@ test "typed struct field assignment accepts correct type" {
     , 42);
 }
 
-test "binary int + int emits add_int" {
+test "binary int + int emits add" {
     var vm = try VM.init(t.runtime());
     defer vm.deinit();
 
@@ -585,14 +587,14 @@ test "binary int + int emits add_int" {
     defer vm.runtime.alloc.free(built.ok.instructions);
     defer vm.runtime.alloc.free(built.ok.spans);
 
-    var saw_add_int = false;
+    var saw_add = false;
     for (built.ok.instructions) |inst| {
-        if (inst.op == .add_int) saw_add_int = true;
+        if (inst.op == .add_int) saw_add = true;
     }
-    try std.testing.expect(saw_add_int);
+    try std.testing.expect(saw_add);
 }
 
-test "binary float + float emits add_int" {
+test "binary float + float emits add" {
     var vm = try VM.init(t.runtime());
     defer vm.deinit();
 
@@ -607,11 +609,11 @@ test "binary float + float emits add_int" {
     defer vm.runtime.alloc.free(built.ok.instructions);
     defer vm.runtime.alloc.free(built.ok.spans);
 
-    var saw_add_int = false;
+    var saw_add = false;
     for (built.ok.instructions) |inst| {
-        if (inst.op == .add_int) saw_add_int = true;
+        if (inst.op == .add) saw_add = true;
     }
-    try std.testing.expect(saw_add_int);
+    try std.testing.expect(saw_add);
 }
 
 test "negate int emits negate_int" {
@@ -629,11 +631,11 @@ test "negate int emits negate_int" {
     defer vm.runtime.alloc.free(built.ok.instructions);
     defer vm.runtime.alloc.free(built.ok.spans);
 
-    var saw_neg_int = false;
+    var saw_neg = false;
     for (built.ok.instructions) |inst| {
-        if (inst.op == .negate_int) saw_neg_int = true;
+        if (inst.op == .negate_int) saw_neg = true;
     }
-    try std.testing.expect(saw_neg_int);
+    try std.testing.expect(saw_neg);
 }
 
 test "comparison int == int emits eq_int" {
@@ -651,11 +653,11 @@ test "comparison int == int emits eq_int" {
     defer vm.runtime.alloc.free(built.ok.instructions);
     defer vm.runtime.alloc.free(built.ok.spans);
 
-    var saw_eq_int = false;
+    var saw_eq = false;
     for (built.ok.instructions) |inst| {
-        if (inst.op == .eq_int) saw_eq_int = true;
+        if (inst.op == .eq_int) saw_eq = true;
     }
-    try std.testing.expect(saw_eq_int);
+    try std.testing.expect(saw_eq);
 }
 
 test "untyped code still works" {
@@ -775,9 +777,6 @@ test "typed global binding float" {
         \\ x
     , 1.5);
 }
-
-//
-// type alias at call sites
 
 //
 // type alias at call sites
@@ -993,7 +992,7 @@ test "block type error on type mismatch" {
 //
 // chained typed ops preserve specialization
 //
-test "chained typed math emits add_int" {
+test "chained typed math emits add and mul" {
     var vm = try VM.init(t.runtime());
     defer vm.deinit();
 
@@ -1009,14 +1008,14 @@ test "chained typed math emits add_int" {
     defer vm.runtime.alloc.free(built.ok.instructions);
     defer vm.runtime.alloc.free(built.ok.spans);
 
-    var saw_add_int = false;
-    var saw_mul_spec = false;
+    var saw_add = false;
+    var saw_mul = false;
     for (built.ok.instructions) |inst| {
-        if (inst.op == .add_int) saw_add_int = true;
-        if (inst.op == .mul_int) saw_mul_spec = true;
+        if (inst.op == .add_int) saw_add = true;
+        if (inst.op == .mul_int) saw_mul = true;
     }
-    try std.testing.expect(saw_add_int);
-    try std.testing.expect(saw_mul_spec);
+    try std.testing.expect(saw_add);
+    try std.testing.expect(saw_mul);
 }
 
 //
@@ -1055,6 +1054,34 @@ test "typed binding with void returns nil" {
         \\ let x: any = :nil
         \\ x
     );
+}
+
+test "global typed binding rejects type mismatch" {
+    try t.expectCompileError(
+        \\ const x: int = "hello"
+    , .ParseError);
+}
+
+test "global typed binding accepts matching type" {
+    try t.top_number(
+        \\ const x: int = 42
+        \\ x
+    , 42);
+}
+
+test "typed assignment rejects type mismatch" {
+    try t.expectCompileError(
+        \\ let x: int = 5
+        \\ x = "hello"
+    , .ParseError);
+}
+
+test "untyped assignment allows type change" {
+    try t.top_string(
+        \\ let x = 5
+        \\ x = "hello"
+        \\ x
+    , "hello");
 }
 
 //

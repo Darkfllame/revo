@@ -9,7 +9,6 @@ const types = @import("types.zig");
 
 const ast = @import("../ast.zig");
 const Node = ast.Node;
-const emit = @import("emit.zig");
 
 pub const LocalValueKind = enum { unknown, tuple_literal };
 
@@ -86,17 +85,18 @@ pub fn LoopScope(comptime T: type) type {
             const prev = compiler.in_loop_depth;
             compiler.in_loop_depth += 1;
             const result_reg = try pushRegister(compiler);
-            try emit.appendRecorded(compiler, .{ .op = .load_nil, .a = result_reg });
+            try compiler.spans.append(compiler.alloc, compiler.active_span);
+            try compiler.recordLoad(.load_nil, result_reg, 0);
             try compiler.loop_result_regs.append(compiler.alloc, result_reg);
             return .{ .compiler = compiler, .break_start = compiler.break_jumps.items.len, .prev_in_loop = prev };
         }
         pub fn deinit(self: *@This()) void {
             const c = self.compiler;
             _ = c.loop_result_regs.pop();
-            const exit_addr: usize = c.instructions.items.len;
+            const exit_addr: usize = c.irLen();
             while (c.break_jumps.items.len > self.break_start) {
                 const idx = c.break_jumps.pop() orelse unreachable;
-                emit.patchJumpToLabel(c, idx, exit_addr);
+                c.patchJumpToLabel(idx, exit_addr);
             }
             c.in_loop_depth = self.prev_in_loop;
         }
@@ -153,12 +153,6 @@ pub fn reserveLocalSlots(self: *Compiler) void {
     if (self.max_registers < next) self.max_registers = next;
 }
 
-fn currentScopeStart(self: *const Compiler, fn_idx: usize) usize {
-    const state = &self.functions.items[fn_idx];
-    if (state.scope_starts.items.len == 0) return 0;
-    return state.scope_starts.items[state.scope_starts.items.len - 1];
-}
-
 pub fn pushScope(self: *Compiler) !void {
     const state = currentFunctionState(self) orelse return;
     try state.scope_starts.append(self.alloc, state.locals.items.len);
@@ -176,7 +170,7 @@ pub fn popScope(self: *Compiler) void {
 pub fn findLocalInCurrentScope(self: *Compiler, name: []const u8) ?*LocalVar {
     const fn_idx = self.functions.items.len - 1;
     const state = &self.functions.items[fn_idx];
-    const start = currentScopeStart(self, fn_idx);
+    const start = if (state.scope_starts.items.len == 0) 0 else state.scope_starts.items[state.scope_starts.items.len - 1];
     var i = state.locals.items.len;
     while (i > start) {
         i -= 1;
@@ -291,15 +285,6 @@ pub fn resolveLocalTypeHint(self: *const Compiler, name: []const u8) ?types.Type
     return null;
 }
 
-pub fn localHasTableField(self: *const Compiler, name: []const u8, field_name: []const u8) bool {
-    const local = resolveLocalVar(self, name) orelse return false;
-    const fields = local.table_fields orelse return false;
-    for (fields) |f| {
-        if (std.mem.eql(u8, f, field_name)) return true;
-    }
-    return false;
-}
-
 pub fn predeclareFunctionBindings(self: *Compiler, exprs: []const *Node) !void {
     for (exprs) |expr| switch (expr.expr) {
         .binding => |binding| {
@@ -385,13 +370,6 @@ pub fn resolveUpvalueRecursive(self: *Compiler, fn_idx: usize, name: []const u8)
 pub fn resolveUpvalue(self: *Compiler, name: []const u8) !?revo.UpvalueID {
     if (self.functions.items.len == 0) return null;
     return resolveUpvalueRecursive(self, self.functions.items.len - 1, name);
-}
-
-pub fn collectConstLocals(self: *Compiler, locals: []const LocalVar) ![]LocalSlot {
-    var out = try std.ArrayList(LocalSlot).initCapacity(self.alloc, locals.len);
-    defer out.deinit(self.alloc);
-    for (locals) |local| if (!local.mutable) try out.append(self.alloc, local.slot);
-    return out.toOwnedSlice(self.alloc);
 }
 
 pub fn allocFnSig(self: *Compiler, params: []const ast.FnParam, return_type: ?*ast.TypeExpr) !*FunctionState.FnSig {

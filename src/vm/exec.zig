@@ -347,7 +347,13 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
         .add_int => {
             const lhs = regRead(regs, base, instr.b);
             const rhs = regRead(regs, base, instr.c);
-            regWrite(regs, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) + @as(f64, @bitCast(rhs.bits))));
+            if (debug_assert_types) {
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
+            }
+            const li = @as(i64, @intFromFloat(@as(f64, @bitCast(lhs.bits))));
+            const ri = @as(i64, @intFromFloat(@as(f64, @bitCast(rhs.bits))));
+            regWrite(regs, base, instr.a, Data.new.num(@as(f64, @floatFromInt(li + ri))));
 
             if (fiber.pc >= fiber.program.len) break :dispatch;
             instr = fiber.program[fiber.pc];
@@ -357,7 +363,13 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
         .sub_int => {
             const lhs = regRead(regs, base, instr.b);
             const rhs = regRead(regs, base, instr.c);
-            regWrite(regs, base, instr.a, Data.new.num(@as(f64, @bitCast(lhs.bits)) - @as(f64, @bitCast(rhs.bits))));
+            if (debug_assert_types) {
+                std.debug.assert(lhs.isNumber());
+                std.debug.assert(rhs.isNumber());
+            }
+            const li = @as(i64, @intFromFloat(@as(f64, @bitCast(lhs.bits))));
+            const ri = @as(i64, @intFromFloat(@as(f64, @bitCast(rhs.bits))));
+            regWrite(regs, base, instr.a, Data.new.num(@as(f64, @floatFromInt(li - ri))));
 
             if (fiber.pc >= fiber.program.len) break :dispatch;
             instr = fiber.program[fiber.pc];

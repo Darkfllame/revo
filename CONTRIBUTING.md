@@ -2,6 +2,8 @@
 
 thank you for considering contributing to revo
 
+you can contribute via github, codeberg or via [emailing me a .patch](mailto:lung-notification@proton.me)
+
 the project is so young, that even taking a stroll through any source file might yield you a good observation
 
 a contribution anything from a pull request to an issue or a suggestion, all contributions are welcome!

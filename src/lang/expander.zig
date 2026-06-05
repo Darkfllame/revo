@@ -92,7 +92,7 @@ fn expandInEnv(allocator: std.mem.Allocator, expr: *Node, env: *MacroEnv) Expand
         .macro_expr => |m| blk: {
             const def = try parseMacroDef(allocator, m.pattern, m.template);
             try env.map.put(m.name, def);
-            break :blk ast.allocNode(allocator, expr.span, .nil);
+            break :blk ast.allocNode(allocator, Span{ .start = 0, .end = 0, .line = 0, .column = 0 }, .nil);
         },
         .binding => |binding| expandCon(allocator, expr.span, binding, env),
         .decl => |d| ast.allocNode(allocator, expr.span, .{ .decl = .{ .inner = try expandInEnv(allocator, d.inner, env), .kind = d.kind } }),
