@@ -15,7 +15,6 @@ pub const Severity = enum { err, warning, note, help };
 pub const SpanRole = enum { primary, secondary, context, trace };
 
 // TODO: decide on colors for box and each bucket
-// TODO: configure thru global config/pull from base16
 const COLOR_DIM = "\x1b[2m";
 const COLOR_RESET = "\x1b[0m";
 

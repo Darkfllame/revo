@@ -111,43 +111,6 @@ pub fn replStyleDef(styleName: []const u8) [:0]const u8 {
     if (std.mem.eql(u8, styleName, "operator")) return "color=blue";
     if (std.mem.eql(u8, styleName, "function")) return "color=cyan";
     if (std.mem.eql(u8, styleName, "atom")) return "color=yellow";
+    if (std.mem.eql(u8, styleName, "hash")) return "color=green";
     return "color=default";
-}
-
-pub const base16 = [16][]const u8{
-    "#101010", "#202020", "#2b2b2b", "#505050",
-    "#b0b0b0", "#d0d0d0", "#e0e0e0", "#fafafa",
-    "#ab4642", "#dc9656", "#f7ca88", "#a1b56c",
-    "#86c1b9", "#7cafc2", "#ba8baf", "#a16946",
-};
-
-fn hexNibble(comptime ch: u8) u8 {
-    return switch (ch) {
-        '0'...'9' => ch - '0',
-        'a'...'f' => ch - 'a' + 10,
-        'A'...'F' => ch - 'A' + 10,
-        else => 0,
-    };
-}
-
-fn hexByte(comptime hex: []const u8) u8 {
-    return @as(u8, hexNibble(hex[0]) * 16 + hexNibble(hex[1]));
-}
-
-pub fn base16Color(comptime n: usize) []const u8 {
-    const hex = base16[n];
-    return comptime std.fmt.comptimePrint(
-        "\x1b[38;2;{d};{d};{d}m",
-        .{ hexByte(hex[1..3]), hexByte(hex[3..5]), hexByte(hex[5..7]) },
-    );
-}
-
-pub fn replStyleDefBase16(styleName: []const u8) [:0]const u8 {
-    if (std.mem.eql(u8, styleName, "keyword")) return "color=" ++ base16[14] ++ " bold";
-    if (std.mem.eql(u8, styleName, "number")) return "color=" ++ base16[11];
-    if (std.mem.eql(u8, styleName, "string")) return "color=" ++ base16[10];
-    if (std.mem.eql(u8, styleName, "operator")) return "color=" ++ base16[3];
-    if (std.mem.eql(u8, styleName, "function")) return "color=" ++ base16[13];
-    if (std.mem.eql(u8, styleName, "hash")) return "color=" ++ base16[10];
-    return "color=" ++ base16[5];
 }

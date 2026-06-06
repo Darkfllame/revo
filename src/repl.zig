@@ -478,7 +478,7 @@ pub fn run(vm: *VM, gpa: Allocator, init: std.process.Init) !void {
         isocline_c.ic_set_default_highlighter(@ptrCast(&isoclineHighlighter), null);
 
         for (&[_][]const u8{ "keyword", "string", "number", "function", "hash" }) |s| {
-            const def = revo.pretty.replStyleDefBase16(s);
+            const def = revo.pretty.replStyleDef(s);
             var name_buf: [32]u8 = undefined;
             const s_c = try std.fmt.bufPrintZ(&name_buf, "{s}", .{s});
             _ = isocline_c.ic_style_def(s_c.ptr, def.ptr);
