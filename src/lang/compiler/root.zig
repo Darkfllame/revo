@@ -505,7 +505,7 @@ pub const Compiler = struct {
 
     pub fn compileValue(self: *Compiler, expr: *const Node) InternalLowerError!void {
         switch (expr.expr) {
-            .binding => |binding| try self.compileBinding(binding, .con),
+            .binding => unreachable, // all bindings arrive wrapped in .decl
             .number => |n| {
                 const value = n.value;
                 // fit in i64 and whole? -> tagged int, else float
