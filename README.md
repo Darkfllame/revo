@@ -8,7 +8,7 @@
 
 an expressive, dynamically-typed language for the joy of programming
 
-![written in Zig](https://img.shields.io/badge/written%20in-Zig-orange)  ![version 0.0.1a](https://img.shields.io/badge/version-0.0.1a-navy)
+![written in Zig](https://img.shields.io/badge/written%20in-Zig-orange)  ![version 0.0.0](https://img.shields.io/badge/version-0.0.1a-navy)
 
 - [introduction](#introduction)
 - [installing](#installing)
@@ -240,7 +240,7 @@ the auto-generated header is always in sync with exported functions, marked with
 
 ```bash
 zig build test --summary all 
-# opt: -Dtest_filter="some test name filter"
+# opt: -Dtest-filter="some test name filter"
 ```
 
 ### revolt (the language server)

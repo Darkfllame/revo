@@ -1,16 +1,18 @@
 const std = @import("std");
 
-const VERSION = "0.0.1a";
+const VERSION = "0.0.0";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // none left in for compat & embed
+    //
+    // options
+    //
     const ReplBackend = enum { isocline, none };
-    const repl_backend = b.option(ReplBackend, "repl", "which repl backend to use") orelse .isocline;
+    const repl_backend = b.option(ReplBackend, "repl", "no isocline?") orelse .isocline;
 
-    const nolsp = b.option(bool, "nolsp", "Exclude the LSP server from the binary") orelse false;
+    const nolsp = b.option(bool, "nolsp", "no lsp?") orelse false;
     const bundle_lsp = !nolsp and optimize != .Debug;
 
     const build_options = b.addOptions();
@@ -18,12 +20,23 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "version", VERSION);
     build_options.addOption(bool, "lsp_enabled", bundle_lsp);
 
-    // release/run always force isocline
+    // release/run always force isocline and lsp
     const forced_build_options = b.addOptions();
     forced_build_options.addOption(ReplBackend, "repl_backend", .isocline);
     forced_build_options.addOption([]const u8, "version", VERSION);
     forced_build_options.addOption(bool, "lsp_enabled", !nolsp);
 
+    const test_filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "only run tests within the arr",
+    ) orelse &.{};
+
+    const is_freestanding = target.result.os.tag == .freestanding;
+
+    //
+    // modules
+    //
     const vm_mod = b.addModule("vm", .{
         .root_source_file = b.path("src/vm/root.zig"),
         .target = target,
@@ -45,29 +58,10 @@ pub fn build(b: *std.Build) void {
         for (imports) |imp|
             mod.addImport(imp[0], imp[1]);
 
-    const test_filters = b.option(
-        []const []const u8,
-        "test_filter",
-        "Skip tests that do not match any filter",
-    ) orelse &.{};
-
-    const is_freestanding = target.result.os.tag == .freestanding;
-
     //
-    // git submodule update for all Doptimize!=Debug
+    // git submodule (shared)
     //
-    const maybe_git_submod: ?*std.Build.Step = blk: {
-        const stamp = ".zig-cache/submodules-updated";
-        const cmd = b.addSystemCommand(&.{
-            "sh", "-c",
-            b.fmt(
-                // so that fetch is nop on rebuild
-                "[ {s} -nt .gitmodules ] || (git submodule update --init --recursive && touch {s})",
-                .{ stamp, stamp },
-            ),
-        });
-        break :blk &cmd.step;
-    };
+    const git_submod_step = addGitSubmoduleStep(b);
 
     //
     // main exe
@@ -78,63 +72,26 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = !is_freestanding,
     });
-
     if (!is_freestanding) {
-        if (repl_backend == .isocline) {
-            add_isocline(exe_root, b);
-        }
-
+        if (repl_backend == .isocline) add_isocline(exe_root, b);
         exe_root.addOptions("build_options", build_options);
     }
-
     for (imports) |imp| exe_root.addImport(imp[0], imp[1]);
-
-    if (bundle_lsp) {
-        if (b.lazyDependency("lsp_kit", .{})) |lsp_kit_dep| {
-            const lsp_mod = lsp_kit_dep.module("lsp");
-
-            const lsp_server_mod = b.createModule(.{
-                .root_source_file = b.path("src/lsp/server.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            lsp_server_mod.addImport("lsp", lsp_mod);
-            for (imports) |imp| lsp_server_mod.addImport(imp[0], imp[1]);
-            exe_root.addImport("lsp_main", lsp_server_mod);
-        } else {
-            // lsp_kit not fetched yet; use noop stub. maybe there's a better way of doing this, idk
-            std.debug.print("warning: lsp_kit not fetched, LSP won't be bundled. run zig build --fetch if you need it\n", .{});
-            const lsp_noop_mod = b.createModule(.{
-                .root_source_file = b.path("src/lsp/noop.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            lsp_noop_mod.addImport("revo", revo_mod);
-            exe_root.addImport("lsp_main", lsp_noop_mod);
-        }
-    } else {
-        const lsp_noop_mod = b.createModule(.{
-            .root_source_file = b.path("src/lsp/noop.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        lsp_noop_mod.addImport("revo", revo_mod);
-        exe_root.addImport("lsp_main", lsp_noop_mod);
-    }
+    exe_root.addImport("lsp_main", lspModule(b, target, optimize, revo_mod, &imports, bundle_lsp));
 
     const exe = b.addExecutable(.{ .name = "revo", .root_module = exe_root });
     if (optimize == .Debug) exe.lto = .none;
     exe.rdynamic = true;
 
     const install_exe = b.addInstallArtifact(exe, .{});
-    if (maybe_git_submod) |git_step| install_exe.step.dependOn(git_step);
+    install_exe.step.dependOn(git_submod_step);
     b.getInstallStep().dependOn(&install_exe.step);
 
     //
     // run step
     //
     const run_cmd = b.addRunArtifact(exe);
-    if (maybe_git_submod) |git_step| run_cmd.step.dependOn(git_step);
+    run_cmd.step.dependOn(git_submod_step);
     if (b.args) |args| run_cmd.addArgs(args);
     b.step("run", "run the cli").dependOn(&run_cmd.step);
 
@@ -142,7 +99,10 @@ pub fn build(b: *std.Build) void {
     // check step
     //
     const check_step = b.step("check", "type-check without codegen or linking");
-    if (maybe_git_submod) |git_step| check_step.dependOn(git_step);
+    check_step.dependOn(git_submod_step);
+    check_step.dependOn(&b.addTest(.{ .root_module = vm_mod, .filters = test_filters }).step);
+    check_step.dependOn(&b.addTest(.{ .root_module = revo_mod, .filters = test_filters }).step);
+    check_step.dependOn(&b.addTest(.{ .root_module = exe_root, .filters = test_filters }).step);
 
     //
     // tests
@@ -150,19 +110,13 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "run all tests");
 
     const test_vm_step = b.step("test-vm", "test only the vm module");
-    const vm_test = b.addTest(.{ .root_module = vm_mod, .filters = test_filters });
-    test_vm_step.dependOn(&b.addRunArtifact(vm_test).step);
-    check_step.dependOn(&b.addTest(.{ .root_module = vm_mod, .filters = test_filters }).step);
+    test_vm_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = vm_mod, .filters = test_filters })).step);
 
     const test_revo_step = b.step("test-revo", "test only the revo module");
-    const revo_test = b.addTest(.{ .root_module = revo_mod, .filters = test_filters });
-    test_revo_step.dependOn(&b.addRunArtifact(revo_test).step);
-    check_step.dependOn(&b.addTest(.{ .root_module = revo_mod, .filters = test_filters }).step);
+    test_revo_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = revo_mod, .filters = test_filters })).step);
 
     const test_exe_step = b.step("test-exe", "test only the exe root");
-    const exe_test = b.addTest(.{ .root_module = exe_root, .filters = test_filters });
-    test_exe_step.dependOn(&b.addRunArtifact(exe_test).step);
-    check_step.dependOn(&b.addTest(.{ .root_module = exe_root, .filters = test_filters }).step);
+    test_exe_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = exe_root, .filters = test_filters })).step);
 
     test_step.dependOn(test_vm_step);
     test_step.dependOn(test_revo_step);
@@ -176,19 +130,11 @@ pub fn build(b: *std.Build) void {
         // "aarch64-linux-musl",
         // "x86_64-macos",
         "aarch64-macos",
-        // "x86_64-windows",
+        "x86_64-windows",
     };
 
+    // TODO: make it clean the output dir without running an os command
     const release_step = b.step("release", "build release binaries for all targets");
-
-    // release is always non-Debug so always update submodules w\ stamp file
-    const git_submod_release = b.addSystemCommand(&.{
-        "sh", "-c",
-        b.fmt(
-            "[ .zig-cache/submodules-updated -nt .gitmodules ] || (git submodule update --init --recursive && touch .zig-cache/submodules-updated)",
-            .{},
-        ),
-    });
 
     for (release_targets) |target_str| {
         const release_target = b.resolveTargetQuery(
@@ -203,50 +149,21 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
             .link_libc = true,
         });
-
         add_isocline(release_mod, b);
-        // forced_build_options: release always uses isocline
         release_mod.addOptions("build_options", forced_build_options);
         for (imports) |imp| release_mod.addImport(imp[0], imp[1]);
+        release_mod.addImport("lsp_main", lspModule(b, release_target, .ReleaseFast, revo_mod, &imports, !nolsp));
 
-        if (!nolsp) {
-            if (b.lazyDependency("lsp_kit", .{})) |lsp_kit_dep_release| {
-                const lsp_mod_release = lsp_kit_dep_release.module("lsp");
-                const lsp_server_mod_release = b.createModule(.{
-                    .root_source_file = b.path("src/lsp/server.zig"),
-                    .target = release_target,
-                    .optimize = .ReleaseFast,
-                });
-                lsp_server_mod_release.addImport("lsp", lsp_mod_release);
-                for (imports) |imp| lsp_server_mod_release.addImport(imp[0], imp[1]);
-                release_mod.addImport("lsp_main", lsp_server_mod_release);
-            } else {
-                const lsp_noop_mod_release = b.createModule(.{
-                    .root_source_file = b.path("src/lsp/noop.zig"),
-                    .target = release_target,
-                    .optimize = .ReleaseFast,
-                });
-                lsp_noop_mod_release.addImport("revo", revo_mod);
-                release_mod.addImport("lsp_main", lsp_noop_mod_release);
-            }
-        } else {
-            const lsp_noop_mod_release = b.createModule(.{
-                .root_source_file = b.path("src/lsp/noop.zig"),
-                .target = release_target,
-                .optimize = .ReleaseFast,
-            });
-            lsp_noop_mod_release.addImport("revo", revo_mod);
-            release_mod.addImport("lsp_main", lsp_noop_mod_release);
-        }
-
-        const bin_name = b.fmt("revo-{s}-{s}", .{ VERSION, target_str });
         const release_exe = b.addExecutable(.{
-            .name = bin_name,
+            .name = binName(b, target_str),
             .root_module = release_mod,
         });
+        release_exe.rdynamic = true;
 
-        const install = b.addInstallArtifact(release_exe, .{});
-        install.step.dependOn(&git_submod_release.step);
+        const install = b.addInstallArtifact(release_exe, .{
+            .dest_dir = .{ .override = .{ .custom = "release" } },
+        });
+        install.step.dependOn(git_submod_step);
         release_step.dependOn(&install.step);
     }
 
@@ -268,14 +185,10 @@ pub fn build(b: *std.Build) void {
 
     const lib_step = b.step("lib", "build the erevo library");
     const install_lib = b.addInstallArtifact(lib, .{});
-    if (maybe_git_submod) |git_step| install_lib.step.dependOn(git_step);
+    install_lib.step.dependOn(git_submod_step);
     lib_step.dependOn(&install_lib.step);
 
-    // also cover erevo in check step (maybe possibly dont)
-    // check_step.dependOn(&b.addTest(.{ .root_module = erevo_mod, .filters = test_filters }).step);
-    // const test_erevo_step = b.step("test-erevo", "test only the erevo library");
-    // test_erevo_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = erevo_mod, .filters = test_filters })).step);
-    // test_step.dependOn(test_erevo_step);
+    check_step.dependOn(&b.addTest(.{ .root_module = erevo_mod, .filters = test_filters }).step);
 
     //
     // lsp
@@ -295,10 +208,15 @@ pub fn build(b: *std.Build) void {
         const revolt = b.addExecutable(.{ .name = "revolt", .root_module = revolt_root });
         const install_revolt = b.addInstallArtifact(revolt, .{});
 
+        check_step.dependOn(&b.addTest(.{ .root_module = revolt_root, .filters = test_filters }).step);
+
         const revolt_step = b.step("lsp", "build the lsp");
         revolt_step.dependOn(&install_revolt.step);
     }
 
+    //
+    // header
+    //
     const write_files = b.addWriteFiles();
     const bindings = @import("src/bindings.zig");
     const header_data = bindings.data(b.allocator) catch |err| {
@@ -310,6 +228,68 @@ pub fn build(b: *std.Build) void {
     const install_header_file = b.addInstallHeaderFile(header_path, "revo.h");
     install_header_file.step.dependOn(&write_files.step);
     lib_step.dependOn(&install_header_file.step);
+}
+
+/// returns the real lsp server module if available and enabled, otherwise a noop stub
+fn lspModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    revo_mod: *std.Build.Module,
+    imports: []const struct { []const u8, *std.Build.Module },
+    enabled: bool,
+) *std.Build.Module {
+    if (enabled) {
+        if (b.lazyDependency("lsp_kit", .{})) |lsp_kit_dep| {
+            const lsp_mod = lsp_kit_dep.module("lsp");
+            const server_mod = b.createModule(.{
+                .root_source_file = b.path("src/lsp/server.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            server_mod.addImport("lsp", lsp_mod);
+            for (imports) |imp| server_mod.addImport(imp[0], imp[1]);
+            return server_mod;
+        }
+        std.debug.print("warning: lsp_kit not fetched, lsp won't be bundled. run zig build --fetch if you need it\n", .{});
+    }
+    const noop = b.createModule(.{
+        .root_source_file = b.path("src/lsp/noop.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    noop.addImport("revo", revo_mod);
+    return noop;
+}
+
+/// for release bin names
+fn binName(b: *std.Build, triple: []const u8) []const u8 {
+    const epoch_secs = std.time.epoch.EpochSeconds{
+        .secs = @intCast(std.Io.Clock.real.now(b.graph.io).toSeconds()),
+    };
+    const year_day = epoch_secs.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const date_str = b.fmt("{d}{d:0>2}{d:0>2}", .{
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+    });
+    // nightly
+    return b.fmt("revo-nightly-{s}-{s}", .{ triple, date_str });
+    // release
+    // return b.fmt("revo-{s}-{s}", .{ VERSION, triple });
+}
+
+fn addGitSubmoduleStep(b: *std.Build) *std.Build.Step {
+    const stamp = ".zig-cache/submodules-updated";
+    const cmd = b.addSystemCommand(&.{
+        "sh", "-c",
+        b.fmt(
+            "[ {s} -nt .gitmodules ] || (git submodule update --init --recursive && touch {s})",
+            .{ stamp, stamp },
+        ),
+    });
+    return &cmd.step;
 }
 
 fn add_isocline(mod: *std.Build.Module, b: *std.Build) void {
