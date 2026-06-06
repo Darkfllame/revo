@@ -4,16 +4,16 @@ const revo = @import("revo");
 
 const T = lsp.types;
 const lexer = revo.lang.lexer;
-const ws = revo.lang.workspace;
+const Workspace = revo.lang.Workspace;
 
 const keywords = lexer.TokenType.of_string.keys();
 
 /// complete identifiers at cursor position in `text`
 pub fn completions(
     vm: *revo.VM,
-    workspace: *ws.Workspace,
+    workspace: *Workspace.Workspace,
     arena: std.mem.Allocator,
-    file_id: ws.FileId,
+    file_id: Workspace.FileId,
     text: []const u8,
     cursor_off: usize,
 ) !T.completion.Result {
@@ -72,11 +72,11 @@ fn addFieldCompletions(
 /// completions from keywords, globals, and document symbols
 fn addGeneralCompletions(
     vm: *revo.VM,
-    workspace: *ws.Workspace,
+    workspace: *Workspace,
     arena: std.mem.Allocator,
     items: *std.ArrayList(T.completion.Item),
     prefix: []const u8,
-    file_id: ws.FileId,
+    file_id: Workspace.FileId,
 ) !void {
     // keywords
     inline for (keywords) |kw| {

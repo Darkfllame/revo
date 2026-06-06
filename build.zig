@@ -88,6 +88,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&b.addTest(.{ .root_module = vm_mod, .filters = test_filters }).step);
     check_step.dependOn(&b.addTest(.{ .root_module = revo_mod, .filters = test_filters }).step);
     check_step.dependOn(&b.addTest(.{ .root_module = exe_root, .filters = test_filters }).step);
+    check_step.dependOn(&b.addTest(.{ .root_module = lspModule(b, target, optimize, revo_mod, &imports, have_lsp), .filters = test_filters }).step);
 
     //
     // tests

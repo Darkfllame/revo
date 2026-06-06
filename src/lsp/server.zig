@@ -1,12 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
 const lsp = @import("lsp");
+const T = lsp.types;
 const revo = @import("revo");
 const lang = revo.lang;
-const completion = @import("completion.zig");
+const Workspace = lang.Workspace;
 
-const T = lsp.types;
-const ws = lang.workspace;
+const completion = @import("completion.zig");
 
 pub fn main(init: std.process.Init) !void {
     try runLsp(init.gpa, init.io, .script, "");
@@ -33,18 +34,18 @@ const Handler = struct {
     transport: *lsp.Transport,
     io: std.Io,
     // ws holds a reference to vm
-    ws: ws.Workspace,
+    ws: Workspace.Workspace,
     vm: revo.VM,
     enc: lsp.offsets.Encoding = .@"utf-16", // client preference
-    uri_to_file: std.StringHashMapUnmanaged(ws.FileId) = .empty, // uri -> ws id
-    file_to_uri: std.AutoHashMapUnmanaged(ws.FileId, []const u8) = .empty, // ws id -> uri
+    uri_to_file: std.StringHashMapUnmanaged(Workspace.FileId) = .empty, // uri -> ws id
+    file_to_uri: std.AutoHashMapUnmanaged(Workspace.FileId, []const u8) = .empty, // ws id -> uri
     deinited: bool = false,
     project: lang.Project = .{ .mode = .script, .root = "" },
 
     fn init(alloc: std.mem.Allocator, transport: *lsp.Transport, io: std.Io, mode: revo.lang.RunMode, project_root: []const u8) !Handler {
         var vm = try revo.VM.init(.{ .alloc = alloc, .io = io });
         errdefer vm.deinit();
-        var workspace = try ws.Workspace.init(alloc);
+        var workspace = try Workspace.Workspace.init(alloc);
         errdefer workspace.deinit();
         return .{
             .alloc = alloc,
@@ -76,7 +77,7 @@ const Handler = struct {
     }
 
     /// track document uri<->fileid pair (dupes uri)
-    fn registerDoc(h: *Handler, uri: []const u8, file_id: ws.FileId) !void {
+    fn registerDoc(h: *Handler, uri: []const u8, file_id: Workspace.FileId) !void {
         const u = try h.alloc.dupe(u8, uri);
         errdefer h.alloc.free(u);
         try h.uri_to_file.put(h.alloc, u, file_id);
@@ -359,7 +360,7 @@ const Handler = struct {
         h: *Handler,
         arena: std.mem.Allocator,
         uri: []const u8,
-        file_id: ws.FileId,
+        file_id: Workspace.FileId,
     ) !void {
         const diag = try h.ws.diagnostics(arena, file_id, .{});
         if (diag) |err| {
@@ -457,17 +458,17 @@ fn offsetToLspPos(text: []const u8, byte_off: usize) T.Position {
 }
 
 /// lsp (0-based) -> workspace (1-based)
-fn add1(p: T.Position) ws.Position {
+fn add1(p: T.Position) Workspace.Position {
     return .{ .line = p.line + 1, .character = p.character + 1 };
 }
 
 /// workspace (1-based) -> lsp (0-based)
-fn sub1(p: ws.Position) T.Position {
+fn sub1(p: Workspace.Position) T.Position {
     return .{ .line = p.line - 1, .character = p.character - 1 };
 }
 
 /// convert 1-based workspace position to byte offset
-fn positionToOffset(text: []const u8, pos: ws.Position) ?usize {
+fn positionToOffset(text: []const u8, pos: Workspace.Position) ?usize {
     var line: u32 = 1;
     var col: u32 = 1;
     for (text, 0..) |ch, idx| {
@@ -483,7 +484,7 @@ fn positionToOffset(text: []const u8, pos: ws.Position) ?usize {
     return null;
 }
 
-fn symbolKindToLsp(kind: ws.SymbolKind) T.SymbolKind {
+fn symbolKindToLsp(kind: Workspace.SymbolKind) T.SymbolKind {
     return switch (kind) {
         .binding => .Variable,
         .function => .Function,

@@ -230,7 +230,12 @@ fn parseModuleForCallconvC(
     }
 }
 
-fn buildSignature(allocator: Allocator, fn_name: []const u8, fn_proto: std.zig.Ast.full.FnProto, ast: *std.zig.Ast) ![]const u8 {
+fn buildSignature(
+    allocator: Allocator,
+    fn_name: []const u8,
+    fn_proto: std.zig.Ast.full.FnProto,
+    ast: *std.zig.Ast,
+) ![]const u8 {
     const return_type_src = if (fn_proto.ast.return_type.unwrap()) |ret_node|
         ast.getNodeSource(ret_node)
     else
