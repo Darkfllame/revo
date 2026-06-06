@@ -373,7 +373,10 @@ pub const Session = struct {
         var parse_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer parse_arena.deinit();
 
-        const parse_ok = switch (try revo.lang.parseSourceReport(parse_arena.allocator(), snippet)) {
+        const parse_ok = switch (revo.lang.parseSourceReport(parse_arena.allocator(), snippet) catch |err| {
+            try out.print("parse error: {}\n", .{err});
+            return true;
+        }) {
             .ok => true,
             .err => false,
         };
