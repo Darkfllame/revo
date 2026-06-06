@@ -111,8 +111,7 @@ pub const Compiler = struct {
     failure: ?LowerFailure = null,
     failure_message: []const u8 = "",
     failure_message_owned: bool = false,
-    failure_parts: [16]diagnostic.Part = undefined,
-    failure_part_len: usize = 0,
+    failure_parts: std.ArrayList(diagnostic.Part),
     failure_reports: std.ArrayList(LowerFailure),
     spans: std.ArrayList(ast.Span),
     active_span: ast.Span = .{
@@ -160,6 +159,7 @@ pub const Compiler = struct {
             .upvalue_cache = std.AutoHashMap(usize, usize).init(arena),
             .type_aliases = std.StringHashMap(types.TypeInfo).init(arena),
             .pending_prototypes = try std.ArrayList(revo.PrototypeID).initCapacity(arena, 4),
+            .failure_parts = .{ .items = &.{}, .capacity = 0 },
         };
     }
 
@@ -168,6 +168,7 @@ pub const Compiler = struct {
         for (self.functions.items) |*s| s.deinit(self.alloc);
         self.functions.deinit(self.alloc);
         self.slot_allocators.deinit(self.alloc);
+        self.failure_parts.deinit(self.alloc);
         self.failure_reports.deinit(self.alloc);
         self.spans.deinit(self.alloc);
         self.break_jumps.deinit(self.alloc);
@@ -1904,20 +1905,17 @@ pub const Compiler = struct {
         self.failure_message = owned_msg;
         self.failure_message_owned = owned_msg.ptr != message.ptr;
 
-        self.failure_parts[0] = diagnostic.Part{ .@"error" = owned_msg };
-        var part_len: usize = 1;
-        if (primary_span) |span| {
-            self.failure_parts[1] = .{ .span = span };
-            part_len += 1;
-        }
-        const available = self.failure_parts.len - part_len;
-        const extra_len = @min(extra_parts.len, available);
-        for (extra_parts[0..extra_len], 0..) |part, idx| self.failure_parts[part_len + idx] = part;
-        self.failure_part_len = part_len + extra_len;
+        self.failure_parts.clearRetainingCapacity();
+        self.failure_parts.append(self.alloc, .{ .@"error" = owned_msg }) catch {};
+        if (primary_span) |span|
+            self.failure_parts.append(self.alloc, .{ .span = span }) catch {};
+        for (extra_parts) |part|
+            self.failure_parts.append(self.alloc, part) catch {};
+
         self.failure = .{
             .kind = kind,
             .report = .{
-                .parts = self.failure_parts[0..self.failure_part_len],
+                .parts = self.failure_parts.items,
                 .message = owned_msg,
             },
         };
