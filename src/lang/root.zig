@@ -2,7 +2,7 @@ pub const ast = @import("ast.zig");
 pub const pipeline = @import("lang_pipeline.zig");
 pub const expander = @import("expander.zig");
 pub const proc = @import("proc.zig");
-pub const Lexer = @import("lexer.zig");
+pub const Lexer = @import("Lexer.zig");
 pub const parser = @import("Parser.zig");
 pub const diagnostic = @import("diagnostic.zig");
 pub const testing = @import("testing.zig");
@@ -76,7 +76,7 @@ test {
     _ = @import("docs.zig");
     _ = @import("expander.zig");
     _ = @import("proc.zig");
-    _ = @import("lexer.zig");
+    _ = @import("Lexer.zig");
     _ = @import("Parser.zig");
     _ = @import("testing.zig");
     _ = @import("tests.zig");
