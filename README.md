@@ -248,7 +248,11 @@ zig build test --summary all
 revo ships an LSP server at `src/lsp/`. it handles diagnostics, go-to-definition, hover,
 references, document symbols, and workspace symbols.
 
-to build:
+release builds bundle the LSP directly! run `revo --lsp` to start it.
+debug builds skip it by default; use `-Doptimize=ReleaseFast` to enable it, or
+`-Dnolsp` to exclude it from any build.
+
+to build the standalone server binary:
 
 ```bash
 zig build lsp
@@ -260,7 +264,7 @@ the binary lands at `zig-out/bin/revolt`
 
 ```lua
 vim.lsp.config('revolt', {
-  cmd = { 'revolt' },
+  cmd = { 'revo', '--lsp' },
   filetypes = { 'rv' },
   root_markers = { 'lib.json', 'exe.json', '.git' },
 })

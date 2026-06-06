@@ -2,8 +2,6 @@
 
 thank you for considering contributing to revo
 
-you can contribute via github, codeberg or via [emailing me a .patch](mailto:lung-notification@proton.me)
-
 the project is so young, that even taking a stroll through any source file might yield you a good observation
 
 a contribution anything from a pull request to an issue or a suggestion, all contributions are welcome!
@@ -11,22 +9,27 @@ a contribution anything from a pull request to an issue or a suggestion, all con
 ## where to start
 
 - check out [TODO.md](./TODO.md) for plans and pick an issue
-- open an issue on github and fork
-- create branch on your fork by doing
+- see ./issues
 
-```bash
-git checkout -b <issue_number>-<issue_description>
-```
+you can contribute via github, codeberg or via [emailing me a .patch](mailto:lung-notification@proton.me)
 
-- after you have implemented fully the issue, make a pull request
+the commit etiquette is influenced by that of
+[the linux jernel](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/log/)
+(they have [a whole page](https://www.kernel.org/doc/html/v4.14/process/submitting-patches.html#describe-your-changes)) on that)
 
-```bash
-git add .
-git commit -m "Fixed #<issue_number>: <issue_description>"
-git push origin <issue_number>-<issue_description>
-```
+- every commit should at least compile
+- its fine if something doesnt work in the middle of a commit chain, as long as it works by the final one
+- formatted like 
+    ```
+    lang+repl!+diag: fix occasional combustion
+    # if multiple scopes, list with + to separate them
+    # if breaking change, use !
 
-- if you're adding an std function, please add a doc-comment that can get parsed by `scripts/docgen.py`
+    repl would sometimes spit out nuclear codes
+
+    fixed GH-1337 # for github issues, use GH-12 rather than #12
+    ```
+
 
 ## about AI-generated code
 
