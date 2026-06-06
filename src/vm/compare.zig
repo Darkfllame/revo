@@ -55,10 +55,14 @@ pub fn evalCachedFast(slots: []Data, base: usize, vm: *VM, instr: Instruction, c
 
     if (comptime op == .eq or op == .neq) {
         // fast path: boxed values; identical bits = identity = equality
+        // strings and tuples are value types, fall through to compare()
         if ((lhs.bits & BOX_MASK) == BOX_MASK) {
-            const is_eq = lhs.bits == rhs.bits;
-            VM.regWrite(slots, base, instr.a, Data.new.boolean(if (op == .eq) is_eq else !is_eq));
-            return;
+            const tag = lhs.tag();
+            if (tag != .string and tag != .tuple) {
+                const is_eq = lhs.bits == rhs.bits;
+                VM.regWrite(slots, base, instr.a, Data.new.boolean(if (op == .eq) is_eq else !is_eq));
+                return;
+            }
         }
         // fast path: both are numbers; compare raw bits (handles +-0 and nan)
         if ((rhs.bits & BOX_MASK) != BOX_MASK) {
