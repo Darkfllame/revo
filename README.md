@@ -164,7 +164,7 @@ the default REPL backend is [isocline](https://github.com/daanx/isocline):
 - go to matching brace with M-b
 - ctrl+r for searching through history
 
-you can also get a dumb backend by doing `-Drepl=none`
+you can also get a dumb repl by doing `-Dfeatures=lsp` (no isocline) or `-Dfeatures=` (no features at all)
 
 ### packaging:
 - AUR: `revo-git` ([info & pkgbuild](https://aur.archlinux.org/packages/revo-git))
@@ -227,7 +227,7 @@ examples:
 zig build # debug build
 zig build run # debug run (repl implementation is hardcoded to a very simple one)
 zig build -Doptimize=ReleaseFast # release build
-zig build -Drepl=none # minimal repl backend (isocline, none)
+zig build -Dfeatures=lsp,isocline # to pick features (both are included by default)
 # build C library + auto-generated header
 # check zig-out/include/, zig-out/lib/
 zig build lib 

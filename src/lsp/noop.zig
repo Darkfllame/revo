@@ -7,6 +7,6 @@ pub fn runLsp(gpa: std.mem.Allocator, io: std.Io, mode: revo.lang.RunMode, proje
     _ = io;
     _ = mode;
     _ = project_root;
-    std.debug.print("lsp not available (build without -Dnolsp)\n", .{});
+    std.debug.print("lsp not available (include `lsp` in -Dfeatures)\n", .{});
     std.process.exit(1);
 }
