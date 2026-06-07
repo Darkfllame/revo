@@ -3042,8 +3042,8 @@ test "compiler: named parameters positional after named error" {
 
 test "double assignment" {
     try t.top_number(
-        \\ a = {}
-        \\ c = (a.b = 5)
+        \\ let a = {}
+        \\ let c = (a.b = 5)
     , 5);
 }
 

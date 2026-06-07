@@ -238,6 +238,16 @@ fn compileAssignSimple(
                 try self.emit(.store_upval, slot);
             } else {
                 if (self.functions.items.len == 1) {
+                    const known = self.declared_globals.contains(name) or
+                        self.vm.stdlib_globals.contains(try self.vm.internAtom(name));
+                    if (!known) {
+                        const msg = try std.fmt.allocPrint(
+                            self.alloc,
+                            "assignment target `{s}` is not declared",
+                            .{name},
+                        );
+                        return self.fail(.InvalidAssignmentTarget, target, msg);
+                    }
                     try self.emit(.store_global, try self.vm.internAtom(name));
                 } else {
                     const msg = try std.fmt.allocPrint(

@@ -134,6 +134,7 @@ pub const Compiler = struct {
     type_annotations: ?*const std.AutoHashMap(*const Node, types.TypeInfo) = null,
     fn_return_type: ?[]const u8 = null,
     pending_prototypes: std.ArrayList(revo.PrototypeID),
+    declared_globals: std.StringHashMap(void),
 
     pub fn init(
         vm: *VM,
@@ -161,6 +162,7 @@ pub const Compiler = struct {
             .value_stack = try std.ArrayList(*ir.IrInst).initCapacity(arena, 32),
             .upvalue_cache = std.AutoHashMap(usize, usize).init(arena),
             .type_aliases = std.StringHashMap(types.TypeInfo).init(arena),
+            .declared_globals = std.StringHashMap(void).init(arena),
             .pending_prototypes = try std.ArrayList(revo.PrototypeID).initCapacity(arena, 4),
             .failure_parts = .{ .items = &.{}, .capacity = 0 },
         };
@@ -1313,6 +1315,7 @@ pub const Compiler = struct {
 
             if (ast.isDiscardName(name)) return;
             try self.regDupe();
+            try self.declared_globals.put(name, {});
             try self.emit(
                 if (kind != .con) .store_global else .store_global_const,
                 try self.vm.internAtom(name),
