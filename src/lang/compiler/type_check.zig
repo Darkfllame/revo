@@ -29,7 +29,13 @@ pub fn checkType(expected: TypeInfo, actual: TypeInfo) !void {
 }
 
 pub const evalTypeExpr = types_mod.evalTypeExpr;
-pub const inferExprType = types_mod.inferExprType;
+
+pub fn inferExprType(self: *Compiler, node: *const Node) TypeInfo {
+    if (self.type_annotations) |map| {
+        if (map.get(node)) |t| return t;
+    }
+    return types_mod.inferExprType(self, node);
+}
 fn inferVarType(self: *Compiler, name: []const u8) TypeInfo {
     if (state_mod.resolveLocalTypeHint(self, name)) |hint| return hint;
     const local = state_mod.resolveLocalVar(self, name) orelse return inferTypeMap(self, name);
@@ -75,71 +81,23 @@ pub fn inferFieldType(self: *Compiler, object: *const Node, name: []const u8) Ty
 pub fn inferFnType(self: *Compiler, params: []const ast.FnParam, return_type: ?*ast.TypeExpr) TypeInfo {
     var param_types = std.ArrayList(TypeInfo).initCapacity(self.alloc, params.len) catch return .any;
     defer param_types.deinit(self.alloc);
+    var param_names = std.ArrayList([]const u8).initCapacity(self.alloc, params.len) catch return .any;
+    defer param_names.deinit(self.alloc);
     for (params) |p| {
         const pt = if (p.type_name) |tn| evalTypeExpr(self, tn) catch .any else .any;
         param_types.append(self.alloc, pt) catch return .any;
+        param_names.append(self.alloc, p.name) catch return .any;
     }
     const ret = if (return_type) |rt| evalTypeExpr(self, rt) catch .any else .any;
     const sig = self.alloc.create(FunctionSignature) catch return .any;
     sig.* = .{
+        .param_names = param_names.toOwnedSlice(self.alloc) catch return .any,
         .params = param_types.toOwnedSlice(self.alloc) catch return .any,
         .return_type = ret,
     };
     return TypeInfo{ .function = sig };
 }
 
-pub fn validateBindingType(self: *Compiler, type_expr: *ast.TypeExpr, value: *const Node) !void {
-    const expected = try types_mod.evalTypeExpr(self, type_expr);
-    const actual = inferExprType(self, value);
-    try checkType(expected, actual);
-}
-
 pub fn resolveTypeAlias(self: *Compiler, name: []const u8) ?TypeInfo {
     return self.type_aliases.get(name);
-}
-
-pub fn validateAssignmentType(self: *Compiler, target: *const Node, value: *const Node) !void {
-    switch (target.expr) {
-        .ident => |name| {
-            const local = state_mod.resolveLocalVar(self, name) orelse return;
-            const type_name = local.type_name orelse return;
-            const expected = types_mod.resolveTypeName(self, type_name);
-            const actual = inferExprType(self, value);
-            try checkType(expected, actual);
-        },
-        .field => |field| {
-            const object_type = inferExprType(self, field.object);
-            if (object_type != .struct_type) return;
-            const layout = self.struct_layouts.get(object_type.struct_type) orelse return;
-            for (layout) |f| {
-                if (std.mem.eql(u8, f.name, field.name)) {
-                    const actual = inferExprType(self, value);
-                    try checkType(f.field_type, actual);
-                    return;
-                }
-            }
-        },
-        else => {},
-    }
-}
-
-pub fn validateUpvalueAssignmentType(self: *Compiler, name: []const u8, value: *const Node) !void {
-    var fn_idx = self.functions.items.len - 1;
-    while (fn_idx > 0) {
-        fn_idx -= 1;
-        const local = state_mod.resolveLocalVarIn(self, fn_idx, name) orelse continue;
-        if (!local.type_explicit) return;
-        const type_hints = &self.functions.items[fn_idx].type_hints;
-        var i = type_hints.items.len;
-        while (i > 0) {
-            i -= 1;
-            const hint = type_hints.items[i];
-            if (std.mem.eql(u8, hint.name, name)) {
-                const actual = inferExprType(self, value);
-                try checkType(hint.type_info, actual);
-                return;
-            }
-        }
-        return;
-    }
 }

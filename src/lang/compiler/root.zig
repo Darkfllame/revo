@@ -62,6 +62,7 @@ pub fn lowerExprArtifactReport(
     vm: *VM,
     expr: *const Node,
     test_mode: bool,
+    type_annotations: ?*const std.AutoHashMap(*const Node, types.TypeInfo),
 ) !ArtifactResult {
     var arena = std.heap.ArenaAllocator.init(vm.runtime.alloc);
     defer arena.deinit();
@@ -72,6 +73,7 @@ pub fn lowerExprArtifactReport(
         arena.allocator(),
         vm.runtime.alloc,
     );
+    compiler.type_annotations = type_annotations;
     defer compiler.deinit();
 
     compiler.compileRoot(expr) catch |err| switch (err) {
@@ -129,6 +131,7 @@ pub const Compiler = struct {
     // register cache for upvalue loads, cleared per-block in compileBlock
     upvalue_cache: std.AutoHashMap(usize, usize) = undefined,
     type_aliases: std.StringHashMap(types.TypeInfo),
+    type_annotations: ?*const std.AutoHashMap(*const Node, types.TypeInfo) = null,
     fn_return_type: ?[]const u8 = null,
     pending_prototypes: std.ArrayList(revo.PrototypeID),
 
@@ -691,7 +694,6 @@ pub const Compiler = struct {
             .return_expr => |val| {
                 if (val) |v| {
                     try self.compile(v, true);
-                    try validateReturnType(self, v);
                 } else try self.pushNil();
                 try self.emit(.ret, 1);
             },
@@ -790,7 +792,6 @@ pub const Compiler = struct {
     ) InternalLowerError!void {
         switch (call.callee.expr) {
             .field => |field| {
-                try self.validateTypedCall(call.callee, call.args);
                 // method call desugar: obj:method(args)
                 const desugared = call.args.len > 0 and
                     call.args[0] == field.object;
@@ -820,7 +821,6 @@ pub const Compiler = struct {
                 }
             },
             .index => |index| {
-                try self.validateTypedCall(call.callee, call.args);
                 try self.compile(index.object, true);
                 try self.compile(index.key, true);
                 for (call.args) |arg| try self.compile(arg, true);
@@ -834,7 +834,6 @@ pub const Compiler = struct {
                     fn_name,
                     call.args,
                 );
-                try self.validateStructInit(fn_name, call.callee, call.args);
                 try self.compile(call.callee, true);
 
                 // use reordered args if named params were used
@@ -842,10 +841,6 @@ pub const Compiler = struct {
                     reordered_args
                 else
                     call.args;
-
-                if (reordered_args.ptr == call.args.ptr) {
-                    try self.validateTypedCall(call.callee, args_to_compile);
-                }
 
                 for (args_to_compile) |arg| {
                     if (arg.expr == .assign_expr) {
@@ -866,7 +861,6 @@ pub const Compiler = struct {
                 );
             },
             .fn_expr => {
-                try self.validateTypedCall(call.callee, call.args);
                 try self.compile(call.callee, true);
                 for (call.args) |arg| try self.compile(arg, true);
                 try self.emit(
@@ -877,7 +871,6 @@ pub const Compiler = struct {
                 );
             },
             else => {
-                try self.validateTypedCall(call.callee, call.args);
                 try self.compile(call.callee, true);
                 for (call.args) |arg| try self.compile(arg, true);
                 try self.emit(
@@ -887,191 +880,6 @@ pub const Compiler = struct {
                     ),
                 );
             },
-        }
-    }
-
-    fn validateTypedCall(
-        self: *Compiler,
-        callee: *const Node,
-        args: []const *Node,
-    ) InternalLowerError!void {
-        const callee_type = type_check.inferExprType(self, callee);
-        if (callee_type != .function) return;
-
-        const sig = callee_type.function;
-        // "any function" sentinel,,, can't validate params or return
-        if (sig == &types.ANY_FN_SIG) return;
-        const fn_sig = if (callee.expr == .ident)
-            state_mod.findFnSignature(self, callee.expr.ident)
-        else
-            null;
-        const fn_name = if (fn_sig != null and callee.expr == .ident) callee.expr.ident else "call";
-        if (args.len != sig.params.len) {
-            const expected_types = try self.buildTypesListFromInfo(sig.params);
-            defer self.alloc.free(expected_types);
-            const actual_types = try self.buildArgTypesList(args);
-            defer self.alloc.free(actual_types);
-
-            const actual_sig = if (fn_sig) |named| try formatCallSignatureWithNames(
-                self.alloc,
-                fn_name,
-                named.param_names,
-                actual_types,
-            ) else try formatCallSignatureTypesOnly(self.alloc, fn_name, actual_types);
-            const expected_sig = if (fn_sig) |named| try formatCallSignatureWithNames(
-                self.alloc,
-                fn_name,
-                named.param_names,
-                expected_types,
-            ) else try formatCallSignatureTypesOnly(self.alloc, fn_name, expected_types);
-
-            var extra_parts = try std.ArrayList(diagnostic.Part).initCapacity(
-                self.alloc,
-                if (args.len > sig.params.len) 1 else 0,
-            );
-            defer extra_parts.deinit(self.alloc);
-            if (args.len > sig.params.len) {
-                try self.appendUnexpectedArgPart(args, sig.params.len, &extra_parts);
-            }
-
-            const msg = try std.fmt.allocPrint(
-                self.alloc,
-                "{s} wants {d} arg(s), got {d}",
-                .{
-                    fn_name,
-                    sig.params.len,
-                    args.len,
-                },
-            );
-            try extra_parts.append(self.alloc, .{ .note = actual_sig });
-            try extra_parts.append(self.alloc, .{ .note = expected_sig });
-            return self.setFailureParts(.ParseError, null, msg, extra_parts.items);
-        }
-
-        for (args, sig.params, 0..) |arg, expected_type, idx| {
-            type_check.checkType(
-                expected_type,
-                type_check.inferExprType(self, arg),
-            ) catch |err| switch (err) {
-                error.TypeError => {
-                    const actual_types = try self.buildArgTypesList(args);
-                    defer self.alloc.free(actual_types);
-                    const expected_types = try self.buildTypesListFromInfo(sig.params);
-                    defer self.alloc.free(expected_types);
-
-                    const actual_sig = if (fn_sig) |named| try formatCallSignatureWithNames(
-                        self.alloc,
-                        fn_name,
-                        named.param_names,
-                        actual_types,
-                    ) else try formatCallSignatureTypesOnly(self.alloc, fn_name, actual_types);
-                    const expected_sig = if (fn_sig) |named| try formatCallSignatureWithNames(
-                        self.alloc,
-                        fn_name,
-                        named.param_names,
-                        expected_types,
-                    ) else try formatCallSignatureTypesOnly(self.alloc, fn_name, expected_types);
-
-                    const display_name = if (fn_sig) |named| blk: {
-                        if (idx < named.param_names.len) break :blk named.param_names[idx];
-                        break :blk null;
-                    } else null;
-
-                    const actual_type = type_check.inferExprType(self, arg);
-                    const headline = if (display_name) |name| blk: {
-                        break :blk try std.fmt.allocPrint(
-                            self.alloc,
-                            "arg {d} (`{s}`) to `{s}` wants {s}, got {s}",
-                            .{
-                                idx + 1,
-                                name,
-                                fn_name,
-                                types.typeName(expected_type),
-                                types.typeName(actual_type),
-                            },
-                        );
-                    } else blk: {
-                        break :blk try std.fmt.allocPrint(
-                            self.alloc,
-                            "arg {d} on `{s}` wants {s}, got {s}",
-                            .{
-                                idx + 1,
-                                fn_name,
-                                types.typeName(expected_type),
-                                types.typeName(actual_type),
-                            },
-                        );
-                    };
-
-                    var extra_parts = try std.ArrayList(diagnostic.Part).initCapacity(
-                        self.alloc,
-                        2,
-                    );
-                    defer extra_parts.deinit(self.alloc);
-                    try extra_parts.append(self.alloc, .{ .note = actual_sig });
-                    try extra_parts.append(self.alloc, .{ .note = expected_sig });
-                    return self.setFailureParts(
-                        .ParseError,
-                        .{ .span = arg.span, .role = .primary, .message = "wrong type!" },
-                        headline,
-                        extra_parts.items,
-                    );
-                },
-            };
-        }
-    }
-
-    fn validateStructInit(
-        self: *Compiler,
-        struct_name: []const u8,
-        callee: *const Node,
-        args: []const *Node,
-    ) InternalLowerError!void {
-        const callee_type = type_check.inferExprType(self, callee);
-        if (callee_type != .struct_type) return;
-        const field_defs = self.struct_layouts.get(struct_name) orelse return;
-        if (args.len == 0) return;
-
-        const init_arg = args[0];
-        if (init_arg.expr != .table) return;
-
-        for (init_arg.expr.table) |entry| {
-            const key = entry.key orelse continue;
-            if (key.expr != .ident) continue;
-            const field_name = key.expr.ident;
-
-            for (field_defs) |fd| {
-                if (!std.mem.eql(u8, fd.name, field_name)) continue;
-                if (fd.field_type == .any) break;
-
-                type_check.checkType(
-                    fd.field_type,
-                    type_check.inferExprType(self, entry.value),
-                ) catch |err| switch (err) {
-                    error.TypeError => {
-                        const actual = type_check.inferExprType(self, entry.value);
-                        const headline = try std.fmt.allocPrint(
-                            self.alloc,
-                            "field `{s}` on `{s}` wants {s}, got {s}",
-                            .{
-                                field_name,
-                                struct_name,
-                                try types.formatType(self.alloc, fd.field_type),
-                                types.typeName(actual),
-                            },
-                        );
-
-                        return self.setFailureParts(
-                            .ParseError,
-                            .{ .span = entry.value.span, .role = .primary, .message = "wrong type!" },
-                            headline,
-                            &.{},
-                        );
-                    },
-                    else => |e| return e,
-                };
-                break;
-            }
         }
     }
 
@@ -1354,80 +1162,6 @@ pub const Compiler = struct {
         return reordered_args;
     }
 
-    fn buildTypesListFromInfo(
-        self: *Compiler,
-        type_infos: []const types.TypeInfo,
-    ) ![]const []const u8 {
-        var list = try std.ArrayList([]const u8).initCapacity(
-            self.alloc,
-            type_infos.len,
-        );
-        for (type_infos) |type_info| {
-            try list.append(self.alloc, types.typeName(type_info));
-        }
-        return try list.toOwnedSlice(self.alloc);
-    }
-
-    fn buildArgTypesList(
-        self: *Compiler,
-        args: []const *const Node,
-    ) ![]const []const u8 {
-        var list = try std.ArrayList([]const u8).initCapacity(
-            self.alloc,
-            args.len,
-        );
-        for (args) |arg| {
-            const arg_type = type_check.inferExprType(self, arg);
-            try list.append(self.alloc, types.typeName(arg_type));
-        }
-        return try list.toOwnedSlice(self.alloc);
-    }
-
-    fn formatCallSignatureTypesOnly(
-        alloc: std.mem.Allocator,
-        fn_name: []const u8,
-        types_list: []const []const u8,
-    ) ![]u8 {
-        var buf = try std.ArrayList(u8).initCapacity(
-            alloc,
-            fn_name.len + types_list.len * 8 + 4,
-        );
-        defer buf.deinit(alloc);
-        try buf.appendSlice(alloc, fn_name);
-        try buf.append(alloc, '(');
-        for (types_list, 0..) |type_name, idx| {
-            if (idx > 0) try buf.appendSlice(alloc, ", ");
-            try buf.appendSlice(alloc, type_name);
-        }
-        try buf.append(alloc, ')');
-        return try buf.toOwnedSlice(alloc);
-    }
-
-    fn formatCallSignatureWithNames(
-        alloc: std.mem.Allocator,
-        fn_name: []const u8,
-        param_names: []const []const u8,
-        types_list: []const []const u8,
-    ) ![]u8 {
-        var buf = try std.ArrayList(u8).initCapacity(
-            alloc,
-            fn_name.len + types_list.len * 16 + 4,
-        );
-        defer buf.deinit(alloc);
-        try buf.appendSlice(alloc, fn_name);
-        try buf.append(alloc, '(');
-        for (types_list, 0..) |type_name, idx| {
-            if (idx > 0) try buf.appendSlice(alloc, ", ");
-            if (idx < param_names.len and param_names[idx].len > 0) {
-                try buf.appendSlice(alloc, param_names[idx]);
-                try buf.appendSlice(alloc, ": ");
-            }
-            try buf.appendSlice(alloc, type_name);
-        }
-        try buf.append(alloc, ')');
-        return try buf.toOwnedSlice(alloc);
-    }
-
     pub fn resolveTypedStructFieldOffset(
         self: *Compiler,
         object: *const Node,
@@ -1525,37 +1259,6 @@ pub const Compiler = struct {
             };
             if (idx + 1 < exprs.len and self.active_registers > before) try self.regRelease();
         }
-        if (pushed_scope and self.fn_return_type != null and exprs.len > 0) {
-            const last = exprs[exprs.len - 1];
-            if (last.expr != .return_expr) {
-                const actual = type_check.inferExprType(self, last);
-                const expected = types.resolveTypeName(self, self.fn_return_type.?);
-                type_check.checkType(expected, actual) catch |err| switch (err) {
-                    error.TypeError => {
-                        const actual_str = try types.formatType(self.alloc, actual);
-                        const expected_str = try types.formatType(self.alloc, expected);
-                        const msg = try std.fmt.allocPrint(
-                            self.alloc,
-                            "return type mismatch: wanted {s}, got {s}",
-                            .{ self.fn_return_type.?, actual_str },
-                        );
-                        return self.setFailureParts(
-                            .ParseError,
-                            .{
-                                .span = last.span,
-                                .role = .primary,
-                                .message = try std.fmt.allocPrint(self.alloc, "return type not {s} (got {s})", .{
-                                    expected_str,
-                                    actual_str,
-                                }),
-                            },
-                            msg,
-                            &.{},
-                        );
-                    },
-                };
-            }
-        }
         if (pushed_scope) state_mod.popScope(self);
     }
 
@@ -1592,34 +1295,6 @@ pub const Compiler = struct {
                     "name with ? is reserved for functions returning bool",
                     &.{},
                 );
-            if (binding.type_name) |tn| {
-                type_check.validateBindingType(self, tn, binding.value) catch |err| switch (err) {
-                    error.TypeError => {
-                        const actual = type_check.inferExprType(self, binding.value);
-                        const expected_type = try types.evalTypeExpr(self, tn);
-                        const tn_str = try types.formatType(self.alloc, expected_type);
-                        const msg = try std.fmt.allocPrint(
-                            self.alloc,
-                            "`{s}` wants {s}, got {s}",
-                            .{ name, tn_str, types.typeName(actual) },
-                        );
-                        const label = try std.fmt.allocPrint(self.alloc, "not {s}!", .{tn_str});
-                        self.alloc.free(tn_str);
-                        return self.setFailureParts(
-                            .ParseError,
-                            .{
-                                .span = binding.value.span,
-                                .role = .primary,
-                                .message = label,
-                            },
-                            msg,
-                            &.{},
-                        );
-                    },
-                    error.OutOfMemory => return error.OutOfMemory,
-                };
-            }
-
             if (binding.value.expr == .fn_expr) {
                 try self.compileFn(
                     binding.value.expr.fn_expr.params,
@@ -1652,28 +1327,6 @@ pub const Compiler = struct {
                 binding.value,
                 "binding",
             );
-            if (binding.type_name) |tn| {
-                type_check.validateBindingType(self, tn, binding.value) catch |err| switch (err) {
-                    error.TypeError => {
-                        const actual = type_check.inferExprType(self, binding.value);
-                        const expected_type = try types.evalTypeExpr(self, tn);
-                        const tn_str = try types.formatType(self.alloc, expected_type);
-                        const msg = try std.fmt.allocPrint(
-                            self.alloc,
-                            "binding wants {s}, got {s}",
-                            .{ tn_str, types.typeName(actual) },
-                        );
-                        self.alloc.free(tn_str);
-                        return self.setFailureParts(
-                            .ParseError,
-                            .{ .span = binding.value.span, .role = .primary, .message = msg },
-                            msg,
-                            &.{},
-                        );
-                    },
-                    error.OutOfMemory => return error.OutOfMemory,
-                };
-            }
             try values.declarePatternLocals(
                 self,
                 binding.target,
@@ -1805,13 +1458,7 @@ pub const Compiler = struct {
         defer self.fn_return_type = null;
         try self.compile(body, true);
         if (effective_return_type) |rt| {
-            if (body.expr != .block) {
-                const rt_name = switch (rt.kind) {
-                    .named => |n| n,
-                    else => @tagName(rt.kind),
-                };
-                try validateImplicitReturnType(self, body, rt_name);
-            }
+            _ = rt;
         } else {
             const inferred_type = type_check.inferExprType(self, body);
             const inferred_type_str = try self.alloc.dupe(u8, types.typeName(inferred_type));
@@ -1952,75 +1599,6 @@ pub const Compiler = struct {
                 .message = "",
                 .source_name = first.report.source_name,
                 .source = first.report.source,
-            },
-        };
-    }
-
-    fn validateReturnType(self: *Compiler, val: *const Node) !void {
-        const fn_state = state_mod.currentFunctionState(self) orelse return;
-        const declared = fn_state.return_type orelse return;
-        const actual = type_check.inferExprType(self, val);
-        const expected = types.resolveTypeName(self, declared);
-        type_check.checkType(expected, actual) catch |err| switch (err) {
-            error.TypeError => {
-                const actual_str = try types.formatType(self.alloc, actual);
-                const msg = try std.fmt.allocPrint(
-                    self.alloc,
-                    "return type mismatch: wanted {s}, got {s}",
-                    .{ declared, actual_str },
-                );
-                return self.setFailureParts(
-                    .ParseError,
-                    .{
-                        .span = val.span,
-                        .role = .primary,
-                        .message = try std.fmt.allocPrint(
-                            self.alloc,
-                            "must return {s} (got {s})",
-                            .{ declared, actual_str },
-                        ),
-                    },
-                    msg,
-                    &.{},
-                );
-            },
-        };
-    }
-
-    fn validateImplicitReturnType(
-        self: *Compiler,
-        body: *const Node,
-        declared: []const u8,
-    ) !void {
-        const last_expr = switch (body.expr) {
-            .block => |exprs| if (exprs.len > 0) exprs[exprs.len - 1] else return,
-            else => body,
-        };
-        if (last_expr.expr == .return_expr) return;
-        const actual = type_check.inferExprType(self, last_expr);
-        const expected = types.resolveTypeName(self, declared);
-        type_check.checkType(expected, actual) catch |err| switch (err) {
-            error.TypeError => {
-                const actual_str = try types.formatType(self.alloc, actual);
-                const expected_str = try types.formatType(self.alloc, expected);
-                const msg = try std.fmt.allocPrint(
-                    self.alloc,
-                    "return type mismatch: wanted {s}, got {s}",
-                    .{ declared, actual_str },
-                );
-                return self.setFailureParts(
-                    .ParseError,
-                    .{
-                        .span = last_expr.span,
-                        .role = .primary,
-                        .message = try std.fmt.allocPrint(self.alloc, "return type not {s} (got {s})", .{
-                            expected_str,
-                            actual_str,
-                        }),
-                    },
-                    msg,
-                    &.{},
-                );
             },
         };
     }

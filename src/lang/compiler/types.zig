@@ -60,11 +60,15 @@ pub fn atomPayload(name: []const u8) []const u8 {
     return if (name.len > 0 and name[0] == ':') name[1..] else name;
 }
 
-pub const FunctionSignature = struct { params: []const TypeInfo, return_type: TypeInfo };
+pub const FunctionSignature = struct {
+    params: []const TypeInfo,
+    return_type: TypeInfo,
+    param_names: []const []const u8 = &.{},
+};
 
 /// sentinel "any function" type,,, matches any callable value
 /// ptr identity;; only matches when &ANY_FN_SIG is used
-pub const ANY_FN_SIG: FunctionSignature = .{ .params = &.{}, .return_type = .any };
+pub const ANY_FN_SIG: FunctionSignature = .{ .params = &.{}, .return_type = .any, .param_names = &.{} };
 
 pub fn typeName(T: TypeInfo) []const u8 {
     return switch (T) {
@@ -263,10 +267,23 @@ const type_name_map: std.StaticStringMap(TypeInfo) = std.StaticStringMap(TypeInf
 
 pub fn resolveTypeName(ctx: anytype, name: []const u8) TypeInfo {
     if (type_name_map.get(name)) |res| return res;
-    if (std.mem.eql(u8, name, "function")) return .{ .function = &ANY_FN_SIG };
-    if (name.len > 0 and name[0] == ':') return .{ .atom = name };
-    if (ctx.resolveTypeAlias(name)) |aliased| return aliased;
-    return .{ .struct_type = name };
+    // temp: strip suffixes: ? (for optional) and ... (forvariadic)
+    const stripped = if (std.mem.endsWith(u8, name, "..."))
+        name[0 .. name.len - 3]
+    else if (std.mem.endsWith(u8, name, "?"))
+        name[0 .. name.len - 1]
+    else
+        name;
+
+    if (stripped.len != name.len) {
+        if (type_name_map.get(stripped)) |res| return res;
+    }
+
+    if (std.mem.eql(u8, stripped, "function")) return .{ .function = &ANY_FN_SIG };
+    if (stripped.len > 0 and stripped[0] == ':') return .{ .atom = stripped };
+    if (ctx.resolveTypeAlias(stripped)) |aliased| return aliased;
+
+    return .{ .struct_type = stripped };
 }
 
 pub fn inferExprType(ctx: anytype, node: *const ast.Node) TypeInfo {
@@ -357,12 +374,18 @@ pub fn evalTypeExpr(ctx: anytype, te: *const ast.TypeExpr) !TypeInfo {
         .function => |f| blk: {
             var params = try std.ArrayList(TypeInfo).initCapacity(ctx.alloc, f.params.len);
             errdefer params.deinit(ctx.alloc);
+            var param_names = try std.ArrayList([]const u8).initCapacity(ctx.alloc, f.params.len);
+            errdefer param_names.deinit(ctx.alloc);
+
             for (f.params) |p| {
                 try params.append(ctx.alloc, if (p.type_name) |tn| try evalTypeExpr(ctx, tn) else .any);
+                try param_names.append(ctx.alloc, p.name);
             }
             const return_type = if (f.return_type) |rt| try evalTypeExpr(ctx, rt) else .any;
             const sig_ptr = try ctx.alloc.create(FunctionSignature);
+
             sig_ptr.* = .{
+                .param_names = try param_names.toOwnedSlice(ctx.alloc),
                 .params = try params.toOwnedSlice(ctx.alloc),
                 .return_type = return_type,
             };

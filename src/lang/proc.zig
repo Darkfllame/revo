@@ -313,6 +313,7 @@ fn runCompileTimeProc(parent_vm: *revo.VM, root: *Node, proc_name: []const u8, e
         &vm,
         root,
         false,
+        null,
     ) catch return error.ProcCompileFailed;
     const artifact = switch (artifact_report) {
         .ok => |ok| ok,

@@ -252,7 +252,38 @@ pub fn expectCompileError(source: []const u8, expected: lang.LowerErrorKind) !vo
             },
             .expand => return error.ExpectedLowerFailure,
             .parse => return error.ExpectedLowerFailure,
-            .semantic => return error.ExpectedLowerFailure,
+            .semantic => {
+                vm.runtime.resetDiagArena();
+            },
+        },
+    }
+}
+
+pub fn expectCompileErrorInDir(module_dir: []const u8, source: []const u8) !void {
+    var vm = try revo.VM.init(runtime());
+    defer vm.deinit();
+    vm.module_dir = module_dir;
+
+    const source_name = try std.fs.path.join(alloc, &.{ module_dir, "<source>" });
+    defer alloc.free(source_name);
+
+    const result = try lang.build(&vm, .{ .name = source_name, .text = source }, .{
+        .install_debug_info = false,
+    });
+    switch (result) {
+        .ok => |artifact| {
+            defer alloc.free(artifact.instructions);
+            defer alloc.free(artifact.spans);
+            return error.ExpectedCompileFailure;
+        },
+        .err => |failure| switch (failure) {
+            .semantic => {
+                vm.runtime.resetDiagArena();
+            },
+            .lower, .expand, .parse => {
+                vm.runtime.resetDiagArena();
+                return error.ExpectedCompileFailure;
+            },
         },
     }
 }
@@ -279,11 +310,10 @@ pub fn expectCompileFailure(
         .err => |failure| switch (failure) {
             .parse => return error.ExpectedLowerFailure,
             .expand => return error.ExpectedLowerFailure,
-            .semantic => return error.ExpectedLowerFailure,
-            .lower => |lower| {
-                try std.testing.expectEqual(expected_kind, lower.kind);
-                const span = lang.diagnostic.primarySpan(lower.report).?;
-                const msg = lang.diagnostic.firstError(lower.report).?;
+            .lower, .semantic => |diag| {
+                try std.testing.expectEqual(expected_kind, diag.kind);
+                const span = lang.diagnostic.primarySpan(diag.report).?;
+                const msg = lang.diagnostic.firstError(diag.report).?;
                 try std.testing.expectEqual(expected_line, span.span.line);
                 try std.testing.expectEqual(expected_column, span.span.column);
                 try std.testing.expectEqualStrings(expected_message, msg);

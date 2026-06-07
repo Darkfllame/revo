@@ -21,7 +21,14 @@ pub fn build(vm: *VM, source: Source, opts: BuildOptions) !BuildResult {
             return .{ .err = .{ .parse = diag } };
         },
     };
-    const expand_result = expandWithVmSource(vm, arena.allocator(), parsed, source.name orelse "", source.text) catch |err| return err;
+    const expand_result = expandWithVmSource(
+        vm,
+        arena.allocator(),
+        parsed,
+        source.name orelse "",
+        source.text,
+    ) catch |err| return err;
+
     const expanded = switch (expand_result) {
         .ok => |ok| ok,
         .proc_err => |report| {
@@ -31,11 +38,40 @@ pub fn build(vm: *VM, source: Source, opts: BuildOptions) !BuildResult {
             return .{ .err = .{ .expand = .{ .report = copied } } };
         },
     };
+
+    var type_annotations = std.AutoHashMap(*const Node, compiler.types.TypeInfo).init(vm.runtime.alloc);
+    defer type_annotations.deinit();
+
+    var known_globals = try std.ArrayList([]const u8).initCapacity(vm.runtime.alloc, 0);
+    defer known_globals.deinit(vm.runtime.alloc);
+    {
+        var cit = vm.const_globals.keyIterator();
+        while (cit.next()) |atom_id| {
+            try known_globals.append(vm.runtime.alloc, vm.atomName(atom_id.*));
+        }
+        var git = vm.globals.iterator();
+        while (git.next()) |entry| {
+            try known_globals.append(vm.runtime.alloc, vm.atomName(entry.key_ptr.*));
+        }
+    }
+
+    if (try lang.semantic.analyze(
+        vm.runtime.alloc,
+        expanded.root,
+        source.name orelse "",
+        source.text,
+        known_globals.items,
+        null,
+        &type_annotations,
+    )) |semantic_err| {
+        return .{ .err = semantic_err };
+    }
+
     const lower_result = try lower(vm, expanded, .{
         .install_debug_info = opts.install_debug_info,
         .source = source,
         .test_mode = opts.test_mode,
-    });
+    }, &type_annotations);
     return switch (lower_result) {
         .ok => |artifact| .{ .ok = artifact },
         .err => |failure| .{ .err = .{ .lower = failure } },
@@ -148,11 +184,12 @@ pub fn expandWithVmSource(vm: *VM, allocator: std.mem.Allocator, parsed: Parsed,
     return .{ .ok = .{ .root = final } };
 }
 
-pub fn lower(vm: *VM, expanded: Expanded, opts: LowerOptions) !LowerResult {
+pub fn lower(vm: *VM, expanded: Expanded, opts: LowerOptions, type_annotations: ?*const std.AutoHashMap(*const Node, compiler.types.TypeInfo)) !LowerResult {
     const lowered = try compiler.lowerExprArtifactReport(
         vm,
         expanded.root,
         opts.test_mode,
+        type_annotations,
     );
     return switch (lowered) {
         .ok => |artifact| blk: {

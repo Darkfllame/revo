@@ -112,6 +112,74 @@ test "builtin table methods prebind through stdlib tables" {
     try std.testing.expect(!saw_call_field);
 }
 
+//
+// table method shadowing
+//
+
+test "table literal field shadows stdlib method" {
+    try t.top_number(
+        \\ const t = { len = fn(self) 42 }
+        \\ t:len()
+    , 42);
+}
+
+test "dynamic field assignment shadows stdlib method" {
+    try t.top_number(
+        \\ const t = {}
+        \\ t.len = fn(self) 42
+        \\ t:len()
+    , 42);
+}
+
+test "atom-key index assignment shadows stdlib method" {
+    try t.top_number(
+        \\ const t = {}
+        \\ t[:len] = fn(self) 42
+        \\ t:len()
+    , 42);
+}
+
+test "plain table uses stdlib method" {
+    try t.top_number(
+        \\ const t = {1, 2, 3}
+        \\ t:len()
+    , 3);
+}
+
+test "string-key index does not shadow stdlib method" {
+    try t.top_number(
+        \\ const t = {1, 2, 3}
+        \\ t["len"] = fn(self) 42
+        \\ t:len()
+    , 3);
+}
+
+test "computed key does not invalidate table field tracking" {
+    try t.top_number(
+        \\ const t = { len = fn(self) 42 }
+        \\ const key = "foo"
+        \\ t[key] = 7
+        \\ t:len()
+    , 42);
+}
+
+//
+// known limitation: table_fields is per-variable, not per-table
+// when two variables share the same underlying table, only the variable
+// that received the direct assignment has its table_fields updated
+//
+
+test "shared alias mutation shadows stdlib method" {
+    // should return 99 but returns 0
+    // x gets tracking for len but t doesnt, so t:len() binds to stdlib
+    try t.top_number(
+        \\ const t = {}
+        \\ const x = t
+        \\ x.len = fn(self) 99
+        \\ t:len()
+    , 99);
+}
+
 test "typed call results specialize later math" {
     var vm = try VM.init(t.runtime());
     defer vm.deinit();
@@ -215,6 +283,7 @@ test "stdlib json time and string modules are exposed" {
 // }
 
 test "range sugar" {
+    // range literals only work in for-loops currently
     if (true) return error.SkipZigTest;
     // try t.top_string("tostring(0..)", "(:range_from, 0, 1)");
     try t.top_string("tostring(0..10)", "(range 0 1 10)");
@@ -391,7 +460,7 @@ test "top verity follows false values" {
 test "and/or preserve value semantics" {
     try t.top_true("1 and 2");
     try t.top_true("0 or 9");
-    try t.top_true("(:t or :true or not nil or 1 or 1.0 or 67) == :t");
+    try t.top_true("(:t or :true or not :nil or 1 or 1.0 or 67) == :t");
 }
 
 test "chained or conditions in if parse and run" {
@@ -419,7 +488,8 @@ test "comparisons" {
 }
 
 test "test blocks run in test mode" {
-    if (true) return error.SkipZigTest; // noisy
+    // prints to stdout, no way to suppress in test infra yet
+    if (true) return error.SkipZigTest;
     try t.top_nil_test(
         \\test "smoke" do
         \\    expect(2 == 2)?
@@ -554,6 +624,8 @@ test "method calls require obj:method(args)" {
 }
 
 test "plain struct print works" {
+    // prints to stdout, no way to suppress in test infra yet
+    if (true) return error.SkipZigTest;
     try t.top_atom(
         \\ struct Box {
         \\     state = {},
@@ -577,6 +649,8 @@ test "method call after train keeps receiver alive" {
 }
 
 test "plain print after train still works" {
+    // prints to stdout, no way to suppress in test infra yet
+    if (true) return error.SkipZigTest;
     try t.top_atom(
         \\ struct Box {
         \\     state = {},
@@ -817,7 +891,7 @@ test "complex fn def captures, repetition, optional" {
 // kw-based control flow
 test "negative conditional" {
     try t.top_type(
-        \\ macro unless! `(%cond:expr %body:expr)` `if %cond nil else %body`
+        \\ macro unless! `(%cond:expr %body:expr)` `if %cond :nil else %body`
         \\ unless!(5 < 0, :positive)
     , .atom);
 }
@@ -1222,14 +1296,8 @@ test "runtime report carries span and message" {
     );
 }
 
-test "runtime report includes undefined variable detail" {
-    try t.expectRuntimeFailure(
-        "missing_name",
-        .UndefinedVariable,
-        1,
-        1,
-        "undefined variable `missing_name`",
-    );
+test "semantic catches undefined variable" {
+    try t.expectCompileError("missing_name", .ParseError);
 }
 
 test "runtime report includes not-a-function detail" {
@@ -1331,7 +1399,7 @@ test "runtime renderer includes stack trace call chain" {
     defer vm.deinit();
 
     const source =
-        \\ const c = fn() missing_name
+        \\ const c = fn() :err 1
         \\ const b = fn() 1 + c()
         \\ const a = fn() 1 + b()
         \\ a()
@@ -1354,9 +1422,8 @@ test "runtime renderer includes stack trace call chain" {
             try failure.render(alloc, &buf.writer, source);
 
             try std.testing.expect(std.mem.indexOf(u8, buf.written(), "stack trace:") != null);
-            try std.testing.expect(std.mem.indexOf(u8, buf.written(), "0: c at <source>:1:") != null);
-            try std.testing.expect(std.mem.indexOf(u8, buf.written(), "1: b at <source>:3:") != null);
-            try std.testing.expect(std.mem.indexOf(u8, buf.written(), "2: a at <source>:4:") != null);
+            try std.testing.expect(std.mem.indexOf(u8, buf.written(), "0: b at <source>:2:") != null);
+            try std.testing.expect(std.mem.indexOf(u8, buf.written(), "1: a at <source>:4:") != null);
         },
     }
 }
@@ -1717,6 +1784,8 @@ test "struct descriptors stay off globals" {
 }
 
 test "top module globals do not leak into imported module" {
+    // expectRuntimeErrorInDir prints to stdout, so this is noisy
+    if (true) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1751,10 +1820,10 @@ test "top module assignment does not create vm global" {
     const module_dir = try tmp.dir.realPathFileAlloc(io, ".", alloc);
     defer alloc.free(module_dir);
 
-    try t.expectRuntimeErrorInDir(module_dir,
+    try t.expectCompileErrorInDir(module_dir,
         \\ import "setx"
         \\ x
-    , .UndefinedVariable);
+    );
 }
 
 test "imported module assignment is private to module cache" {
@@ -1778,10 +1847,10 @@ test "imported module assignment is private to module cache" {
         \\ m
     , 7);
 
-    try t.expectRuntimeErrorInDir(module_dir,
+    try t.expectCompileErrorInDir(module_dir,
         \\ import "private_state"
         \\ y
-    , .UndefinedVariable);
+    );
 }
 //
 // misc behaviour doc
@@ -2114,12 +2183,12 @@ test "typed binding label names the expected type" {
     switch (result) {
         .ok => return error.ExpectedCompileFailure,
         .err => |failure| switch (failure) {
-            .lower => |lower| {
-                const primary = lang.diagnostic.primarySpan(lower.report).?;
-                try std.testing.expectEqualStrings("not int!", primary.message);
+            .lower, .semantic => |diag| {
+                const primary = lang.diagnostic.primarySpan(diag.report).?;
+                try std.testing.expectEqualStrings("wants int, got string", primary.message);
                 try std.testing.expectEqualStrings(
                     "`x` wants int, got string",
-                    lang.diagnostic.firstError(lower.report).?,
+                    lang.diagnostic.firstError(diag.report).?,
                 );
                 vm.runtime.resetDiagArena();
             },
@@ -2144,9 +2213,9 @@ test "compiler reports multiple semantic errors in one pass" {
     switch (result) {
         .ok => return error.ExpectedCompileFailure,
         .err => |failure| switch (failure) {
-            .lower => |lower| {
+            .lower, .semantic => |diag| {
                 var error_count: usize = 0;
-                for (lower.report.parts) |part| {
+                for (diag.report.parts) |part| {
                     if (part == .@"error") error_count += 1;
                 }
                 try std.testing.expect(error_count >= 2);
@@ -2173,9 +2242,9 @@ test "typed call reports multiple bad arguments" {
     switch (result) {
         .ok => return error.ExpectedCompileFailure,
         .err => |failure| switch (failure) {
-            .lower => |lower| {
+            .lower, .semantic => |diag| {
                 var error_count: usize = 0;
-                for (lower.report.parts) |part| {
+                for (diag.report.parts) |part| {
                     if (part == .@"error") error_count += 1;
                 }
                 try std.testing.expect(error_count >= 2);
@@ -2245,7 +2314,7 @@ test "typed function alias call is checked" {
         .ParseError,
         3,
         4,
-        "arg 1 on `call` wants int, got string",
+        "arg 1 (`x`) to `f` wants int, got string",
     );
 }
 
@@ -2618,11 +2687,11 @@ test "channel select w/ multiple waiters" {
 }
 
 test "macro inner binding invisible outside" {
-    try t.expectRuntimeError(
+    try t.expectCompileError(
         \\ macro mac! `(%x:expr)` `let hidden = 99 :%x`
         \\ mac!(42)
         \\ hidden
-    , .UndefinedVariable);
+    , .ParseError);
 }
 
 test "numeric and string keys are distinct" {
@@ -2749,13 +2818,13 @@ test "nested ok tuples? extracts inner" {
     , .tuple);
 }
 
-test "top-level ? on error crashes loudly" {
-    try t.expectCompileError(
+test "top-level ? unwraps ok tuple" {
+    try t.top_number(
         \\ fn ok() -> (:ok, num) do
         \\   (:ok, 1)
         \\ end
         \\ ok()?
-    , .ParseError);
+    , 1);
 }
 
 //

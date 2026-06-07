@@ -37,39 +37,6 @@ pub fn compileLocalBinding(
             "name with ? is reserved for functions returning bool",
             &.{},
         );
-    // type check before alloc
-    if (type_name) |tn| {
-        type_check.validateBindingType(self, tn, value) catch |err| switch (err) {
-            error.TypeError => {
-                const actual = type_check.inferExprType(self, value);
-                const expected_type = try types_mod.evalTypeExpr(self, tn);
-                const tn_str = try types_mod.formatType(self.alloc, expected_type);
-                const msg = try std.fmt.allocPrint(
-                    self.alloc,
-                    "`{s}` wants {s}, got {s}",
-                    .{ name, tn_str, types_mod.typeName(actual) },
-                );
-                const label = try std.fmt.allocPrint(
-                    self.alloc,
-                    "not {s}!",
-                    .{tn_str},
-                );
-                self.alloc.free(tn_str);
-                return self.setFailureParts(
-                    .ParseError,
-                    .{
-                        .span = value.span,
-                        .role = .primary,
-                        .message = label,
-                    },
-                    msg,
-                    &.{},
-                );
-            },
-            error.OutOfMemory => return error.OutOfMemory,
-        };
-    }
-
     // fn slots can be reused if not initialized
     const slot = if (value.expr == .fn_expr)
         try state.reuseOrDeclareLocal(self, name, mutable)
@@ -259,29 +226,6 @@ fn compileAssignSimple(
 ) !void {
     switch (target.expr) {
         .ident => |name| {
-            type_check.validateAssignmentType(self, target, value) catch |err| switch (err) {
-                error.TypeError => {
-                    const loc = state.resolveLocalVar(self, name) orelse unreachable;
-                    const type_name = loc.type_name orelse unreachable;
-                    const actual = type_check.inferExprType(self, value);
-                    const msg = try std.fmt.allocPrint(
-                        self.alloc,
-                        "`{s}` wants {s}, got {s}",
-                        .{ name, type_name, types_mod.typeName(actual) },
-                    );
-                    return self.setFailureParts(
-                        .ParseError,
-                        .{
-                            .span = value.span,
-                            .role = .primary,
-                            .message = try std.fmt.allocPrint(self.alloc, "not {s}!", .{type_name}),
-                        },
-                        msg,
-                        &.{},
-                    );
-                },
-            };
-
             try self.compile(value, true);
             try self.regDupe();
             if (state.resolveLocal(self, name)) |slot| {
@@ -291,35 +235,6 @@ fn compileAssignSimple(
                 const inferred_type = type_check.inferExprType(self, value);
                 try state.setLocalTypeHint(self, name, inferred_type);
             } else if (try state.resolveUpvalue(self, name)) |slot| {
-                type_check.validateUpvalueAssignmentType(self, name, value) catch |err| switch (err) {
-                    error.TypeError => {
-                        const actual = type_check.inferExprType(self, value);
-                        var fn_idx = self.functions.items.len - 1;
-                        var type_name: ?[]const u8 = null;
-                        while (fn_idx > 0) {
-                            fn_idx -= 1;
-                            const loc = state.resolveLocalVarIn(self, fn_idx, name) orelse continue;
-                            type_name = loc.type_name;
-                            break;
-                        }
-                        const tn = type_name orelse "unknown";
-                        const msg = try std.fmt.allocPrint(
-                            self.alloc,
-                            "`{s}` wants {s}, got {s}",
-                            .{ name, tn, types_mod.typeName(actual) },
-                        );
-                        return self.setFailureParts(
-                            .ParseError,
-                            .{
-                                .span = value.span,
-                                .role = .primary,
-                                .message = try std.fmt.allocPrint(self.alloc, "not {s}!", .{tn}),
-                            },
-                            msg,
-                            &.{},
-                        );
-                    },
-                };
                 try self.emit(.store_upval, slot);
             } else {
                 if (self.functions.items.len == 1) {
@@ -346,6 +261,7 @@ fn compileAssignSimple(
                             try self.vm.internAtom(field.name),
                             value,
                         );
+                        try addFieldToLocalTableFields(self, field.object, field.name);
                         return;
                     };
                     const desc = self.vm.struct_types.getType(type_id) orelse {
@@ -355,54 +271,17 @@ fn compileAssignSimple(
                             try self.vm.internAtom(field.name),
                             value,
                         );
+                        try addFieldToLocalTableFields(self, field.object, field.name);
                         return;
                     };
                     const field_atom = try self.vm.internAtom(field.name);
                     const field_offset = desc.fieldIndex(field_atom) orelse {
                         try self.compile(field.object, true);
                         try compileAssignIntoTableAtom(self, field_atom, value);
+                        try addFieldToLocalTableFields(self, field.object, field.name);
                         return;
                     };
 
-                    type_check.validateAssignmentType(self, target, value) catch |err| switch (err) {
-                        error.TypeError => {
-                            const actual = type_check.inferExprType(self, value);
-                            const expected = if (field_offset < desc.fields.len) blk: {
-                                if (desc.fields[field_offset].type_atom) |ta| {
-                                    break :blk types_mod.resolveTypeName(
-                                        self,
-                                        self.vm.atomName(ta),
-                                    );
-                                }
-                                break :blk types_mod.TypeInfo.any;
-                            } else types_mod.TypeInfo.any;
-                            const msg = try std.fmt.allocPrint(
-                                self.alloc,
-                                "`{s}[{s}]` wants {s}, got {s}",
-                                .{
-                                    type_name,
-                                    field.name,
-                                    types_mod.typeName(expected),
-                                    types_mod.typeName(actual),
-                                },
-                            );
-                            const label = try std.fmt.allocPrint(
-                                self.alloc,
-                                "field `{s}` on `{s}`",
-                                .{ field.name, type_name },
-                            );
-                            return self.setFailureParts(
-                                .ParseError,
-                                .{
-                                    .span = value.span,
-                                    .role = .primary,
-                                    .message = label,
-                                },
-                                msg,
-                                &.{},
-                            );
-                        },
-                    };
                     try self.compile(field.object, true);
                     try self.compile(value, true);
                     try self.emit(.struct_set_offset, @intCast(field_offset));
@@ -416,18 +295,20 @@ fn compileAssignSimple(
                         try self.vm.internAtom(field.name),
                         value,
                     );
+                    try addFieldToLocalTableFields(self, field.object, field.name);
                 },
             }
         },
         .index => |index| {
             try self.compile(index.object, true);
-            if (index.key.expr == .hash)
+            if (index.key.expr == .hash) {
                 try compileAssignIntoTableAtom(
                     self,
                     try self.vm.internAtom(index.key.expr.hash),
                     value,
-                )
-            else {
+                );
+                try addFieldToLocalTableFields(self, index.object, index.key.expr.hash);
+            } else {
                 try self.compile(index.key, true);
                 try self.compile(value, true);
                 try self.emit(.table_set, 0);
@@ -443,6 +324,21 @@ fn compileAssignSimple(
             return self.fail(.InvalidAssignmentTarget, target, msg);
         },
     }
+}
+
+fn addFieldToLocalTableFields(self: *Compiler, object: *const Node, field_name: []const u8) !void {
+    if (object.expr != .ident) return;
+    const name = object.expr.ident;
+    const local = state.resolveLocalVar(self, name) orelse return;
+    if (local.table_fields) |fields| {
+        for (fields) |f| if (std.mem.eql(u8, f, field_name)) return;
+    }
+    const field_dup = try self.alloc.dupe(u8, field_name);
+    const old = local.table_fields orelse &[_][]const u8{};
+    const new_fields = try self.alloc.alloc([]const u8, old.len + 1);
+    @memcpy(new_fields[0..old.len], old);
+    new_fields[old.len] = field_dup;
+    state.setLocalTableFields(self, local.slot, new_fields);
 }
 
 fn applyLocalTableFields(
