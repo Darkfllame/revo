@@ -89,12 +89,41 @@ pub fn build(b: *std.Build) void {
     b.step("run", "run the cli").dependOn(&run_cmd.step);
 
     //
+    // erevo library & header
+    //
+    const erevo_mod = b.addModule("erevo", .{
+        .root_source_file = b.path("src/c/erevo.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    for (imports) |imp| erevo_mod.addImport(imp[0], imp[1]);
+
+    const lib = b.addLibrary(.{
+        .name = "erevo",
+        .root_module = erevo_mod,
+    });
+
+    const write_files = b.addWriteFiles();
+    const bindings = @import("src/c/bindings.zig");
+    const header_data = bindings.data(b.allocator) catch |err| {
+        std.debug.print("failed to autogen header: {any}\n", .{err});
+        std.process.exit(1);
+    };
+    const header_path = write_files.add("revo.h", header_data.items);
+
+    const lib_step = b.step("lib", "build the erevo library");
+    lib_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
+    lib_step.dependOn(&b.addInstallFile(header_path, "include/revo.h").step);
+
+    //
     // check step
     //
     const check_step = b.step("check", "type-check without codegen or linking");
     check_step.dependOn(&b.addTest(.{ .root_module = vm_mod, .filters = test_filters }).step);
     check_step.dependOn(&b.addTest(.{ .root_module = revo_mod, .filters = test_filters }).step);
     check_step.dependOn(&b.addTest(.{ .root_module = exe_root, .filters = test_filters }).step);
+    check_step.dependOn(&b.addTest(.{ .root_module = c_mod, .filters = test_filters }).step);
     check_step.dependOn(&b.addTest(.{ .root_module = lspModule(b, target, optimize, revo_mod, &imports, have_lsp), .filters = test_filters }).step);
 
     //
@@ -114,6 +143,25 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_vm_step);
     test_step.dependOn(test_revo_step);
     test_step.dependOn(test_exe_step);
+
+    //
+    // c test suite
+    //
+    const test_c_step = b.step("test-c", "run c api tests");
+    test_c_step.dependOn(lib_step);
+
+    const c_test_bin = b.addSystemCommand(&.{
+        "cc", "-std=c99", "-Wall", "-Wextra",
+        "-Izig-out/include",
+        "src/c/tests.c",
+        "zig-out/lib/liberevo.a",
+        "-lm", "-o", ".zig-cache/revo-c-test",
+    });
+    test_c_step.dependOn(&c_test_bin.step);
+
+    const c_test_run = b.addSystemCommand(&.{ ".zig-cache/revo-c-test" });
+    c_test_run.step.dependOn(&c_test_bin.step);
+    test_c_step.dependOn(&c_test_run.step);
 
     //
     // releases
@@ -158,34 +206,6 @@ pub fn build(b: *std.Build) void {
         });
         release_step.dependOn(&install.step);
     }
-
-    //
-    // erevo library & header
-    //
-    const erevo_mod = b.addModule("erevo", .{
-        .root_source_file = b.path("src/c/erevo.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    for (imports) |imp| erevo_mod.addImport(imp[0], imp[1]);
-
-    const lib = b.addLibrary(.{
-        .name = "erevo",
-        .root_module = erevo_mod,
-    });
-
-    const write_files = b.addWriteFiles();
-    const bindings = @import("src/c/bindings.zig");
-    const header_data = bindings.data(b.allocator) catch |err| {
-        std.debug.print("failed to autogen header: {any}\n", .{err});
-        std.process.exit(1);
-    };
-    const header_path = write_files.add("revo.h", header_data.items);
-
-    const lib_step = b.step("lib", "build the erevo library");
-    lib_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
-    lib_step.dependOn(&b.addInstallFile(header_path, "include/revo.h").step);
 
     //
     // lsp
