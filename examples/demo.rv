@@ -97,17 +97,17 @@ fn control_flow() do
 
   # match is an expression with pattern matching and guards
   const msg = match 5
-    | 1 "one"
-    | 2 "two"
-    | v when v > 3 "big"
-    | _ "other"
+    | 1 => "one"
+    | 2 => "two"
+    | v when v > 3 => "big"
+    | _ => "other"
   print(msg)
 
   # match on tuples: pattern matching extracts values
   const result = match (10, "ok")
-    | (n, "ok") when n > 5 "success: " + tostring(n)
-    | (n, "ok") "small success"
-    | (_, err) "error: " + err
+    | (n, "ok") when n > 5 => "success: " + tostring(n)
+    | (n, "ok") => "small success"
+    | (_, err) => "error: " + err
   print(result)
 
   # reduce iterates over a collection, accumulating a result
@@ -187,8 +187,8 @@ fn error_handling() do
   # match extracts the value from a result type
   const ok_val = safe_div(10, 2)
   const result = match ok_val
-    | (:ok, v) v
-    | (:err, e) 0
+    | (:ok, v) => v
+    | (:err, e) => 0
 
   # orelse provides a fallback value on error
   const bad_val = safe_div(10, 0)

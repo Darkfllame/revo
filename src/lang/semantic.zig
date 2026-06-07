@@ -91,11 +91,17 @@ const SemanticChecker = struct {
             try checker.declare(name, .any);
 
         // registers stdlib function types
+        // prefer specs with global placement for global names
         for (known_globals) |name| {
-            if (revo.std_lib.api.find(name)) |spec| {
-                if (try checker.makeStdlibSig(spec)) |sig| {
-                    try checker.scopes.items[checker.scopes.items.len - 1].values.put(name, .{ .function = &sig.sig });
-                }
+            const spec = find_global: {
+                for (revo.std_lib.api.all_specs) |group| for (group) |s| {
+                    if (!std.mem.eql(u8, s.name, name)) continue;
+                    for (s.placements) |pl| if (pl.kind == .global) break :find_global s;
+                };
+                break :find_global revo.std_lib.api.find(name);
+            } orelse continue;
+            if (try checker.makeStdlibSig(spec)) |sig| {
+                try checker.scopes.items[checker.scopes.items.len - 1].values.put(name, .{ .function = &sig.sig });
             }
         }
         return checker;
