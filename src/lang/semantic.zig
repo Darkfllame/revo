@@ -670,6 +670,18 @@ const SemanticChecker = struct {
                         try fields.put(idx.key.expr.hash, value_type);
                     }
                 }
+
+                const actual_type = try self.analyzeNode(idx.object);
+                if (!types_mod.canCoerce(.{ .struct_type = "table" }, actual_type)) {
+                    const name_str = try types_mod.formatType(self.alloc, actual_type);
+                    try self.appendTypeMismatch(
+                        idx.object.span,
+                        name_str,
+                        "table",
+                        actual_type,
+                    );
+                    self.alloc.free(name_str);
+                }
             },
             else => {},
         }

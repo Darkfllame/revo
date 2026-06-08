@@ -1300,6 +1300,14 @@ test "semantic catches undefined variable" {
     try t.expectCompileError("missing_name", .ParseError);
 }
 
+test "semantic catches trying to mutate a tuple variable" {
+    try t.expectCompileError("tup = (0,0) tup[0] = 1", .ParseError);
+}
+
+test "semantic catches trying to mutate a tuple literal" {
+    try t.expectCompileError("(0,0)[0] = 1", .ParseError);
+}
+
 test "runtime report includes not-a-function detail" {
     try t.expectRuntimeFailure(
         "1(2)",
