@@ -64,7 +64,11 @@ pub fn build(vm: *VM, source: Source, opts: BuildOptions) !BuildResult {
         null,
         &type_annotations,
     )) |semantic_err| {
-        return .{ .err = semantic_err };
+        var copied = try semantic_err.semantic.report.copy(vm.runtime.diag_alloc);
+        copied.source_name = source.name;
+        copied.source = source.text;
+        deinitError(vm.runtime.alloc, semantic_err);
+        return .{ .err = .{ .semantic = .{ .kind = semantic_err.semantic.kind, .report = copied } } };
     }
 
     const lower_result = try lower(vm, expanded, .{
