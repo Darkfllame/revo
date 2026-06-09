@@ -42,19 +42,30 @@ pub const specs: []const api.FnSpec = &.{
     },
     .{
         .name = "filter",
-        .placements = all_places,
+        .placements = &.{api.mod("iter")},
         .params = &.{
-            .{ "collection", "any" },
+            .{ "iterable", "any" },
             .{ "pred", "function" },
         },
-        .ret = "string|tuple|table",
+        .ret = "function",
         .doc =
-        \\keeps only elements where function returns true
-        \\    filter("hello", fn(c) = c != "l")
-        \\    filter((1,2,3,4), fn(x) = x > 2)
-        \\    filter({a=1, b=2}, fn(v) = v > 1)
+        \\returns a new iterator that only yields values where pred returns truthy
+        \\    iter.filter(iterable, fn(x) = x > 2)
         ,
         .f = root.define(&.{ .any, .function }, filter_fn),
+    },
+    .{
+        .name = "collect",
+        .placements = &.{api.mod("iter")},
+        .params = &.{
+            .{ "iterable", "any" },
+        },
+        .ret = "table",
+        .doc =
+        \\collects all values from an iterable into a table
+        \\    iter.collect(iterable)
+        ,
+        .f = root.define(&.{.any}, collect_fn),
     },
     .{
         .name = "reduce",
@@ -210,75 +221,71 @@ pub fn map_fn(args: []const Data, vm: *VM) !NativeResult {
     }
 }
 
-/// > filter(collection: string|tuple|table, fn: function) -> string|tuple|table
-/// keeps only elements where function returns true
-///     filter("hello", fn(c) = c != "l")
-///     filter((1,2,3,4), fn(x) = x > 2)
-///     filter({a=1, b=2}, fn(v) = v > 1)
+/// > filter(iterable: any, pred: function) -> function
+/// returns a new iterator that only yields values where pred returns truthy
 pub fn filter_fn(args: []const Data, vm: *VM) !NativeResult {
     if (args.len < 2) return .errArity(args.len, 2);
 
-    const fn_data = args[1];
-    if (!fn_data.isFunction()) return .errType(1, "function", dataToString(fn_data));
+    const result = try to_iter(args[0..1], vm);
+    const iter = result.ok;
+    const pred = args[1];
+    if (!pred.isFunction()) return .errType(1, "function", dataToString(pred));
 
-    switch (args[0].tag()) {
-        .string => {
-            const str = vm.stringValue(args[0].asString().?);
-            var buf = try std.ArrayList(u8).initCapacity(vm.runtime.alloc, str.len);
-            errdefer buf.deinit(vm.runtime.alloc);
+    const atom_iter = try vm.internAtom("iter");
+    const atom_pred = try vm.internAtom("pred");
 
-            for (str) |byte| {
-                const char_str = try vm.ownDataString(&[_]u8{byte});
-                const fn_result = try vm.callFunction(fn_data, &[_]Data{char_str});
-                if (isTruthy(fn_result)) {
-                    try buf.append(vm.runtime.alloc, byte);
-                }
-            }
+    const it_id = try vm.tables.create();
+    const it = try vm.tables.get(it_id);
+    try it.putRaw(Data.new.atom(atom_iter), iter);
+    try it.putRaw(Data.new.atom(atom_pred), pred);
 
-            const result_str = try vm.adoptDataString(try buf.toOwnedSlice(vm.runtime.alloc));
-            return .{ .ok = result_str };
-        },
-        .tuple => {
-            const t_id = args[0].asTuple().?;
-            const tuple = try vm.tuples.get(t_id);
-            var result_items = try std.ArrayList(Data).initCapacity(vm.runtime.alloc, tuple.items.len);
-            errdefer result_items.deinit(vm.runtime.alloc);
+    const mt_id = try vm.tables.create();
+    const mt = try vm.tables.get(mt_id);
+    const call_fn_id = try vm.installNative("filter_next", .{
+        .arity = 1,
+        .param_types = &.{.any},
+        .func = filterNext,
+    });
+    try mt.putRawAtom(try vm.internAtom("__call"), Data.new.function(call_fn_id));
+    try vm.setTableMetatable(it_id, mt_id);
 
-            for (tuple.items) |item| {
-                const fn_result = try vm.callFunction(fn_data, &[_]Data{item});
-                if (isTruthy(fn_result)) {
-                    try result_items.append(vm.runtime.alloc, item);
-                }
-            }
+    return .okData(Data.new.table(it_id));
+}
 
-            const result_tuple = try vm.tuples.create(result_items.items);
-            result_items.deinit(vm.runtime.alloc);
-            return .okData(Data.new.tuple(result_tuple));
-        },
-        .table => {
-            const table_id = args[0].asTable().?;
-            const result_table_id = try vm.tables.create();
-            const result_table = try vm.tables.get(result_table_id);
-            const table = try vm.tables.get(table_id);
+/// > collect(iterable: any) -> table
+/// collects all values from an iterable into a table
+pub fn collect_fn(args: []const Data, vm: *VM) !NativeResult {
+    if (args.len < 1) return .errArity(args.len, 1);
 
-            for (table.array.items) |item| {
-                const fn_result = try vm.callFunction(fn_data, &[_]Data{item});
-                if (isTruthy(fn_result)) {
-                    try result_table.array.append(vm.runtime.alloc, item);
-                }
-            }
+    const result = try to_iter(args[0..1], vm);
+    const iter = result.ok;
 
-            var hash_it = table.hash.orderedIterator();
-            while (hash_it.next()) |entry| {
-                const fn_result = try vm.callFunction(fn_data, &[_]Data{entry.val});
-                if (isTruthy(fn_result)) {
-                    try result_table.putRaw(entry.key, entry.val);
-                }
-            }
+    const out_id = try vm.tables.create();
+    const out = try vm.tables.get(out_id);
 
-            return .okData(Data.new.table(result_table_id));
-        },
-        else => return .errType(0, "string, tuple, or table", dataToString(args[0])),
+    while (true) {
+        const val = try vm.callFunction(iter, &.{});
+        if (val.asAtom()) |atom| if (atom == revo.core_atoms.atom_id(.done)) break;
+        try out.array.append(vm.runtime.alloc, val);
+    }
+
+    return .okData(Data.new.table(out_id));
+}
+
+/// __call handler for filter iterator tables
+/// reads self.iter and self.pred, skips values that fail predicate
+fn filterNext(args: []const Data, vm: *VM) !NativeResult {
+    const tbl_id = args[0].asTable().?;
+    const tbl = try vm.tables.get(tbl_id);
+    const iter = tbl.getRawAtom(try vm.internAtom("iter")).?;
+    const pred = tbl.getRawAtom(try vm.internAtom("pred")).?;
+    const done_id = revo.core_atoms.atom_id(.done);
+
+    while (true) {
+        const val = try vm.callFunction(iter, &.{});
+        if (val.asAtom()) |atom| if (atom == done_id) return .okData(revo.core_atoms.data(.done));
+        const ok = try vm.callFunction(pred, &[_]Data{val});
+        if (isTruthy(ok)) return .okData(val);
     }
 }
 
@@ -554,6 +561,10 @@ pub fn to_iter(args: []const Data, vm: *VM) !NativeResult {
 
     if (try vm.getMetamethodByAtom(obj, revo.core_atoms.__iter.atom_id())) |mm|
         return .okData(try vm.callFunction(mm, &[_]Data{obj}));
+
+    // callable tables are already iterators
+    if (obj.tag() == .table and try vm.getMetamethodByAtom(obj, revo.core_atoms.__call.atom_id()) != null)
+        return .okData(obj);
 
     if (obj.tag() == .string or obj.tag() == .tuple or obj.tag() == .table)
         return makeCallableIterator(vm, obj);
