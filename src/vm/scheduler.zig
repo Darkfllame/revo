@@ -237,7 +237,7 @@ pub inline fn setFiberState(self: *@This(), fid: FiberID, new_state: Fiber.State
     const old_state = fiber.state;
     if (old_state == new_state) return;
     // adjust waiting cnt on transition
-    if (old_state == .waiting and self.waiting_cnt > 0) self.waiting_cnt -= 1;
+    if (old_state == .waiting) self.waiting_cnt -|= 1;
     if (new_state == .waiting) self.waiting_cnt += 1;
     fiber.state = new_state;
 }

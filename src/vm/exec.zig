@@ -948,9 +948,9 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
             continue :dispatch instr.op;
         },
         .range_next => {
-            const current = (regRead(regs, base, instr.b)).as_number() catch return self.evalFailure(error.TypeError);
-            const step = (regRead(regs, base, instr.b + 1)).as_number() catch return self.evalFailure(error.TypeError);
-            const limit = (regRead(regs, base, instr.b + 2)).as_number() catch return self.evalFailure(error.TypeError);
+            const current = @as(f64, @bitCast((regRead(regs, base, instr.b)).bits));
+            const step = @as(f64, @bitCast((regRead(regs, base, instr.b + 1)).bits));
+            const limit = @as(f64, @bitCast((regRead(regs, base, instr.b + 2)).bits));
 
             const has_next = (step > 0 and current < limit) or (step < 0 and current > limit);
 

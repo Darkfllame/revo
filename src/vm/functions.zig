@@ -127,8 +127,8 @@ pub const Closure = struct {
     // cache prototype id and register_count so VM can size frames without a prototype lookup
     prototype: PrototypeID,
     segment_id: usize = 0,
-    arity: u8,
     addr: ProgramCounter,
+    arity: u8,
     register_count: RegisterCount,
     name: []const u8,
     upvalues: []UpvalueID,

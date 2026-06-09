@@ -27,7 +27,7 @@ const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 pub const BOX_MASK: u64 = 0x7FF0_0000_0000_0000;
 const TAG_SHIFT: u6 = 48;
 const TAG_MASK: u64 = 0x000F;
-const CANONICAL_NAN: u64 = 0x7FFF_0000_0000_0000;
+const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
 
 pub const Data = struct {
     bits: u64,

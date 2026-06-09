@@ -166,30 +166,30 @@ pub inline fn markRoots(self: *VM) void {
 pub inline fn pushMark(self: *VM, data: revo.Data) void {
     switch (data.tag()) {
         .string, .table, .tuple, .function, .struct_val => {
-            self.gc_mark_stack.append(self.runtime.alloc, .{ .data = data }) catch return;
+            self.gc_mark_stack.append(self.runtime.alloc, .{ .data = data }) catch @panic("OOM in GC marking");
         },
         else => {},
     }
 }
 
 pub inline fn pushMarkTable(self: *VM, id: anytype) void {
-    self.gc_mark_stack.append(self.runtime.alloc, .{ .table = id }) catch return;
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .table = id }) catch @panic("OOM in GC marking");
 }
 
 pub inline fn pushMarkTuple(self: *VM, id: anytype) void {
-    self.gc_mark_stack.append(self.runtime.alloc, .{ .tuple = id }) catch return;
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .tuple = id }) catch @panic("OOM in GC marking");
 }
 
 pub inline fn pushMarkFunction(self: *VM, id: anytype) void {
-    self.gc_mark_stack.append(self.runtime.alloc, .{ .function = id }) catch return;
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .function = id }) catch @panic("OOM in GC marking");
 }
 
 pub inline fn pushMarkUpvalue(self: *VM, id: anytype) void {
-    self.gc_mark_stack.append(self.runtime.alloc, .{ .upvalue = id }) catch return;
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .upvalue = id }) catch @panic("OOM in GC marking");
 }
 
 pub inline fn pushMarkStructInstance(self: *VM, id: anytype) void {
-    self.gc_mark_stack.append(self.runtime.alloc, .{ .struct_instance = id }) catch return;
+    self.gc_mark_stack.append(self.runtime.alloc, .{ .struct_instance = id }) catch @panic("OOM in GC marking");
 }
 
 pub inline fn markDataImpl(self: *VM, data: revo.Data) void {
