@@ -529,7 +529,7 @@ pub const Compiler = struct {
             .string => |s| try self.@"const"(try self.vm.ownDataString(s)),
             .multiline_string => |s| try self.@"const"(try self.vm.ownDataString(s)),
             .hash => |name| try self.@"const"(Data.new.atom(try self.vm.internAtom(name))),
-            .nil => try self.@"const"(Data.new.atom(try self.vm.internAtom("nil"))),
+            .nil => try self.@"const"(Data.new.atom(revo.core_atoms.nil.atom_id())),
             .ident => |name| {
                 if (state_mod.resolveLocal(self, name)) |slot| {
                     try self.emit(.load_local, slot);
@@ -700,7 +700,7 @@ pub const Compiler = struct {
                 try self.emit(.ret, 1);
             },
             .import_expr => |path| {
-                try self.emit(.load_global, try self.vm.internAtom("import"));
+                try self.emit(.load_global, revo.core_atoms.import.atom_id());
                 try self.compile(path, true);
                 try self.emit(.call, 1);
             },

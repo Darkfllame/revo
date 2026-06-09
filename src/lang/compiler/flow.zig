@@ -219,7 +219,7 @@ pub fn compileFor(
     defer loop.deinit();
 
     // wrap expression with to_iter
-    try self.emit(.load_global, try self.vm.internAtom("to_iter"));
+    try self.emit(.load_global, revo.core_atoms.to_iter.atom_id());
     try self.compile(iter, true);
     try self.emit(.call, 1);
     const it_slot: LocalSlot = @intCast(self.active_registers - 1);
@@ -252,7 +252,7 @@ pub fn compileFor(
     try self.emit(.call, 0);
     // check for :done
     try self.regDupe();
-    try self.@"const"(Data.new.atom(try self.vm.internAtom("done")));
+    try self.@"const"(Data.new.atom(revo.core_atoms.done.atom_id()));
     try self.emit(.eq, 0);
     const end_jump = try self.jump(.jump_if_true);
 
@@ -519,14 +519,14 @@ pub fn compilePatternChecks(
         .ident => {}, // always matches
         .tuple_pattern => |items| {
             // type check, then length, then each element
-            try self.emit(.load_global, try self.vm.internAtom("type"));
+            try self.emit(.load_global, revo.core_atoms.type.atom_id());
             try emitStorageLoad(self, subject);
             try self.emit(.call, 1);
-            try self.@"const"(Data.new.atom(try self.vm.internAtom("tuple")));
+            try self.@"const"(Data.new.atom(revo.core_atoms.tuple.atom_id()));
             try self.emit(.eq, 0);
             try fail_jumps.append(self.alloc, try self.jump(.jump_if_false));
 
-            try self.emit(.load_global, try self.vm.internAtom("len"));
+            try self.emit(.load_global, revo.core_atoms.len.atom_id());
             try emitStorageLoad(self, subject);
             try self.emit(.call, 1);
             try self.@"const"(Data.new.num(items.len));

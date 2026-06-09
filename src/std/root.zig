@@ -810,7 +810,7 @@ pub fn chan_new(args: []const Data, vm: *VM) !NativeResult {
 
     const channel_id = try vm.sched.channelCreate(&vm.tables, cap);
     const res = try vm.tuples.create(&[2]Data{
-        Data.new.atom(try vm.internAtom("chan")),
+        Data.new.atom(revo.core_atoms.chan.atom_id()),
         Data.new.num(channel_id),
     });
     return .okData(Data.new.tuple(res));
@@ -822,7 +822,7 @@ pub fn chan_send(args: []const Data, vm: *VM) !NativeResult {
     const tuple_id = args[0].asTuple() orelse return .errType(0, "tuple", dataToString(args[0]));
     const t = try vm.tuples.get(tuple_id);
     if (t.items.len < 2) return .errType(0, "chan tuple", "tuple");
-    const chan_atom = try vm.internAtom("chan");
+    const chan_atom = revo.core_atoms.chan.atom_id();
     if (t.items[0].asAtom() != chan_atom)
         return .errType(0, "chan tuple", "tuple");
     const chan_id = t.items[1].asNum() orelse return .errType(0, "chan tuple", "tuple");
@@ -837,7 +837,7 @@ pub fn chan_recv(args: []const Data, vm: *VM) !NativeResult {
     const tuple_id = args[0].asTuple() orelse return .errType(0, "tuple", dataToString(args[0]));
     const t = try vm.tuples.get(tuple_id);
     if (t.items.len < 2) return .errType(0, "chan tuple", "tuple");
-    const chan_atom = try vm.internAtom("chan");
+    const chan_atom = revo.core_atoms.chan.atom_id();
     if (t.items[0].asAtom() != chan_atom)
         return .errType(0, "chan tuple", "tuple");
     const chan_id = t.items[1].asNum() orelse return .errType(0, "chan tuple", "tuple");
@@ -998,7 +998,7 @@ pub fn read(args: []const Data, vm: *VM) !NativeResult {
     if (args.len == 1) {
         const t = args[0].asTable() orelse return .errType(0, "table", typeof(args[0]));
         const table = try vm.tables.get(t);
-        if (try table.get(Data.new.atom(try vm.internAtom("path")), vm)) |v| {
+        if (try table.get(Data.new.atom(revo.core_atoms.path.atom_id()), vm)) |v| {
             path = if (v.asString()) |id|
                 vm.stringValue(id)
             else if (v.asAtom()) |atom|
@@ -1009,10 +1009,10 @@ pub fn read(args: []const Data, vm: *VM) !NativeResult {
             else
                 return .errType(0, "string", typeof(v));
         }
-        if (try table.get(Data.new.atom(try vm.internAtom("delimiter")), vm)) |v| {
+        if (try table.get(Data.new.atom(revo.core_atoms.delimiter.atom_id()), vm)) |v| {
             if (v.asAtom()) |atom| {
-                const eof_id = try vm.internAtom("eof");
-                if (atom == revo.core_atoms.atom_id(.nil) or atom == eof_id)
+                const eof_id = revo.core_atoms.eof.atom_id();
+                if (atom == revo.core_atoms.nil.atom_id() or atom == eof_id)
                     read_eof = true
                 else
                     return .errType(0, "string, :nil, or :eof", typeof(v));
