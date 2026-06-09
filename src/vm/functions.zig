@@ -75,23 +75,20 @@ pub const CRevoData = extern struct {
         };
     }
 
-    pub fn ofData(data: Data, vm_alloc: std.mem.Allocator, strings: *const revo.VM.Interner, copies: *std.ArrayList([:0]u8)) !CRevoData {
+    pub fn ofData(data: Data) CRevoData {
         const tag = data.tag();
-        const value: u64 = switch (tag) {
-            .number => @bitCast(data.asNum().?),
-            .string => blk: {
-                const str_slice = strings.getAssumeAlive(data.asString().?);
-                const copy = try vm_alloc.dupeZ(u8, str_slice);
-                try copies.append(vm_alloc, copy);
-                break :blk @intFromPtr(copy.ptr);
+        return .{
+            .tag = @intFromEnum(tag),
+            .value = switch (tag) {
+                .number => @bitCast(data.asNum().?),
+                .string => data.asString().?,
+                .atom => data.asAtom().?,
+                .function => data.asFunction().?,
+                .table => data.asTable().?,
+                .tuple => data.asTuple().?,
+                .struct_val, .struct_type => unreachable,
             },
-            .atom => data.asAtom().?,
-            .function => data.asFunction().?,
-            .table => data.asTable().?,
-            .tuple => data.asTuple().?,
-            .struct_val, .struct_type => unreachable,
         };
-        return .{ .tag = @intFromEnum(tag), .value = value };
     }
 };
 

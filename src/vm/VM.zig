@@ -1130,31 +1130,15 @@ fn callNonClosureFunction(
             try self.ensureAbsoluteSlot(args_end);
             const args = fiber.registers[args_start..args_end];
 
-            var c_args = try self.runtime.alloc.alloc(
-                root.functions.CRevoData,
-                args.len,
-            );
-            defer self.runtime.alloc.free(c_args);
-
-            var string_copies = try std.ArrayList(
-                [:0]u8,
-            ).initCapacity(
-                self.runtime.alloc,
-                argc,
-            );
-            defer {
-                for (string_copies.items) |copy|
-                    self.runtime.alloc.free(copy);
-                string_copies.deinit(self.runtime.alloc);
-            }
+            var c_args_buf: [16]root.functions.CRevoData = undefined;
+            const c_args = if (args.len <= 16)
+                c_args_buf[0..args.len]
+            else
+                try self.runtime.alloc.alloc(root.functions.CRevoData, args.len);
+            defer if (args.len > 16) self.runtime.alloc.free(c_args);
 
             for (args, 0..) |arg, i|
-                c_args[i] = try root.functions.CRevoData.ofData(
-                    arg,
-                    self.runtime.alloc,
-                    &self.strings,
-                    &string_copies,
-                );
+                c_args[i] = root.functions.CRevoData.ofData(arg);
 
             var c_result: root.functions.CRevoData = .{
                 .tag = 0,
