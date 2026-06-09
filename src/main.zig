@@ -20,7 +20,7 @@ const USAGE =
     \\options:
     \\  -e code          run code
     \\  -i               enter interactive mode after executing
-    \\  -d               output the last value the program evaluated
+    \\  -d,-D            output the last value the program evaluated in display/debug mode
     \\  -b               compile script to bytecode (.rvo)
     \\  -o path          output path for -b (default: input with .rvo extension)
     \\  --test           run test blocks
@@ -57,7 +57,7 @@ const Config = struct {
     interactive: bool = false,
     test_mode: bool = false,
     bench_iters: u32 = 1,
-    echo_last: bool = false,
+    echo_last: ?revo.Data.RenderMode = null,
     argv: []const [:0]const u8 = &.{},
 };
 
@@ -262,11 +262,11 @@ fn compileSource(init: std.process.Init, vm: *VM, gpa: Allocator, source_name: [
     return artifact;
 }
 
-fn printResult(vm: *VM) !void {
+fn printResult(vm: *VM, mode: revo.Data.RenderMode) !void {
     var res = std.Io.Writer.Allocating.init(vm.runtime.alloc);
     defer res.deinit();
-    vm.mainResult().write(&res.writer, vm, .debug) catch return;
-    std.debug.print("{s}", .{res.written()});
+    vm.mainResult().write(&res.writer, vm, mode) catch return;
+    std.debug.print("{s}\n", .{res.written()});
 }
 
 fn runCompiledArtifact(
@@ -276,13 +276,13 @@ fn runCompiledArtifact(
     name: []const u8,
     artifact: Artifact,
     source: []const u8,
-    echo_last: bool,
+    echo_last: ?revo.Data.RenderMode,
 ) !void {
     try vm.setProgramDebugInfo(artifact.spans, source, name);
 
     const run_result = try revo.module.runCompiledModuleReport(vm, name, artifact.instructions);
     switch (run_result) {
-        .ok => if (echo_last) try printResult(vm),
+        .ok => if (echo_last) |mode| try printResult(vm, mode),
         .err => |failure| {
             revo.printEvalError(gpa, source, failure);
             vm.runtime.resetDiagArena();
@@ -306,11 +306,12 @@ fn parseArgs(init: std.process.Init, args: []const [:0]const u8) !Config {
             }
             try argv.append(init.arena.allocator(), args[0]);
             config.inline_code = args[i];
-            config.echo_last = true;
         } else if (std.mem.eql(u8, arg, "-i")) {
             config.interactive = true;
         } else if (std.mem.eql(u8, arg, "-d")) {
-            config.echo_last = true;
+            config.echo_last = .display;
+        } else if (std.mem.eql(u8, arg, "-D")) {
+            config.echo_last = .debug;
         } else if (std.mem.eql(u8, arg, "-b")) {
             config.mode = .compile;
         } else if (std.mem.eql(u8, arg, "-o")) {
@@ -449,7 +450,7 @@ fn benchArtifact(
     artifact: Artifact,
     source: []const u8,
     iters: u32,
-    echo_last: bool,
+    echo_last: ?revo.Data.RenderMode,
 ) !void {
     var times = try std.ArrayList(std.Io.Duration).initCapacity(gpa, iters);
     defer times.deinit(gpa);
@@ -469,9 +470,9 @@ fn benchArtifact(
         }
     }
 
-    if (echo_last) {
+    if (echo_last) |mode| {
         if (last_result) |result| switch (result) {
-            .ok => try printResult(vm),
+            .ok => try printResult(vm, mode),
             .err => |failure| {
                 printRuntimeFailure(init, failure, source);
                 vm.runtime.resetDiagArena();
