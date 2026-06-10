@@ -42,15 +42,15 @@ pub const specs: []const api.FnSpec = &.{
     },
     .{
         .name = "filter",
-        .placements = &.{api.mod("iter")},
+        .placements = all_places,
         .params = &.{
-            .{ "iterable", "any" },
-            .{ "pred", "function" },
+            .{ "collection", "any" },
+            .{ "fn", "function" },
         },
         .ret = "function",
         .doc =
         \\returns a new iterator that only yields values where pred returns truthy
-        \\    iter.filter(iterable, fn(x) = x > 2)
+        \\    filter((1,2,3,4), fn(x) = x > 2)
         ,
         .f = root.define(&.{ .any, .function }, filter_fn),
     },

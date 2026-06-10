@@ -1,4 +1,4 @@
-proc doto(m) do
+proc doto!(m) do
   let items = m.items
 
   let object = items[0]
@@ -50,7 +50,7 @@ struct Goblin {
 }
 
 let grunt = Goblin{inventory = {}}
-doto(
+doto!(
   grunt,
   set_hp(45),
   set_attack(12),

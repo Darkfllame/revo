@@ -697,8 +697,8 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
             const proto = try self.functions.getPrototype(instr.bx);
             self.noteGCPressure(@sizeOf(revo.functions.Closure) + @sizeOf(revo.functions.UpvalueID) * proto.upvalue_specs.len);
 
-            var upv_buf: [8]revo.functions.UpvalueID = undefined;
-            const upvalues = if (proto.upvalue_specs.len <= 8) blk: {
+            if (proto.upvalue_specs.len <= 8) {
+                var upv_buf: [8]revo.functions.UpvalueID = undefined;
                 for (proto.upvalue_specs, 0..) |spec, i| {
                     if (spec.is_local) {
                         const frame_base = fiber.frames_hot.items[fiber.frames_hot.items.len - 1].base;
@@ -708,10 +708,10 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
                         upv_buf[i] = closure2.upvalues[spec.index];
                     }
                 }
-                break :blk upv_buf[0..proto.upvalue_specs.len];
-            } else blk: {
+                regWrite(regs, base, instr.a, Data.new.function(try self.functions.createClosure(instr.bx, upv_buf[0..proto.upvalue_specs.len])));
+            } else {
                 var list = try std.ArrayList(revo.functions.UpvalueID).initCapacity(alloc, proto.upvalue_specs.len);
-                defer list.deinit(alloc);
+                errdefer list.deinit(alloc);
                 for (proto.upvalue_specs) |spec| {
                     if (spec.is_local) {
                         const frame_base = fiber.frames_hot.items[fiber.frames_hot.items.len - 1].base;
@@ -721,9 +721,9 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
                         try list.append(alloc, closure2.upvalues[spec.index]);
                     }
                 }
-                break :blk list.items;
-            };
-            regWrite(regs, base, instr.a, Data.new.function(try self.functions.createClosure(instr.bx, upvalues)));
+                regWrite(regs, base, instr.a, Data.new.function(try self.functions.createClosure(instr.bx, list.items)));
+                list.deinit(alloc);
+            }
 
             if (!fetchNext(fiber, &instr)) break :dispatch;
             continue :dispatch instr.op;

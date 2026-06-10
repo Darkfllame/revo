@@ -76,6 +76,17 @@ pub fn resolveField(self: *VM, object: Data, key: Data) VM.EvalError!?FieldLooku
             }
             return null;
         },
+        .struct_type => {
+            const type_id = object.asStructType().?;
+            const desc = self.struct_types.getType(type_id) orelse return null;
+
+            if (key.asAtom()) |atom| {
+                if (desc.methods.get(self.atomName(atom))) |method| {
+                    return .{ .value = method, .from_meta = true };
+                }
+            }
+            return null;
+        },
         else => {
             const mt_id = try self.getMetatableId(object) orelse return null;
             return resolveViaMetatable(self, object, key, mt_id);

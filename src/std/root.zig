@@ -103,7 +103,7 @@ pub const root_specs: []const api.FnSpec = &.{
         },
         .ret = "(:ok, number) | (:err, string)",
         .doc = "converts string to number",
-        .f = define(&[_]TypeSpec{.string}, tonumber),
+        .f = define(&[_]TypeSpec{.any}, tonumber),
     },
     .{
         .name = "expect",
@@ -852,7 +852,7 @@ pub fn chan_recv(args: []const Data, vm: *VM) !NativeResult {
 /// accepts number (passthrough) or string (parsed)
 /// errors on other types
 pub fn tonumber(args: []const Data, vm: *VM) !NativeResult {
-    // if (args[0].isNumber()) return .Ok(vm, args[0]);
+    if (args[0].isNumber()) return .Ok(vm, args[0]);
     if (args[0].asString()) |id| {
         const parsed = try std.fmt.parseFloat(f64, vm.stringValue(id));
         return .Ok(vm, Data.new.num(parsed));

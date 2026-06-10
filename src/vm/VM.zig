@@ -1111,7 +1111,13 @@ inline fn functionFast(
         );
         return &self.functions.functions.items[id].?;
     }
-    return self.functions.get(id);
+    return self.functions.get(id) catch |e| {
+        if (e == error.FunctionDNE) {
+            try self.setPanicMessage("function does not exist");
+            return error.Panic;
+        }
+        return e;
+    };
 }
 
 fn callNonClosureFunction(

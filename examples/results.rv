@@ -5,8 +5,8 @@ const safe_div = fn(a, b)
 print(safe_div(10, 2):unwrap()) # 5
 
 match safe_div(10, 0)
-	| (:ok, v)  do print(v) end
-	| (:err, e) do print(fmt("error: %v", e)) end
+	| (:ok, v)  => print(v)
+	| (:err, e) => print(fmt("error: %v", e))
 
 print(ok?!((:ok, 42)))    # :true
 print(err?!((:err, :Boom))) # :true
