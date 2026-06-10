@@ -183,8 +183,9 @@ const SemanticChecker = struct {
         return self.lookup(name) orelse .any;
     }
 
-    pub fn inferFnType(_: *SemanticChecker, _: []const ast.FnParam, _: ?*ast.TypeExpr) types_mod.TypeInfo {
-        return .any;
+    pub fn inferFnType(self: *SemanticChecker, params: []const ast.FnParam, return_type: ?*ast.TypeExpr) types_mod.TypeInfo {
+        const sig = self.makeFnSig(.{ .params = params, .return_type = return_type }) catch return .any;
+        return .{ .function = &sig.sig };
     }
 
     pub fn resolveTypeAlias(self: *SemanticChecker, name: []const u8) ?types_mod.TypeInfo {
@@ -376,11 +377,16 @@ const SemanticChecker = struct {
                 break :blk types_mod.inferExprType(self, node);
             },
             .for_loop => |v| blk: {
-                _ = try self.analyzeNode(v.iter);
+                const iter_type = try self.analyzeNode(v.iter);
                 try self.pushScope();
-                const is_range = v.iter.expr == .range_literal;
+                const param_type: types_mod.TypeInfo = if (v.iter.expr == .range_literal)
+                    .int
+                else if (iter_type == .string)
+                    .string
+                else
+                    .any;
                 for (v.params) |param| {
-                    try self.declare(param.name, if (is_range) .int else .any);
+                    try self.declare(param.name, param_type);
                 }
                 const body_type = try self.analyzeNode(v.body);
                 self.popScope();

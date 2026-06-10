@@ -323,7 +323,7 @@ pub fn inferExprType(ctx: anytype, node: *const ast.Node) TypeInfo {
         .loop_expr => |v| inferExprType(ctx, v.body),
         .for_loop => |v| inferExprType(ctx, v.body),
         .while_loop => |v| inferExprType(ctx, v.body),
-        .break_expr => .any,
+        .break_expr => |val| if (val) |v| inferExprType(ctx, v) else .any,
         .try_expr => |inner| inferExprType(ctx, inner),
         .orelse_expr => |v| inferOrelseType(inferExprType(ctx, v.left), inferExprType(ctx, v.right)),
         .comp_block, .import_expr, .test_block, .test_suite, .macro_expr, .proc_macro => .any,
