@@ -389,10 +389,7 @@ fn concat(args: []const Data, vm: *VM) !NativeResult {
 
     for (table.array.items, 0..) |item, idx| {
         if (idx > 0) try buf.writer.writeAll(delim);
-        var temp = std.Io.Writer.Allocating.init(vm.runtime.alloc);
-        defer temp.deinit();
-        try item.write(&temp.writer, vm, .display);
-        try buf.writer.writeAll(temp.written());
+        try item.write(&buf.writer, vm, .display);
     }
 
     const slice = try buf.toOwnedSlice();

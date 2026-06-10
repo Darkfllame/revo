@@ -584,9 +584,10 @@ fn join(args: []const Data, vm: *VM) !NativeResult {
     for (tbl.array.items, 0..) |item, i| {
         const item_str = if (item.asString()) |sid|
             vm.stringValue(sid)
-        else if (item.asNum()) |n|
-            try std.fmt.allocPrint(vm.runtime.alloc, "{}", .{n})
-        else
+        else if (item.asNum()) |n| blk: {
+            var fmt_buf: [64]u8 = undefined;
+            break :blk std.fmt.bufPrint(&fmt_buf, "{}", .{n}) catch "?";
+        } else
             "?";
         try buf.appendSlice(vm.runtime.alloc, item_str);
         if (i < tbl.array.items.len - 1 and tbl.array.items.len >= i) {
