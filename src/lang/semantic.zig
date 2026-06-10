@@ -748,16 +748,23 @@ const SemanticChecker = struct {
             const total_args = call.args.len + self_offset;
             if (total_args != sig.params.len) {
                 const stdlib_spec = revo.std_lib.api.find(name);
-                if (stdlib_spec == null or !stdlib_spec.?.variadic or total_args < sig.params.len) {
-                    const label = blk: {
-                        if (total_args > sig.params.len) {
-                            break :blk try std.fmt.allocPrint(self.alloc, "{d} extra args", .{
-                                total_args -| sig.params.len,
-                            });
-                        } else break :blk try std.fmt.allocPrint(self.alloc, "{d} missing args", .{
-                            sig.params.len -| total_args,
-                        });
-                    };
+                const is_variadic = stdlib_spec != null and stdlib_spec.?.variadic;
+                const min_args = if (is_variadic) sig.params.len -| 1 else sig.params.len;
+                if (total_args < min_args) {
+                    const label = try std.fmt.allocPrint(self.alloc, "{d} missing args", .{
+                        min_args -| total_args,
+                    });
+                    try self.appendError(
+                        try std.fmt.allocPrint(self.alloc, "`{s}` wants at least {d} args, got {d}", .{
+                            name, min_args, total_args,
+                        }),
+                        call.callee.span,
+                        label,
+                    );
+                } else if (!is_variadic and total_args > sig.params.len) {
+                    const label = try std.fmt.allocPrint(self.alloc, "{d} extra args", .{
+                        total_args -| sig.params.len,
+                    });
                     try self.appendError(
                         try std.fmt.allocPrint(self.alloc, "`{s}` wants {d} args, got {d}", .{
                             name, sig.params.len, total_args,

@@ -258,6 +258,78 @@ test "len" {
     try t.top_number("len(\"hi\")", 2);
 }
 
+//
+// semantic type checking of stdlib functions
+//
+
+test "tonumber accepts string" {
+    try t.top_number("tonumber(\"42\"):unwrap()", 42);
+}
+
+test "tonumber rejects number" {
+    try t.expectCompileError("tonumber(42)", .ParseError);
+}
+
+test "tonumber rejects atom" {
+    try t.expectCompileError("tonumber(:foo)", .ParseError);
+}
+
+test "tostring accepts any" {
+    try t.top_string("tostring(42)", "42");
+}
+
+test "sleep rejects string" {
+    try t.expectCompileError("sleep(\"slow\")", .ParseError);
+}
+
+test "tonumber result type is tuple" {
+    try t.top_type("tonumber(\"42\")", .tuple);
+}
+
+test "tostring result type is string" {
+    try t.top_type("tostring(42)", .string);
+}
+
+test "fmt accepts string" {
+    try t.top_string("fmt(\"%v\", \"hi\")", "hi");
+}
+
+test "fmt rejects non-string format" {
+    try t.expectCompileError("fmt(42)", .ParseError);
+}
+
+test "string method upper works" {
+    try t.top_string("\"hello\":upper()", "HELLO");
+}
+
+test "string method sub with wrong type rejected" {
+    try t.expectCompileError("\"hello\":sub(\"x\", 2)", .ParseError);
+}
+
+test "string method sub with extra args rejected" {
+    try t.expectCompileError("\"hello\":sub(2, 2, 3)", .ParseError);
+}
+
+test "string method find returns index" {
+    try t.top_number("\"hello\":find(\"el\")", 1);
+}
+
+test "string method find rejects number needle" {
+    try t.expectCompileError("\"hello\":find(42)", .ParseError);
+}
+
+test "string method replace works" {
+    try t.top_string("\"hello\":replace(\"l\", \"x\")", "hexxo");
+}
+
+test "string method replace rejects wrong type" {
+    try t.expectCompileError("\"hello\":replace(1, \"x\")", .ParseError);
+}
+
+test "string method add works" {
+    try t.top_string("\"hello\":add(\" world\")", "hello world");
+}
+
 // TODO: how would i even test it?
 test "@doc annotates functions without changing runtime behavior" {
     try t.top_number(
