@@ -90,10 +90,9 @@ pub fn bindDeclaredPattern(
     switch (pattern.expr) {
         .ident => |name| {
             if (ast.isDiscardName(name)) return;
-            const mv_dst = try toRegister(self.active_registers);
+            const mv_dst = try state.pushRegister(self);
             try self.spans.append(self.alloc, self.active_span);
             _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst, 0);
-            self.active_registers += 1;
             const slot = try state.reuseOrDeclareLocal(self, name, kind != .con);
             state.markLocalInitialized(self, slot);
             try self.emit(.bind_local, slot);
@@ -101,10 +100,9 @@ pub fn bindDeclaredPattern(
         },
         .tuple_pattern => |items| {
             for (items, 0..) |item, idx| {
-                const mv_dst = try toRegister(self.active_registers);
+                const mv_dst = try state.pushRegister(self);
                 try self.spans.append(self.alloc, self.active_span);
                 _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst, 0);
-                self.active_registers += 1;
                 try self.emit(.tuple_get_const, idx);
                 try bindDeclaredPattern(self, item, self.active_registers - 1, kind);
             }
@@ -142,10 +140,9 @@ pub fn bindPattern(
     switch (pattern.expr) {
         .ident => |name| {
             if (ast.isDiscardName(name)) return;
-            const mv_dst = try toRegister(self.active_registers);
+            const mv_dst = try state.pushRegister(self);
             try self.spans.append(self.alloc, self.active_span);
             _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst, 0);
-            self.active_registers += 1;
             try self.emit(
                 if (kind == .con) .store_global_const else .store_global,
                 try self.vm.internAtom(name),
@@ -157,10 +154,9 @@ pub fn bindPattern(
                 switch (item.expr) {
                     .ident => |name| {
                         if (ast.isDiscardName(name)) continue;
-                        const mv_dst2 = try toRegister(self.active_registers);
+                        const mv_dst2 = try state.pushRegister(self);
                         try self.spans.append(self.alloc, self.active_span);
                         _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst2, 0);
-                        self.active_registers += 1;
                         try self.emit(.tuple_get_const, idx);
                         try self.emit(
                             if (is_mutable) .store_global else .store_global_const,
@@ -168,10 +164,9 @@ pub fn bindPattern(
                         );
                     },
                     .tuple_pattern => {
-                        const mv_dst2 = try toRegister(self.active_registers);
+                        const mv_dst2 = try state.pushRegister(self);
                         try self.spans.append(self.alloc, self.active_span);
                         _ = try self.record(.move, &.{.{ .reg = try toRegister(source_idx) }}, true, mv_dst2, 0);
-                        self.active_registers += 1;
                         try self.emit(.tuple_get_const, idx);
                         try bindPattern(self, item, self.active_registers - 1, kind);
                     },
