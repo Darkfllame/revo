@@ -537,7 +537,7 @@ pub const Compiler = struct {
                 } else if (try state_mod.resolveUpvalue(self, name)) |upval_id| {
                     // reuse cached reg only if still live
                     if (self.upvalue_cache.get(upval_id)) |cached_reg| {
-                        if (cached_reg < self.active_registers - 1) {
+                        if (self.active_registers > 0 and cached_reg < self.active_registers - 1) {
                             const dst = try state_mod.pushRegister(self);
                             try self.spans.append(self.alloc, self.active_span);
                             try self.recordMove(dst);
