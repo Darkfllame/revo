@@ -49,14 +49,14 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     const all_mods = [_]*std.Build.Module{ vm_mod, revo_mod, c_mod };
-    const imports = [_]struct { []const u8, *std.Build.Module }{
-        .{ "revo", revo_mod },
-        .{ "vm", vm_mod },
-        .{ "c", c_mod },
+    const imports = [_]std.Build.Module.Import{
+        .{ .name = "revo", .module = revo_mod },
+        .{ .name = "vm", .module = vm_mod },
+        .{ .name = "c", .module = c_mod },
     };
     for (all_mods) |mod|
         for (imports) |imp|
-            mod.addImport(imp[0], imp[1]);
+            mod.addImport(imp.name, imp.module);
 
     //
     // main exe
@@ -66,13 +66,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = !is_freestanding,
+        .imports = &imports,
     });
     if (!is_freestanding) {
         if (have_isocline) add_isocline(exe_root, b);
         exe_root.addOptions("build_options", build_options);
     }
-    for (imports) |imp| exe_root.addImport(imp[0], imp[1]);
-    exe_root.addImport("lsp_main", lspModule(b, target, optimize, revo_mod, &imports, have_lsp));
+    const lsp_mod = lspModule(b, target, optimize, revo_mod, &imports, have_lsp);
+    exe_root.addImport("lsp_main", lsp_mod);
 
     const exe = b.addExecutable(.{ .name = "revo", .root_module = exe_root });
     if (optimize == .Debug) exe.lto = .none;
@@ -96,8 +97,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &imports,
     });
-    for (imports) |imp| erevo_mod.addImport(imp[0], imp[1]);
 
     const lib = b.addLibrary(.{
         .name = "erevo",
@@ -116,15 +117,21 @@ pub fn build(b: *std.Build) void {
     lib_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
     lib_step.dependOn(&b.addInstallFile(header_path, "include/revo.h").step);
 
+    const vm_test = b.addTest(.{ .root_module = vm_mod, .filters = test_filters });
+    const revo_test = b.addTest(.{ .root_module = revo_mod, .filters = test_filters });
+    const exe_test = b.addTest(.{ .root_module = exe_root, .filters = test_filters });
+    const c_test = b.addTest(.{ .root_module = c_mod, .filters = test_filters });
+    const lsp_test = b.addTest(.{ .root_module = lsp_mod, .filters = test_filters });
+
     //
     // check step
     //
     const check_step = b.step("check", "type-check without codegen or linking");
-    check_step.dependOn(&b.addTest(.{ .root_module = vm_mod, .filters = test_filters }).step);
-    check_step.dependOn(&b.addTest(.{ .root_module = revo_mod, .filters = test_filters }).step);
-    check_step.dependOn(&b.addTest(.{ .root_module = exe_root, .filters = test_filters }).step);
-    check_step.dependOn(&b.addTest(.{ .root_module = c_mod, .filters = test_filters }).step);
-    check_step.dependOn(&b.addTest(.{ .root_module = lspModule(b, target, optimize, revo_mod, &imports, have_lsp), .filters = test_filters }).step);
+    check_step.dependOn(&vm_test.step);
+    check_step.dependOn(&revo_test.step);
+    check_step.dependOn(&exe_test.step);
+    check_step.dependOn(&c_test.step);
+    check_step.dependOn(&lsp_test.step);
 
     //
     // tests
@@ -132,13 +139,13 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "run all tests");
 
     const test_vm_step = b.step("test-vm", "test only the vm module");
-    test_vm_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = vm_mod, .filters = test_filters })).step);
+    test_vm_step.dependOn(&b.addRunArtifact(vm_test).step);
 
     const test_revo_step = b.step("test-revo", "test only the revo module");
-    test_revo_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = revo_mod, .filters = test_filters })).step);
+    test_revo_step.dependOn(&b.addRunArtifact(revo_test).step);
 
     const test_exe_step = b.step("test-exe", "test only the exe root");
-    test_exe_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = exe_root, .filters = test_filters })).step);
+    test_exe_step.dependOn(&b.addRunArtifact(exe_test).step);
 
     test_step.dependOn(test_vm_step);
     test_step.dependOn(test_revo_step);
@@ -151,15 +158,13 @@ pub fn build(b: *std.Build) void {
     test_c_step.dependOn(lib_step);
 
     const c_test_bin = b.addSystemCommand(&.{
-        "cc", "-std=c99", "-Wall", "-Wextra",
-        "-Izig-out/include",
-        "src/c/tests.c",
-        "zig-out/lib/liberevo.a",
-        "-lm", "-o", ".zig-cache/revo-c-test",
+        "cc",                "-std=c99",               "-Wall",                  "-Wextra",
+        "-Izig-out/include", "src/c/tests.c",          "zig-out/lib/liberevo.a", "-lm",
+        "-o",                ".zig-cache/revo-c-test",
     });
     test_c_step.dependOn(&c_test_bin.step);
 
-    const c_test_run = b.addSystemCommand(&.{ ".zig-cache/revo-c-test" });
+    const c_test_run = b.addSystemCommand(&.{".zig-cache/revo-c-test"});
     c_test_run.step.dependOn(&c_test_bin.step);
     test_c_step.dependOn(&c_test_run.step);
 
@@ -189,10 +194,10 @@ pub fn build(b: *std.Build) void {
             .target = release_target,
             .optimize = .ReleaseFast,
             .link_libc = true,
+            .imports = &imports,
         });
         if (have_isocline) add_isocline(release_mod, b);
         release_mod.addOptions("build_options", build_options);
-        for (imports) |imp| release_mod.addImport(imp[0], imp[1]);
         release_mod.addImport("lsp_main", lspModule(b, release_target, .ReleaseFast, revo_mod, &imports, have_lsp));
 
         const release_exe = b.addExecutable(.{
@@ -211,16 +216,17 @@ pub fn build(b: *std.Build) void {
     // lsp
     //
     if (b.lazyDependency("lsp_kit", .{})) |lsp_kit_dep| {
-        const lsp_mod = lsp_kit_dep.module("lsp");
+        const lsp_kit_mod = lsp_kit_dep.module("lsp");
 
         const revolt_root = b.createModule(.{
             .root_source_file = b.path("src/lsp/server.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &(imports ++ [_]std.Build.Module.Import{
+                .{ .name = "lsp", .module = lsp_kit_mod },
+            }),
         });
-        revolt_root.addImport("lsp", lsp_mod);
-        for (imports) |imp| revolt_root.addImport(imp[0], imp[1]);
 
         const revolt = b.addExecutable(.{ .name = "revolt", .root_module = revolt_root });
         const install_revolt = b.addInstallArtifact(revolt, .{});
@@ -230,7 +236,6 @@ pub fn build(b: *std.Build) void {
         const revolt_step = b.step("lsp", "build the lsp");
         revolt_step.dependOn(&install_revolt.step);
     }
-
 }
 
 /// returns the real lsp server module if available and enabled, otherwise a noop stub
@@ -239,22 +244,17 @@ fn lspModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     revo_mod: *std.Build.Module,
-    imports: []const struct { []const u8, *std.Build.Module },
+    imports: []const std.Build.Module.Import,
     enabled: bool,
 ) *std.Build.Module {
     if (enabled) {
         if (b.lazyDependency("lsp_kit", .{})) |lsp_kit_dep| {
             const lsp_mod = lsp_kit_dep.module("lsp");
-            const server_mod = b.createModule(.{
-                .root_source_file = b.path("src/lsp/server.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
+            const server_mod = b.createModule(.{ .root_source_file = b.path("src/lsp/server.zig"), .target = target, .optimize = optimize, .imports = imports });
             server_mod.addImport("lsp", lsp_mod);
-            for (imports) |imp| server_mod.addImport(imp[0], imp[1]);
             return server_mod;
         }
-        std.debug.print("warning: lsp_kit not fetched, lsp won't be bundled. run zig build --fetch if you need it\n", .{});
+        // std.debug.print("warning: lsp_kit not fetched, lsp won't be bundled. run zig build --fetch if you need it\n", .{});
     }
     const noop = b.createModule(.{
         .root_source_file = b.path("src/lsp/noop.zig"),
