@@ -441,10 +441,8 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
                     continue :dispatch instr.op;
                 }
             }
-            const t_id = table_value.asTable() orelse {
-                try self.setRuntimeMessage("expected table");
-                return self.evalFailure(error.TypeError);
-            };
+            const t_id = table_value.asTable() orelse
+                return self.typeError("table", table_value);
             const t = try self.tableFast(t_id);
             try t.put(t_id, self, key, regRead(regs, base, instr.c));
 
@@ -476,10 +474,8 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
                 if (!fetchNext(fiber, &instr)) break :dispatch;
                 continue :dispatch instr.op;
             }
-            const t_id = table_value.asTable() orelse {
-                try self.setRuntimeMessage("expected table");
-                return self.evalFailure(error.TypeError);
-            };
+            const t_id = table_value.asTable() orelse
+                return self.typeError("table", table_value);
             const t = try self.tableFast(t_id);
             const key = Data.new.atom(instr.bx);
             try t.put(t_id, self, key, regRead(regs, base, instr.c));
@@ -527,15 +523,12 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
             continue :dispatch instr.op;
         },
         .tuple_get => {
-            const tuple_id = (regRead(regs, base, instr.b)).asTuple() orelse {
-                try self.setRuntimeMessage("expected tuple");
-                return self.evalFailure(error.TypeError);
-            };
+            const tuple_val = regRead(regs, base, instr.b);
+            const tuple_id = tuple_val.asTuple() orelse
+                return self.typeError("tuple", tuple_val);
             const idx_val = regRead(regs, base, instr.c);
-            const idx_num = idx_val.asNum() orelse {
-                try self.setRuntimeMessage("expected number for tuple index");
-                return self.evalFailure(error.TypeError);
-            };
+            const idx_num = idx_val.asNum() orelse
+                return self.typeError("number for tuple index", idx_val);
             if (idx_num < 0 or @floor(idx_num) != idx_num) {
                 try self.setRuntimeMessage("tuple index must be a non-negative integer");
                 return self.evalFailure(error.TypeError);
@@ -556,10 +549,9 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
             continue :dispatch instr.op;
         },
         .tuple_get_const => {
-            const tuple_id = (regRead(regs, base, instr.b)).asTuple() orelse {
-                try self.setRuntimeMessage("expected tuple");
-                return self.evalFailure(error.TypeError);
-            };
+            const tuple_val = regRead(regs, base, instr.b);
+            const tuple_id = tuple_val.asTuple() orelse
+                return self.typeError("tuple", tuple_val);
             const t = try self.tuples.get(tuple_id);
             if (instr.bx >= t.items.len) {
                 try self.setRuntimeMessageFmt("tuple index {d} out of range for tuple of length {d}", .{ instr.bx, t.items.len });
@@ -588,15 +580,11 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
         },
         .struct_set_method => {
             const type_val = regRead(regs, base, instr.a);
-            const type_id = type_val.asStructType() orelse {
-                try self.setRuntimeMessage("expected struct type");
-                return self.evalFailure(error.TypeError);
-            };
+            const type_id = type_val.asStructType() orelse
+                return self.typeError("struct type", type_val);
             const name_atom_data = regRead(regs, base, instr.b);
-            const name_atom = name_atom_data.asAtom() orelse {
-                try self.setRuntimeMessage("expected atom for method name");
-                return self.evalFailure(error.TypeError);
-            };
+            const name_atom = name_atom_data.asAtom() orelse
+                return self.typeError("atom for method name", name_atom_data);
             const method = regRead(regs, base, instr.c);
             const desc = self.struct_types.getType(type_id) orelse {
                 try self.setRuntimeMessage("struct type not found");
@@ -609,10 +597,8 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
         },
         .struct_get_offset => {
             const object = regRead(regs, base, instr.b);
-            const instance_id = object.asStructVal() orelse {
-                try self.setRuntimeMessage("expected struct instance");
-                return self.evalFailure(error.TypeError);
-            };
+            const instance_id = object.asStructVal() orelse
+                return self.typeError("struct instance", object);
             const instance = self.structGetInstance(instance_id) catch return self.evalFailure(error.Panic);
             regWrite(regs, base, instr.a, instance.get(instr.bx));
 
@@ -621,10 +607,8 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
         },
         .struct_set_offset => {
             const object = regRead(regs, base, instr.a);
-            const instance_id = object.asStructVal() orelse {
-                try self.setRuntimeMessage("expected struct instance");
-                return self.evalFailure(error.TypeError);
-            };
+            const instance_id = object.asStructVal() orelse
+                return self.typeError("struct instance", object);
             const instance = self.structGetInstance(instance_id) catch return self.evalFailure(error.Panic);
             const value = regRead(regs, base, instr.c);
             instance.set(instr.bx, value);
@@ -852,10 +836,8 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
         },
         .join => {
             const handle = regRead(regs, base, instr.a);
-            const target_num = handle.asNum() orelse {
-                try self.setRuntimeMessage("expected number in join");
-                return self.evalFailure(error.TypeError);
-            };
+            const target_num = handle.asNum() orelse
+                return self.typeError("number in join", handle);
             const target_id = if (target_num >= 0 and @floor(target_num) == target_num)
                 @as(usize, @intFromFloat(target_num))
             else {
@@ -923,18 +905,15 @@ fn execFiberGeneric(self: *VM, comptime use_depth: bool, target_depth: usize) !?
             continue :dispatch instr.op;
         },
         .range_for => {
-            var current = (regRead(regs, base, instr.a)).as_number() catch {
-                try self.setRuntimeMessage("expected number for range current");
-                return self.evalFailure(error.TypeError);
-            };
-            const step = (regRead(regs, base, instr.b)).as_number() catch {
-                try self.setRuntimeMessage("expected number for range step");
-                return self.evalFailure(error.TypeError);
-            };
-            const limit = (regRead(regs, base, instr.c)).as_number() catch {
-                try self.setRuntimeMessage("expected number for range limit");
-                return self.evalFailure(error.TypeError);
-            };
+            const current_data = regRead(regs, base, instr.a);
+            var current = current_data.as_number() catch
+                return self.typeError("number for range current", current_data);
+            const step_data = regRead(regs, base, instr.b);
+            const step = step_data.as_number() catch
+                return self.typeError("number for range step", step_data);
+            const limit_data = regRead(regs, base, instr.c);
+            const limit = limit_data.as_number() catch
+                return self.typeError("number for range limit", limit_data);
             const max_iter: f64 = @floatFromInt(instr.bx);
 
             var i: f64 = 0;

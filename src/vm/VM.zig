@@ -727,6 +727,18 @@ pub fn clearRuntimeMessage(self: *VM) void {
     self.runtime_message = null;
 }
 
+/// shorthand for TypeError with "want X, got Y"
+pub fn typeError(self: *VM, comptime expected: []const u8, got: mem.Data) EvalFailure {
+    const msg = std.fmt.allocPrint(
+        self.runtime.alloc,
+        "want {s}, got {s}",
+        .{ expected, @tagName(got.tag()) },
+    ) catch return self.evalFailure(error.TypeError);
+
+    self.setRuntimeMessageOwned(msg);
+    return self.evalFailure(error.TypeError);
+}
+
 pub fn currentFrame(self: *VM) !*FrameHot {
     if (self.currentFiber().frames_hot.items.len == 0) return error.FrameUnderflow;
     return &self.currentFiber().frames_hot.items[self.currentFiber().frames_hot.items.len - 1];
