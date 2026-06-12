@@ -74,6 +74,24 @@ fn getFeatures(features: []const u8) Features {
     return ret;
 }
 
+/// for release bin names
+fn binName(b: *std.Build, triple: []const u8, btype: BinaryType) []const u8 {
+    const epoch_secs = std.time.epoch.EpochSeconds{
+        .secs = @intCast(std.Io.Clock.real.now(b.graph.io).toSeconds()),
+    };
+    const year_day = epoch_secs.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const date_str = b.fmt("{d}{d:0>2}{d:0>2}", .{
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+    });
+    return switch (btype) {
+        .nightly => b.fmt("revo-nightly-{s}-{s}", .{ triple, date_str }),
+        .release => b.fmt("revo-{s}-{s}", .{ VERSION, triple }),
+    };
+}
+
 pub fn build(b: *Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -297,23 +315,30 @@ pub fn build(b: *Build) !void {
         for (release_targets, release_target_queries) |target_str, query| {
             const release_target = b.resolveTargetQuery(query);
 
+            const rel_revolt_mod = b.createModule(.{
+                .root_source_file = if (features.lsp)
+                    b.path("src/lsp/server.zig")
+                else
+                    b.path("src/lsp/noop.zig"),
+                .target = release_target,
+                .optimize = .ReleaseFast,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "lsp", .module = lsp_kit_dep.module("lsp") },
+                },
+            });
+
             const release_mod = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = release_target,
                 .optimize = .ReleaseFast,
                 .link_libc = true,
-                .imports = &imports,
+                .imports = &(imports ++ [_]Module.Import{
+                    .{ .name = "isocline", .module = isocline_mod },
+                    .{ .name = "build_options", .module = options_mod },
+                    .{ .name = "lsp_main", .module = rel_revolt_mod },
+                }),
             });
-            release_mod.addImport("isocline", isocline_mod);
-            release_mod.addImport("build_options", options_mod);
-            release_mod.addImport("lsp_main", lspModule(
-                b,
-                release_target,
-                .ReleaseFast,
-                revo_mod,
-                &imports,
-                features.lsp,
-            ));
 
             const release_exe = b.addExecutable(.{
                 .name = binName(b, target_str, .nightly),
@@ -326,50 +351,3 @@ pub fn build(b: *Build) !void {
     }
 }
 
-/// returns the real lsp server module if available and enabled, otherwise a noop stub
-fn lspModule(
-    b: *Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    revo_mod: *std.Build.Module,
-    imports: []const std.Build.Module.Import,
-    enabled: bool,
-) *std.Build.Module {
-    if (enabled) {
-        const lsp_kit_dep = b.dependency("lsp_kit", .{});
-
-        const server_mod = b.createModule(.{
-            .root_source_file = b.path("src/lsp/server.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = imports,
-        });
-        server_mod.addImport("lsp", lsp_kit_dep.module("lsp"));
-        return server_mod;
-    }
-    const noop = b.createModule(.{
-        .root_source_file = b.path("src/lsp/noop.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    noop.addImport("revo", revo_mod);
-    return noop;
-}
-
-/// for release bin names
-fn binName(b: *std.Build, triple: []const u8, btype: BinaryType) []const u8 {
-    const epoch_secs = std.time.epoch.EpochSeconds{
-        .secs = @intCast(std.Io.Clock.real.now(b.graph.io).toSeconds()),
-    };
-    const year_day = epoch_secs.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const date_str = b.fmt("{d}{d:0>2}{d:0>2}", .{
-        year_day.year,
-        month_day.month.numeric(),
-        month_day.day_index + 1,
-    });
-    return switch (btype) {
-        .nightly => b.fmt("revo-nightly-{s}-{s}", .{ triple, date_str }),
-        .release => b.fmt("revo-{s}-{s}", .{ VERSION, triple }),
-    };
-}
